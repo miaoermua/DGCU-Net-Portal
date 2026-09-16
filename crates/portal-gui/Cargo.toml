@@ -1,0 +1,16 @@
+[package]
+name = "portal-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+portal-core = { path = "../portal-core" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

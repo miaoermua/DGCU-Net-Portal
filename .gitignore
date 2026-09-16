@@ -1,0 +1,11 @@
+# Build output
+/target/
+/.cargo-home/
+**/.DS_Store
+
+# Local campus-network authentication analysis documents
+/docs/campus-network-auth-todo.md
+/docs/campus-network-auth-har-analysis.md
+/docs/campus-network-auth-implementation.md
+
+.DS_Store
