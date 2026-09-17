@@ -14,7 +14,11 @@ tokio.workspace = true
 zeroize.workspace = true
 directories.workspace = true
 webbrowser.workspace = true
-sysinfo.workspace = true
+dom_query.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }

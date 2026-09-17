@@ -1,0 +1,106 @@
+use crate::{validate_url, DEFAULT_SERVER};
+use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
+use std::{fs, path::PathBuf};
+use zeroize::Zeroizing;
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub server: String,
+    pub auth_url: String,
+    pub probe_url: String,
+    pub bypass_proxy: bool,
+    pub one_session: bool,
+    pub auto_redial: bool,
+    pub tray_startup: bool,
+    pub service_enabled: bool,
+    pub remember_account: bool,
+    pub username: String,
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            server: DEFAULT_SERVER.into(),
+            auth_url: format!("{DEFAULT_SERVER}web/admin/login"),
+            probe_url: "http://captive.apple.com/hotspot-detect.html".into(),
+            bypass_proxy: true,
+            one_session: true,
+            auto_redial: false,
+            tray_startup: false,
+            service_enabled: false,
+            remember_account: false,
+            username: String::new(),
+        }
+    }
+}
+pub fn config_path() -> Result<PathBuf, String> {
+    ProjectDirs::from("net", "dgcu", "portal")
+        .map(|d| d.config_dir().join("settings.json"))
+        .ok_or("无法定位用户配置目录".into())
+}
+impl Settings {
+    pub fn normalize(&mut self) -> Result<(), String> {
+        for value in [&self.server, &self.auth_url, &self.probe_url] {
+            validate_url(value).map_err(|e| e.to_string())?;
+        }
+        if self.one_session {
+            self.remember_account = false;
+            self.auto_redial = false;
+            self.service_enabled = false;
+            self.username.clear();
+        }
+        if !self.remember_account {
+            self.username.clear();
+        }
+        Ok(())
+    }
+    pub fn load() -> Self {
+        config_path()
+            .ok()
+            .and_then(|p| fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+    pub fn save(&self) -> Result<(), String> {
+        let mut value = self.clone();
+        value.normalize()?;
+        let path = config_path()?;
+        fs::create_dir_all(path.parent().unwrap()).map_err(|_| "无法创建配置目录")?;
+        let temp = path.with_extension("tmp");
+        let bytes = serde_json::to_vec_pretty(&value).map_err(|_| "无法序列化设置")?;
+        use std::io::Write;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp).map_err(|_| "无法写入设置")?;
+        file.write_all(&bytes).map_err(|_| "无法写入设置")?;
+        file.sync_all().map_err(|_| "无法同步设置")?;
+        fs::rename(&temp, &path).map_err(|_| "无法替换设置")?;
+        Ok(())
+    }
+}
+fn entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new("net.dgcu.portal", "saved-account").map_err(|_| "无法访问系统凭据库".into())
+}
+pub fn save_password(password: &str) -> Result<(), String> {
+    entry()?
+        .set_password(password)
+        .map_err(|_| "无法保存到系统凭据库".into())
+}
+pub fn password() -> Result<Zeroizing<String>, String> {
+    entry()?
+        .get_password()
+        .map(Zeroizing::new)
+        .map_err(|_| "没有保存的密码或凭据库不可用".into())
+}
+pub fn forget_password() -> Result<(), String> {
+    match entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err("无法删除系统凭据；请在系统凭据库中手动移除".into()),
+    }
+}

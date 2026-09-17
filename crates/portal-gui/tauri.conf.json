@@ -4,25 +4,28 @@
   "version": "0.1.0",
   "identifier": "net.dgcu.portal",
   "build": {
-    "frontendDist": "frontend"
+    "frontendDist": "frontend/dist"
   },
   "app": {
     "windows": [
       {
         "title": "DGCU 校园网认证",
-        "width": 980,
-        "height": 720,
-        "minWidth": 820,
-        "minHeight": 620,
-        "resizable": true
+        "width": 760,
+        "height": 620,
+        "minWidth": 640,
+        "minHeight": 520,
+        "resizable": true,
+        "incognito": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
-    }
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self'; script-src 'self'; img-src 'self' data:; object-src 'none'; frame-src 'none'"
+    },
+    "withGlobalTauri": true
   },
   "bundle": {
     "active": false,
-    "targets": "all"
+    "targets": "all",
+    "icon": []
   }
 }

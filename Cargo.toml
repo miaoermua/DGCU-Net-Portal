@@ -16,7 +16,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal", "net", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal", "net", "io-util", "io-std"] }
 url = "2"
 webbrowser = "1"
-sysinfo = "0.35"
+dom_query = "0.27"
+regex = "1"

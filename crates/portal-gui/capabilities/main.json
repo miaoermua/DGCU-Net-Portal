@@ -1,0 +1,1 @@
+{"identifier":"main-window","description":"Local window event IPC only","windows":["main"],"permissions":["core:event:allow-listen","core:event:allow-unlisten"]}
