@@ -117,6 +117,11 @@ async fn save_preferences(
     next.save()?;
     c.settings = next;
     state.logs.set_enabled(value.log_enabled);
+    state
+        .logs
+        .record(portal_core::logging::Event::refresh_policy(
+            value.refresh_policy,
+        ));
     Ok(value)
 }
 #[tauri::command]
@@ -151,6 +156,11 @@ async fn save_settings(
     }
     value.save()?;
     state.logs.set_enabled(value.log_enabled);
+    state
+        .logs
+        .record(portal_core::logging::Event::refresh_policy(
+            value.refresh_policy,
+        ));
     c.settings = value.clone();
     Ok(value)
 }
@@ -268,7 +278,19 @@ fn main() {
                     }
                 }
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let delay = handle
+                        .state::<AppState>()
+                        .inner
+                        .try_lock()
+                        .ok()
+                        .map(|c| {
+                            c.settings
+                                .refresh_policy
+                                .next_delay()
+                                .unwrap_or_else(|| std::time::Duration::from_secs(1))
+                        })
+                        .unwrap_or_else(|| std::time::Duration::from_secs(1));
+                    tokio::time::sleep(delay).await;
                     if demo {
                         continue;
                     }

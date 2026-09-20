@@ -82,7 +82,7 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     state.password.value='never-send-this'
     mock.invoke.mockImplementationOnce(async(_command,args?:Record<string,unknown>)=>args?.value as never)
     await state.updatePreferences({show_sessions:true,theme_mode:'dark'})
-    expect(mock.invoke).toHaveBeenLastCalledWith('save_preferences',{value:{show_sessions:true,theme_mode:'dark',log_enabled:false}})
+    expect(mock.invoke).toHaveBeenLastCalledWith('save_preferences',{value:{show_sessions:true,theme_mode:'dark',log_enabled:false,refresh_policy:'five_seconds'}})
     expect(state.saved.value.show_sessions).toBe(true)
     expect(state.password.value).toBe('never-send-this')
     state.dispose()

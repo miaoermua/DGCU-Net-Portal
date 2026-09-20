@@ -52,6 +52,9 @@ impl Controller {
         Self::with_logs(settings, logs)
     }
     pub fn with_logs(settings: Settings, logs: crate::logging::LogBuffer) -> Self {
+        logs.record(crate::logging::Event::refresh_policy(
+            settings.refresh_policy,
+        ));
         Self {
             settings,
             logs,
@@ -327,7 +330,7 @@ impl Controller {
                 self.clear();
             }
             self.status = "unknown".into();
-            self.message = "远端下线未确认；请在认证网站检查。临时模式本地凭据已释放".into();
+            self.message = "远端下线未确认；请在认证后台检查。临时模式本地凭据已释放".into();
             return Err(e);
         }
         self.rows.retain(|r| r.radacctid != id);
@@ -343,7 +346,9 @@ impl Controller {
     }
     /// Invoked by the app's worker, not by the WebView timer (works with window hidden).
     pub async fn tick<F: Fn(Phase)>(&mut self, progress: F) {
-        if self.api.is_none() {
+        if self.api.is_none()
+            || self.settings.refresh_policy == crate::settings::RefreshPolicy::Disabled
+        {
             return;
         }
         if let Err(e) = self.refresh().await {

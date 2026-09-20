@@ -1,7 +1,11 @@
 use crate::{validate_url, DEFAULT_SERVER};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use zeroize::Zeroizing;
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
@@ -19,6 +23,38 @@ pub struct UiPreferences {
     pub show_sessions: bool,
     pub log_enabled: bool,
     pub theme_mode: ThemeMode,
+    pub refresh_policy: RefreshPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefreshPolicy {
+    OneSecond,
+    TwoSeconds,
+    #[default]
+    FiveSeconds,
+    Random,
+    OneMinute,
+    Disabled,
+}
+impl RefreshPolicy {
+    pub fn next_delay(self) -> Option<Duration> {
+        let seconds = match self {
+            Self::OneSecond => 1,
+            Self::TwoSeconds => 2,
+            Self::FiveSeconds => 5,
+            Self::Random => {
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_nanos();
+                u64::from(nanos % 10 + 1)
+            }
+            Self::OneMinute => 60,
+            Self::Disabled => return None,
+        };
+        Some(Duration::from_secs(seconds))
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -29,6 +65,7 @@ pub struct Settings {
     pub probe_url: String,
     /// Try public captive-check discovery only after the DGCU template fails.
     pub probe_enabled: bool,
+    pub refresh_policy: RefreshPolicy,
     /// Name of the interface whose IPv4/MAC are sent to the Portal gateway.
     /// Empty means automatic selection of the first active non-loopback one.
     pub interface_name: String,
@@ -50,6 +87,7 @@ impl Default for Settings {
             auth_url: format!("{DEFAULT_SERVER}web/admin/login"),
             probe_url: "http://captive.apple.com/hotspot-detect.html".into(),
             probe_enabled: true,
+            refresh_policy: RefreshPolicy::FiveSeconds,
             interface_name: String::new(),
             bypass_proxy: true,
             one_session: true,
@@ -75,12 +113,14 @@ impl Settings {
             show_sessions: self.show_sessions,
             log_enabled: self.log_enabled,
             theme_mode: self.theme_mode,
+            refresh_policy: self.refresh_policy,
         }
     }
     pub fn set_ui_preferences(&mut self, value: &UiPreferences) {
         self.show_sessions = value.show_sessions;
         self.log_enabled = value.log_enabled;
         self.theme_mode = value.theme_mode;
+        self.refresh_policy = value.refresh_policy;
     }
     pub fn normalize(&mut self) -> Result<(), String> {
         for value in [&self.server, &self.auth_url, &self.probe_url] {
@@ -170,11 +210,13 @@ mod tests {
             show_sessions: true,
             log_enabled: true,
             theme_mode: ThemeMode::Dark,
+            refresh_policy: RefreshPolicy::Random,
         });
         assert_eq!(settings.username, "test-user");
         assert!(settings.remember_account);
         assert!(!settings.one_session);
         assert!(settings.show_sessions && settings.log_enabled);
+        assert_eq!(settings.refresh_policy, RefreshPolicy::Random);
         let decoded: Settings =
             serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert!(matches!(decoded.theme_mode, ThemeMode::Dark));

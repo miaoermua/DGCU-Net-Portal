@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "GPL-3.0-only"
-version = "0.2.1"
+version = "0.2.5"
 
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -22,3 +22,10 @@ webbrowser = "1"
 dom_query = "0.27"
 regex = "1"
 network-interface = "2.0.5"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

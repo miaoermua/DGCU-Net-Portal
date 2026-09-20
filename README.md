@@ -80,8 +80,9 @@ GUI 使用 Tauri 2 + Vue 3 + [miuix-vue](https://github.com/YuKongA/miuix-vue)�
 
 ## 界面、日志与程序图标
 
-- 主界面不显示顶部名称栏；上下线合并为一个随状态切换的按钮，认证网站以旁边的图标打开。
+- 主界面不显示顶部名称栏；上下线合并为一个随状态切换的按钮，认证后台以旁边的图标打开。
 - “管理会话”默认隐藏，可在设置中打开。隐藏时如需选择下线目标，会弹出选择框，不自动选择其他设备。
+- 后台会话/流量刷新提供 1 秒、2 秒、5 秒、随机 1-10 秒、1 分钟和禁止刷新六档；设置变更会写入诊断日志，禁止刷新只关闭后台轮询，手动刷新仍可使用。
 - 显示模式位于设置内，默认跟随系统；管理会话、显示模式和日志开关可以在已登录时即时保存。
 - “仅一次会话”开启时隐藏“记住账号密码”，并在 Rust 中继续禁止保存凭据及后台自动认证。
 - 日志默认关闭。打开后出现“查看 DGCU CLI 日志”入口，以弹窗展示当前 GUI 进程的共享 Rust 认证核心事件；不会额外启动 CLI，不读取其他进程的输出。CLI 可用 `--log` 将同源事件输出到 stderr。
@@ -101,7 +102,7 @@ python3 scripts/package_macos.py --output target/packages
 
 仓库：[miaoermua/dgcu-portal](https://github.com/miaoermua/dgcu-portal)。关于页只保留程序图标、版本与仓库入口。
 
-### 0.2.1 探测与 Portal 模板兼容性修正
+### 0.2.5 Portal 模板、刷新策略与后台入口
 
 - 首选 HTTP 探测失败后，有限尝试 Windows / Android 常用探测地址，每个地址整个跳转链最长 8 秒。
 - 支持 HTTP Location、Refresh 响应头、HTML meta refresh，以及字面量 `location.href` / `location.replace` / `location.assign`，不会执行远端脚本。

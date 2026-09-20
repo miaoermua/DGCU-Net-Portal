@@ -12,6 +12,17 @@
   -webkit-font-smoothing: antialiased;
   color-scheme: light;
 }
+html {
+  overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
+}
+
+@supports not (scrollbar-gutter: stable) {
+  html {
+    overflow-y: scroll;
+  }
+}
+
 :root.m-theme-dark { color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 360px; }

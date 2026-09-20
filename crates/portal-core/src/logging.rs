@@ -1,5 +1,6 @@
 //! Optional shared CLI/GUI diagnostics. Only typed events enter this buffer:
 //! no request bodies, URLs, credentials, session IDs or raw server errors.
+use crate::settings::RefreshPolicy;
 use serde::Serialize;
 use std::{
     collections::VecDeque,
@@ -43,8 +44,24 @@ pub enum Event {
     Timeout,
     SessionMissing,
     DisconnectPending,
+    RefreshOneSecond,
+    RefreshTwoSeconds,
+    RefreshFiveSeconds,
+    RefreshRandom,
+    RefreshOneMinute,
+    RefreshDisabled,
 }
 impl Event {
+    pub fn refresh_policy(policy: RefreshPolicy) -> Self {
+        match policy {
+            RefreshPolicy::OneSecond => Self::RefreshOneSecond,
+            RefreshPolicy::TwoSeconds => Self::RefreshTwoSeconds,
+            RefreshPolicy::FiveSeconds => Self::RefreshFiveSeconds,
+            RefreshPolicy::Random => Self::RefreshRandom,
+            RefreshPolicy::OneMinute => Self::RefreshOneMinute,
+            RefreshPolicy::Disabled => Self::RefreshDisabled,
+        }
+    }
     fn detail(self) -> (&'static str, &'static str, &'static str) {
         match self {
             Self::Enabled => (
@@ -124,6 +141,12 @@ impl Event {
                 "session.pending",
                 "已提交下线请求，远端状态尚未确认",
             ),
+            Self::RefreshOneSecond => ("info", "refresh.policy", "后台刷新策略：每 1 秒"),
+            Self::RefreshTwoSeconds => ("info", "refresh.policy", "后台刷新策略：每 2 秒"),
+            Self::RefreshFiveSeconds => ("info", "refresh.policy", "后台刷新策略：每 5 秒"),
+            Self::RefreshRandom => ("info", "refresh.policy", "后台刷新策略：随机 1-10 秒"),
+            Self::RefreshOneMinute => ("info", "refresh.policy", "后台刷新策略：每 1 分钟"),
+            Self::RefreshDisabled => ("info", "refresh.policy", "后台刷新策略：禁止刷新"),
         }
     }
 }
