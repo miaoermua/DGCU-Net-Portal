@@ -57,6 +57,22 @@ impl CmccContext {
         context.local_mac = Some(network.mac.clone());
         Ok(context)
     }
+
+    /// Build the DGCU CMCC Portal entry when the captive-network probe cannot
+    /// return a redirect. The gateway accepts the standard context as query
+    /// values, so this path still avoids reading any other interface.
+    pub fn from_server_context(server: &str, network: &NetworkContext) -> Result<Self, AppError> {
+        let base = validate_url(server)?;
+        let entry = base.join("libs/portal/unify/portal.php/login/main/nasid/4/")?;
+        let mut context = Self::with_network_context(entry.as_str(), network)?;
+        let mut url = Url::parse(&context.portal_url)?;
+        url.query_pairs_mut()
+            .append_pair("wlanacname", "route1")
+            .append_pair("vlan", "0.0")
+            .append_pair("iarmdst", "captive.apple.com/hotspot-detect.html");
+        context.portal_url = url.to_string();
+        Ok(context)
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -134,6 +150,14 @@ fn success_page(html: &str) -> bool {
 }
 
 impl PortalClient {
+    /// Check that a Portal entry returns the expected login form without
+    /// submitting credentials. Used before the optional public probe fallback.
+    pub async fn portal_form_available(&self, context: &CmccContext) -> Result<(), AppError> {
+        let entry = self.trusted_url(&context.portal_url)?;
+        let html = Self::text(self.client.get(entry).send().await?).await?;
+        read_form(&html, "usrname").map(|_| ())
+    }
+
     pub async fn cmcc_login(
         &self,
         context: &CmccContext,
@@ -385,6 +409,32 @@ mod tests {
             query.get("iarmdst").map(String::as_str),
             Some("captive.apple.com/hotspot-detect.html")
         );
+    }
+
+    #[test]
+    fn builds_dgcu_template_entry_without_probe_redirect() {
+        let network = NetworkContext {
+            interface_name: "en0".into(),
+            ipv4: "10.90.211.78".into(),
+            mac: "4e:46:d4:4d:cc:40".into(),
+        };
+        let context =
+            CmccContext::from_server_context("http://172.18.100.65/lfradius/", &network).unwrap();
+        let url = Url::parse(&context.portal_url).unwrap();
+        assert!(url.path().ends_with("/login/main/nasid/4/"));
+        let query = url
+            .query_pairs()
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            query.get("wlanuserip").map(|v| v.as_ref()),
+            Some("10.90.211.78")
+        );
+        assert_eq!(
+            query.get("clientmac").map(|v| v.as_ref()),
+            Some("4e:46:d4:4d:cc:40")
+        );
+        assert_eq!(query.get("paip").map(|v| v.as_ref()), Some(PORTAL_PAIP));
+        assert_eq!(query.get("wlanacname").map(|v| v.as_ref()), Some("route1"));
     }
 
     #[tokio::test]

@@ -21,6 +21,9 @@ struct Cli {
     /// 输出脱敏的共享认证核心日志到 stderr（默认关闭，不写入文件）
     #[arg(long, global = true)]
     log: bool,
+    /// 模板 Portal 失败后禁用公共 HTTP 探测回退
+    #[arg(long, global = true)]
+    no_probe: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -84,6 +87,7 @@ async fn run(logs: portal_core::logging::LogBuffer) -> Result<(), Box<dyn std::e
     let settings = Settings {
         server: cli.server,
         interface_name: cli.interface.unwrap_or_default(),
+        probe_enabled: !cli.no_probe,
         bypass_proxy: !cli.use_proxy,
         log_enabled: cli.log,
         ..Default::default()

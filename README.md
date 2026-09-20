@@ -2,6 +2,19 @@
 
 适用于 DGCU 的 LFRadius Portal 客户端，包含可复用 Rust 核心、CLI 和桌面 GUI。
 
+## todo
+
+- [ ] Windows 行为测试
+- [ ] Linux 行为测试
+- [ ] 优化代码结构，考虑分离
+- [ ] 优化连接体验
+- [ ] 刷新速度设置
+- [ ] 兼容同方案友校
+
+## 测试
+
+MacOS 服务写入正常，托盘正常，认证过程正常。
+
 ## 运行
 
 ```bash
@@ -11,8 +24,11 @@ cargo run -p portal-cli -- --server http://<认证服务器>/lfradius/ discover
 # 列出本机网卡、当前 IPv4 和 MAC
 cargo run -p portal-cli -- interfaces
 
-# CMCC Portal 上线；密码使用隐藏输入
+# CMCC Portal 上线；默认先按 DGCU 模板提交，失败后才进行公共 HTTP 探测
 cargo run -p portal-cli -- --server http://<认证服务器>/lfradius/ --username <账号> connect
+
+# 禁用模板失败后的公共 HTTP 探测回退
+cargo run -p portal-cli -- --server http://<认证服务器>/lfradius/ --no-probe --username <账号> connect
 
 # 指定网卡上线；省略 --interface 时自动选择活动网卡
 cargo run -p portal-cli -- --server http://<认证服务器>/lfradius/ --interface en0 --username <账号> connect
@@ -40,7 +56,7 @@ cargo run -p portal-gui
 pnpm --dir crates/portal-gui/frontend dev
 ```
 
-GUI 与 CLI 共用 `portal-core`。CMCC Portal 1.0/PAP 的普通登录和代拨分支已经接入：客户端解析登录表单，透传服务端生成的隐藏载荷，处理成功页的 200/302，并在代拨页每 3 秒轮询 `__coa_search`，最长等待 20 秒。认证时只读取用户选择网卡的当前 IPv4 和 MAC，不读取网卡流量；在线流量只读取 LFRadius `onlinelog` 返回的累计字节。Portal URL 的 `wlanuserip`、`clientip`、`clientmac` 会用本机网卡值更新，`paip` 固定为 `172.18.100.65`；表单中的 `basip` 仍以 Portal 服务端返回值为准。`--demo` 只使用虚构数据。实现文档位于 `docs/`，这些本地分析文档已加入 `.gitignore`。
+GUI 与 CLI 共用 `portal-core`。CMCC Portal 1.0/PAP 的普通登录和代拨分支已经接入：客户端默认按照 DGCU CMCC 模板构造 `main/nasid/4/` 入口，读取登录表单后透传服务端生成的隐藏载荷，处理成功页的 200/302，并在代拨页每 3 秒轮询 `__coa_search`，最长等待 20 秒。模板入口不可用时，默认再尝试公共 HTTP 探测；GUI 的“认证失败后自动探测”和 CLI 的 `--no-probe` 可以控制该回退。认证时只读取用户选择网卡的当前 IPv4 和 MAC，不读取网卡流量；在线流量只读取 LFRadius `onlinelog` 返回的累计字节。Portal URL 的 `wlanuserip`、`clientip`、`clientmac` 会用本机网卡值更新，`paip` 固定为 `172.18.100.65`；表单中的 `basip` 仍以 Portal 服务端返回值为准。`--demo` 只使用虚构数据。实现文档位于 `docs/`，这些本地分析文档已加入 `.gitignore`。
 
 ### 仅一次会话
 
@@ -85,7 +101,7 @@ python3 scripts/package_macos.py --output target/packages
 
 仓库：[miaoermua/dgcu-portal](https://github.com/miaoermua/dgcu-portal)。关于页只保留程序图标、版本与仓库入口。
 
-### 0.1.2 探测兼容性修正
+### 0.2.1 探测与 Portal 模板兼容性修正
 
 - 首选 HTTP 探测失败后，有限尝试 Windows / Android 常用探测地址，每个地址整个跳转链最长 8 秒。
 - 支持 HTTP Location、Refresh 响应头、HTML meta refresh，以及字面量 `location.href` / `location.replace` / `location.assign`，不会执行远端脚本。

@@ -27,6 +27,8 @@ pub struct Settings {
     pub server: String,
     pub auth_url: String,
     pub probe_url: String,
+    /// Try public captive-check discovery only after the DGCU template fails.
+    pub probe_enabled: bool,
     /// Name of the interface whose IPv4/MAC are sent to the Portal gateway.
     /// Empty means automatic selection of the first active non-loopback one.
     pub interface_name: String,
@@ -47,6 +49,7 @@ impl Default for Settings {
             server: DEFAULT_SERVER.into(),
             auth_url: format!("{DEFAULT_SERVER}web/admin/login"),
             probe_url: "http://captive.apple.com/hotspot-detect.html".into(),
+            probe_enabled: true,
             interface_name: String::new(),
             bypass_proxy: true,
             one_session: true,

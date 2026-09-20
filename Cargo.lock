@@ -3010,7 +3010,7 @@ dependencies = [
 
 [[package]]
 name = "portal-cli"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "clap",
  "portal-core",
@@ -3022,7 +3022,7 @@ dependencies = [
 
 [[package]]
 name = "portal-core"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "directories",
  "dom_query",
@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "portal-gui"
-version = "0.1.2"
+version = "0.2.1"
 dependencies = [
  "directories",
  "portal-core",

@@ -174,15 +174,33 @@ impl Controller {
         let outcome = if backend_only {
             None
         } else {
-            progress(Phase::Discovering);
             let ctx = if portal_url.is_empty() {
-                portal.discover(&self.settings.probe_url).await
+                progress(Phase::ReadingForm);
+                // The DGCU gateway accepts the standard CMCC entry with the
+                // current interface context. This avoids depending on public
+                // captive-check hosts, which often time out before login.
+                let template = CmccContext::from_server_context(
+                    &self.settings.server,
+                    network.as_ref().unwrap(),
+                )?;
+                if self.settings.probe_enabled {
+                    match portal.portal_form_available(&template).await {
+                        Ok(()) => Ok(template),
+                        Err(_) => {
+                            progress(Phase::Discovering);
+                            portal.discover(&self.settings.probe_url).await
+                        }
+                    }
+                } else {
+                    Ok(template)
+                }
             } else {
-                CmccContext::from_portal_url(portal_url)
+                progress(Phase::ReadingForm);
+                CmccContext::from_portal_url(portal_url).and_then(|ctx| {
+                    CmccContext::with_network_context(&ctx.portal_url, network.as_ref().unwrap())
+                })
             };
             let ctx = ctx.map_err(|e| self.fail(e))?;
-            let ctx = CmccContext::with_network_context(&ctx.portal_url, network.as_ref().unwrap())
-                .map_err(|e| self.fail(e))?;
             Some(
                 portal
                     .cmcc_login_progress(&ctx, &credential.username, &credential.password, progress)

@@ -2,6 +2,7 @@ export interface Settings {
   server: string
   auth_url: string
   probe_url: string
+  probe_enabled: boolean
   interface_name: string
   bypass_proxy: boolean
   one_session: boolean
