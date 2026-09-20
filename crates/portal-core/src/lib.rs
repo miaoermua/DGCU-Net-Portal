@@ -1,6 +1,9 @@
 //! LFRadius API clients. Portal login and self-service login are separate sessions.
 pub mod cmcc;
 pub mod controller;
+mod discovery;
+pub mod logging;
+pub mod network;
 pub mod settings;
 pub mod traffic;
 pub use cmcc::{CmccContext, PortalLoginOutcome};
@@ -19,6 +22,18 @@ pub enum AppError {
     InvalidUrl,
     #[error("请求失败，请检查网络、服务器地址和代理")]
     Network,
+    #[error("网卡配置错误：{0}")]
+    NetworkInterface(String),
+    #[error("认证页探测请求超时。后台地址可达不代表外部探测站点可达；可粘贴浏览器弹出的完整 Portal URL 后再试")]
+    DiscoveryTimeout,
+    #[error("探测未发现校园网认证页：可能已经联网或探测域名被放行。可使用“仅登录后台”管理会话，或粘贴当前 Portal URL")]
+    DiscoveryNotFound,
+    #[error(
+        "发现了认证跳转，但地址不属于配置的认证服务器；请检查服务器地址，不会向该地址发送账号密码"
+    )]
+    DiscoveryUntrusted,
+    #[error("认证页发生循环跳转或跳转次数过多；请使用浏览器获取当前完整 Portal URL")]
+    DiscoveryLoop,
     #[error("HTTP 状态异常：{0}")]
     Http(u16),
     #[error("后台拒绝请求或登录状态已过期")]
@@ -124,12 +139,20 @@ pub fn validate_url(value: &str) -> Result<Url, AppError> {
 pub struct PortalClient {
     client: Client,
     base_url: Url,
+    logs: logging::LogBuffer,
 }
 impl PortalClient {
     pub fn new(base: &str) -> Result<Self, AppError> {
         Self::with_options(base, true)
     }
     pub fn with_options(base: &str, bypass: bool) -> Result<Self, AppError> {
+        Self::with_options_and_local(base, bypass, None)
+    }
+    pub fn with_options_and_local(
+        base: &str,
+        bypass: bool,
+        local_address: Option<IpAddr>,
+    ) -> Result<Self, AppError> {
         let mut base_url = validate_url(base)?;
         if base_url.query().is_some() || base_url.fragment().is_some() {
             return Err(AppError::InvalidUrl);
@@ -144,10 +167,18 @@ impl PortalClient {
         if bypass {
             builder = builder.no_proxy();
         }
+        if let Some(address) = local_address {
+            builder = builder.local_address(address);
+        }
         Ok(Self {
             client: builder.build()?,
             base_url,
+            logs: logging::LogBuffer::default(),
         })
+    }
+    pub fn with_logs(mut self, logs: logging::LogBuffer) -> Self {
+        self.logs = logs;
+        self
     }
     pub fn base_url(&self) -> &Url {
         &self.base_url
@@ -196,6 +227,7 @@ impl PortalClient {
         serde_json::from_value(env.d).map_err(|_| AppError::InvalidResponse("数据字段"))
     }
     pub async fn login(&self, username: &str, password: &str) -> Result<(), AppError> {
+        self.logs.record(logging::Event::BackendLogin);
         Self::envelope(
             self.client
                 .post(self.endpoint("home.php?c=user&a=user_login")?)
@@ -204,6 +236,7 @@ impl PortalClient {
                 .await?,
         )
         .await?;
+        self.logs.record(logging::Event::BackendAccepted);
         Ok(())
     }
     pub async fn sessions(&self) -> Result<Vec<OnlineSession>, AppError> {
@@ -219,6 +252,7 @@ impl PortalClient {
             }
             rows.extend(log.data);
             if rows.len() as u64 >= log.total {
+                self.logs.record(logging::Event::ReadSessions);
                 return Ok(rows);
             }
         }
@@ -233,6 +267,7 @@ impl PortalClient {
         self.disconnect_and_confirm(s).await
     }
     pub async fn disconnect_and_confirm(&self, s: &OnlineSession) -> Result<(), AppError> {
+        self.logs.record(logging::Event::Disconnect);
         let form = [
             ("radacctid", s.radacctid.clone()),
             ("username", s.username.clone()),
@@ -263,6 +298,7 @@ impl PortalClient {
                 .iter()
                 .any(|r| r.radacctid == s.radacctid)
             {
+                self.logs.record(logging::Event::Disconnected);
                 return Ok(());
             }
         }

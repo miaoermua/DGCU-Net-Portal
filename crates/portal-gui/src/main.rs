@@ -3,7 +3,8 @@ mod service;
 use portal_core::{
     cmcc::Phase,
     controller::{Controller, Snapshot},
-    settings::{self, Settings},
+    logging::{LogBuffer, LogEntry},
+    settings::{self, Settings, UiPreferences},
     validate_url, Credential,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -13,11 +14,14 @@ use zeroize::Zeroizing;
 struct AppState {
     inner: Mutex<Controller>,
     demo: bool,
+    logs: LogBuffer,
 }
 #[tauri::command]
 async fn initial(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let c = state.inner.lock().await;
-    Ok(serde_json::json!({"settings":c.settings,"demo":state.demo}))
+    Ok(
+        serde_json::json!({"settings":c.settings,"demo":state.demo,"version":env!("CARGO_PKG_VERSION")}),
+    )
 }
 #[tauri::command]
 async fn connect(
@@ -87,6 +91,35 @@ async fn forget(state: State<'_, AppState>) -> Result<Snapshot, String> {
     Ok(c.snapshot())
 }
 #[tauri::command]
+fn read_logs(state: State<'_, AppState>) -> Vec<LogEntry> {
+    state.logs.entries()
+}
+#[tauri::command]
+fn clear_logs(state: State<'_, AppState>) {
+    state.logs.clear();
+}
+#[tauri::command]
+fn list_interfaces() -> Result<Vec<portal_core::network::InterfaceInfo>, String> {
+    portal_core::network::list()
+}
+// UI preferences remain adjustable while an account is signed in, without touching credentials.
+#[tauri::command]
+async fn save_preferences(
+    state: State<'_, AppState>,
+    value: UiPreferences,
+) -> Result<UiPreferences, String> {
+    if state.demo {
+        return Err("Demo 不写入系统设置".into());
+    }
+    let mut c = state.inner.lock().await;
+    let mut next = c.settings.clone();
+    next.set_ui_preferences(&value);
+    next.save()?;
+    c.settings = next;
+    state.logs.set_enabled(value.log_enabled);
+    Ok(value)
+}
+#[tauri::command]
 async fn save_settings(
     state: State<'_, AppState>,
     mut value: Settings,
@@ -117,6 +150,7 @@ async fn save_settings(
         }
     }
     value.save()?;
+    state.logs.set_enabled(value.log_enabled);
     c.settings = value.clone();
     Ok(value)
 }
@@ -126,6 +160,12 @@ fn open_auth_site(url: String) -> Result<(), String> {
     webbrowser::open(url.as_str())
         .map(|_| ())
         .map_err(|_| "无法打开系统浏览器".into())
+}
+#[tauri::command]
+fn open_repository() -> Result<(), String> {
+    webbrowser::open("https://github.com/miaoermua/dgcu-portal")
+        .map(|_| ())
+        .map_err(|_| "无法打开 GitHub 仓库".into())
 }
 #[tauri::command]
 async fn exit_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
@@ -150,18 +190,25 @@ fn show(app: &AppHandle) {
     }
 }
 fn main() {
-    let demo = std::env::args().any(|v| v == "--demo") || std::env::current_exe().ok().and_then(|p|p.file_name().map(|v|v=="dgcu-portal-demo")).unwrap_or(false);
+    let demo = std::env::args().any(|v| v == "--demo")
+        || std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|v| v == "dgcu-portal-demo"))
+            .unwrap_or(false);
     let background = std::env::args().any(|v| v == "--background");
     let settings = if demo {
         Settings::default()
     } else {
         Settings::load()
     };
+    let logs = LogBuffer::default();
+    logs.set_enabled(settings.log_enabled);
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
         .manage(AppState {
-            inner: Mutex::new(Controller::new(settings)),
+            inner: Mutex::new(Controller::with_logs(settings, logs.clone())),
             demo,
+            logs,
         })
         .setup(move |app| {
             use tauri::{
@@ -171,8 +218,17 @@ fn main() {
             let show_item = MenuItem::with_id(app, "show", "打开主窗口", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            #[cfg(target_os = "macos")]
+            let tray_icon = tauri::image::Image::new_owned(
+                include_bytes!("../icons/tray-template.rgba").to_vec(),
+                32,
+                32,
+            );
+            #[cfg(not(target_os = "macos"))]
+            let tray_icon = app.default_window_icon().unwrap().clone();
             TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icon)
+                .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("DGCU Portal")
                 .menu(&menu)
                 .on_menu_event(|app, event| {
@@ -242,8 +298,13 @@ fn main() {
             select_session,
             disconnect,
             forget,
+            read_logs,
+            clear_logs,
+            list_interfaces,
+            save_preferences,
             save_settings,
             open_auth_site,
+            open_repository,
             exit_app
         ])
         .run(tauri::generate_context!())

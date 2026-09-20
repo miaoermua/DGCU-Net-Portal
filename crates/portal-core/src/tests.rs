@@ -20,10 +20,10 @@ pub(crate) fn row(id: &str, time: u64, up: u64, down: u64) -> OnlineSession {
         acctoutputoctets: down,
     }
 }
-struct Mock {
-    base: String,
+pub(crate) struct Mock {
+    pub(crate) base: String,
     stop: Arc<AtomicBool>,
-    requests: Arc<Mutex<Vec<String>>>,
+    pub(crate) requests: Arc<Mutex<Vec<String>>>,
     handle: Option<thread::JoinHandle<()>>,
 }
 impl Drop for Mock {
@@ -35,7 +35,7 @@ impl Drop for Mock {
     }
 }
 impl Mock {
-    fn new(mode: &'static str) -> Self {
+    pub(crate) fn new(mode: &'static str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -93,7 +93,39 @@ impl Mock {
                 let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
                 let mut status = 200;
                 let mut extra = String::new();
-                let reply = if path.contains("main/nasid/") {
+                let reply = if mode.starts_with("discovery") && path == "/probe" {
+                    let portal=format!("{base2}libs/portal/unify/portal.php/login/main/nasid/4/?clientmac=synthetic-secret&clientip=192.0.2.7");
+                    match mode {
+                        "discovery-http" => {
+                            status = 302;
+                            extra = format!("Location: {portal}\r\n");
+                            String::new()
+                        }
+                        "discovery-js" => {
+                            format!("<script>window.location.href='{portal}';</script>")
+                        }
+                        "discovery-meta" => {
+                            format!("<meta http-equiv='refresh' content='0; URL={portal}'>")
+                        }
+                        "discovery-loop" => {
+                            status = 302;
+                            extra = "Location: /probe\r\n".into();
+                            String::new()
+                        }
+                        "discovery-foreign" => {
+                            status = 302;
+                            extra="Location: http://untrusted.test/lfradius/libs/portal/unify/portal.php/login/main/nasid/4/\r\n".into();
+                            String::new()
+                        }
+                        _ => "<html>Success</html>".into(),
+                    }
+                } else if path == "/backup" {
+                    status = 302;
+                    extra = format!(
+                        "Location: {base2}libs/portal/unify/portal.php/login/main/nasid/4/\r\n"
+                    );
+                    String::new()
+                } else if path.contains("main/nasid/") {
                     format!("<form method='post' action='{base2}libs/portal/unify/portal.php/login/cmcc_login/'><input name='usrname'><input name='passwd'><input name='nasid' value='4'><input name='usrmac' value='02:00:00:00:00:01'><input name='usrip' value='192.0.2.2'><input name='basip' value='192.0.2.10'><input name='portal_version' value='1'><input name='portal_papchap' value='pap'><input name='success' value='{base2}libs/portal/unify/portal.php/login/success/'><input name='fail' value='{base2}libs/portal/unify/portal.php/login/fail/'></form>")
                 } else if path.ends_with("cmcc_login/") && body.starts_with("cmcc_login_value=") {
                     "<script>xhr.send(\"l=b3BhcXVl+/==\");</script>".into()
@@ -144,7 +176,7 @@ impl Mock {
             handle: Some(handle),
         }
     }
-    fn context(&self) -> CmccContext {
+    pub(crate) fn context(&self) -> CmccContext {
         CmccContext::from_portal_url(&format!(
             "{}libs/portal/unify/portal.php/login/main/nasid/4/?paip=192.0.2.99",
             self.base
@@ -231,10 +263,22 @@ async fn dial_wait_has_deadline() {
 #[tokio::test]
 async fn backend_cookie_survives_across_commands() {
     let mock = Mock::new("direct");
-    let client = PortalClient::new(&mock.base).unwrap();
+    let logs = crate::logging::LogBuffer::default();
+    logs.set_enabled(true);
+    let client = PortalClient::new(&mock.base)
+        .unwrap()
+        .with_logs(logs.clone());
     assert!(client.sessions().await.is_err());
     client.login("test-user", "test-password").await.unwrap();
     assert!(client.clone().sessions().await.unwrap().is_empty());
+    assert!(logs
+        .entries()
+        .iter()
+        .any(|entry| entry.code == "backend.accepted"));
+    let text = serde_json::to_string(&logs.entries()).unwrap();
+    assert!(!text.contains("test-password"));
+    assert!(!text.contains("test-user"));
+    assert!(!text.contains("synthetic"));
 }
 #[test]
 fn counters_use_accounting_seconds_not_poll_seconds() {

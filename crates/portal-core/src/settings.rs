@@ -4,12 +4,32 @@ use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 use zeroize::Zeroizing;
 
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiPreferences {
+    pub show_sessions: bool,
+    pub log_enabled: bool,
+    pub theme_mode: ThemeMode,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub server: String,
     pub auth_url: String,
     pub probe_url: String,
+    /// Name of the interface whose IPv4/MAC are sent to the Portal gateway.
+    /// Empty means automatic selection of the first active non-loopback one.
+    pub interface_name: String,
     pub bypass_proxy: bool,
     pub one_session: bool,
     pub auto_redial: bool,
@@ -17,6 +37,9 @@ pub struct Settings {
     pub service_enabled: bool,
     pub remember_account: bool,
     pub username: String,
+    pub show_sessions: bool,
+    pub log_enabled: bool,
+    pub theme_mode: ThemeMode,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -24,6 +47,7 @@ impl Default for Settings {
             server: DEFAULT_SERVER.into(),
             auth_url: format!("{DEFAULT_SERVER}web/admin/login"),
             probe_url: "http://captive.apple.com/hotspot-detect.html".into(),
+            interface_name: String::new(),
             bypass_proxy: true,
             one_session: true,
             auto_redial: false,
@@ -31,6 +55,9 @@ impl Default for Settings {
             service_enabled: false,
             remember_account: false,
             username: String::new(),
+            show_sessions: false,
+            log_enabled: false,
+            theme_mode: ThemeMode::System,
         }
     }
 }
@@ -40,6 +67,18 @@ pub fn config_path() -> Result<PathBuf, String> {
         .ok_or("无法定位用户配置目录".into())
 }
 impl Settings {
+    pub fn ui_preferences(&self) -> UiPreferences {
+        UiPreferences {
+            show_sessions: self.show_sessions,
+            log_enabled: self.log_enabled,
+            theme_mode: self.theme_mode,
+        }
+    }
+    pub fn set_ui_preferences(&mut self, value: &UiPreferences) {
+        self.show_sessions = value.show_sessions;
+        self.log_enabled = value.log_enabled;
+        self.theme_mode = value.theme_mode;
+    }
     pub fn normalize(&mut self) -> Result<(), String> {
         for value in [&self.server, &self.auth_url, &self.probe_url] {
             validate_url(value).map_err(|e| e.to_string())?;
@@ -102,5 +141,39 @@ pub fn forget_password() -> Result<(), String> {
     match entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(_) => Err("无法删除系统凭据；请在系统凭据库中手动移除".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn old_settings_default_to_hidden_management_and_system_theme() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"server":"http://example.test/lfradius/"}"#).unwrap();
+        assert!(!settings.show_sessions);
+        assert!(!settings.log_enabled);
+        assert!(matches!(settings.theme_mode, ThemeMode::System));
+    }
+    #[test]
+    fn changing_display_preferences_does_not_change_authentication_options() {
+        let mut settings = Settings {
+            username: "test-user".into(),
+            one_session: false,
+            remember_account: true,
+            ..Default::default()
+        };
+        settings.set_ui_preferences(&UiPreferences {
+            show_sessions: true,
+            log_enabled: true,
+            theme_mode: ThemeMode::Dark,
+        });
+        assert_eq!(settings.username, "test-user");
+        assert!(settings.remember_account);
+        assert!(!settings.one_session);
+        assert!(settings.show_sessions && settings.log_enabled);
+        let decoded: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert!(matches!(decoded.theme_mode, ThemeMode::Dark));
     }
 }

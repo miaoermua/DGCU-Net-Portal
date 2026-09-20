@@ -2451,6 +2451,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "network-interface"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ddcb8865ad3d9950f22f42ffa0ef0aecbfbf191867b3122413602b0a360b2a6"
+dependencies = [
+ "cc",
+ "libc",
+ "thiserror 2.0.20",
+ "winapi",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2998,7 +3010,7 @@ dependencies = [
 
 [[package]]
 name = "portal-cli"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "clap",
  "portal-core",
@@ -3010,11 +3022,12 @@ dependencies = [
 
 [[package]]
 name = "portal-core"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "directories",
  "dom_query",
  "keyring",
+ "network-interface",
  "regex",
  "reqwest 0.12.28",
  "serde",
@@ -3028,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "portal-gui"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "directories",
  "portal-core",

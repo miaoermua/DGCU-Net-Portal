@@ -1,4 +1,4 @@
-use crate::{validate_url, AppError, PortalClient};
+use crate::{network::NetworkContext, validate_url, AppError, PortalClient};
 use dom_query::Document;
 use serde::Serialize;
 use std::{collections::BTreeMap, time::Duration};
@@ -7,10 +7,14 @@ use url::Url;
 use zeroize::Zeroizing;
 
 const LOGIN: &str = "libs/portal/unify/portal.php/login/";
+/// The LFRadius Portal backend address used as the standard `paip` value.
+pub const PORTAL_PAIP: &str = "172.18.100.65";
 
 /// Contains a trusted entry URL, never assumes `paip` equals the hidden `basip`.
 pub struct CmccContext {
     pub portal_url: String,
+    local_ipv4: Option<String>,
+    local_mac: Option<String>,
 }
 impl CmccContext {
     pub fn from_portal_url(value: &str) -> Result<Self, AppError> {
@@ -20,7 +24,38 @@ impl CmccContext {
         }
         Ok(Self {
             portal_url: u.to_string(),
+            local_ipv4: None,
+            local_mac: None,
         })
+    }
+
+    /// Apply the selected local interface to the gateway context. The gateway
+    /// supplies the authoritative hidden `basip`; the client only rewrites the
+    /// standard Portal query values and the fixed Portal server address (`paip`).
+    pub fn with_network_context(value: &str, network: &NetworkContext) -> Result<Self, AppError> {
+        let mut portal = validate_url(value)?;
+        let mut pairs = portal.query_pairs().into_owned().collect::<Vec<_>>();
+        fn set(pairs: &mut Vec<(String, String)>, key: &str, value: &str) {
+            pairs.retain(|(name, _)| name != key);
+            pairs.push((key.to_owned(), value.to_owned()));
+        }
+        set(&mut pairs, "wlanuserip", &network.ipv4);
+        set(&mut pairs, "clientip", &network.ipv4);
+        set(&mut pairs, "clientmac", &network.mac);
+        set(&mut pairs, "paip", PORTAL_PAIP);
+        portal.set_query(None);
+        {
+            let mut query = portal.query_pairs_mut();
+            query.extend_pairs(
+                pairs
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str())),
+            );
+        }
+        let mut context = Self::from_portal_url(portal.as_str())?;
+        context.local_ipv4 = Some(network.ipv4.clone());
+        context.local_mac = Some(network.mac.clone());
+        Ok(context)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -99,33 +134,6 @@ fn success_page(html: &str) -> bool {
 }
 
 impl PortalClient {
-    /// HTTP-only discovery. Follows a bounded redirect chain until the configured origin's
-    /// Portal URL is found. No interface enumeration or NIC counters.
-    pub async fn discover(&self, probe_url: &str) -> Result<CmccContext, AppError> {
-        let mut current = validate_url(probe_url)?;
-        for _ in 0..6 {
-            if current.origin() == self.base_url().origin()
-                && current.path().contains("/portal.php/login/main/nasid/")
-            {
-                self.trusted_url(current.as_str())?;
-                return CmccContext::from_portal_url(current.as_str());
-            }
-            let response = self.client.get(current.clone()).send().await?;
-            if response.status().is_redirection() {
-                let location = response
-                    .headers()
-                    .get("location")
-                    .and_then(|s| s.to_str().ok())
-                    .ok_or(AppError::Redirect)?;
-                current = validate_url(current.join(location)?.as_str())?;
-            } else {
-                return Err(AppError::InvalidResponse(
-                    "未发现 Portal 跳转，请粘贴最新认证网址",
-                ));
-            }
-        }
-        Err(AppError::Redirect)
-    }
     pub async fn cmcc_login(
         &self,
         context: &CmccContext,
@@ -143,11 +151,13 @@ impl PortalClient {
         progress: F,
     ) -> Result<PortalLoginOutcome, AppError> {
         let entry = self.trusted_url(&context.portal_url)?;
+        self.logs.record(crate::logging::Event::ReadForm);
         progress(Phase::ReadingForm);
         let html = Self::text(self.client.get(entry.clone()).send().await?).await?;
         let mut form = read_form(&html, "usrname")?;
         let submit = self.checked_action(&entry, &form.action, "cmcc_login/")?;
-        // Explicitly use server hidden values, including basip. paip is NOT its fallback.
+        // Use the selected interface for the client identity. Keep basip from the
+        // server-generated form; paip is the fixed backend address in the URL.
         for name in [
             "nasid",
             "usrmac",
@@ -162,6 +172,12 @@ impl PortalClient {
         }
         if form.fields["portal_version"] != "1" || form.fields["portal_papchap"] != "pap" {
             return Err(AppError::InvalidResponse("目前仅验证 Portal 1.0/PAP"));
+        }
+        if let Some(ipv4) = &context.local_ipv4 {
+            form.fields.insert("usrip".into(), ipv4.clone());
+        }
+        if let Some(mac) = &context.local_mac {
+            form.fields.insert("usrmac".into(), mac.clone());
         }
         for name in ["success", "fail"] {
             let callback = form
@@ -182,6 +198,7 @@ impl PortalClient {
         let fields: Vec<(String, String)> = form.fields.into_iter().collect();
         let fields = Zeroizing::new(fields);
         progress(Phase::Authenticating);
+        self.logs.record(crate::logging::Event::Submit);
         let html = Self::text(
             self.client
                 .post(submit.clone())
@@ -209,6 +226,7 @@ impl PortalClient {
         .await?;
         let result_token = poll_token(&html)?;
         progress(Phase::WaitingPortal);
+        self.logs.record(crate::logging::Event::WaitPortal);
         self.poll(
             &format!("{LOGIN}cmcc_login_result/"),
             Some(&result_token),
@@ -234,6 +252,7 @@ impl PortalClient {
                 return Err(AppError::InvalidResponse("代拨等待页"));
             }
             progress(Phase::WaitingDial);
+            self.logs.record(crate::logging::Event::WaitDial);
             self.poll(
                 &format!("{LOGIN}__coa_search/"),
                 None,
@@ -259,6 +278,7 @@ impl PortalClient {
             PortalLoginOutcome::Direct
         };
         progress(Phase::Accepted);
+        self.logs.record(crate::logging::Event::Accepted);
         Ok(outcome)
     }
     fn checked_action(&self, base: &Url, action: &str, suffix: &str) -> Result<Url, AppError> {
@@ -285,6 +305,11 @@ impl PortalClient {
                 return Err(AppError::Timeout(label));
             }
             sleep(interval).await;
+            self.logs.record(if token.is_some() {
+                crate::logging::Event::PollPortal
+            } else {
+                crate::logging::Event::PollDial
+            });
             let remaining = deadline.saturating_duration_since(Instant::now());
             let mut request = self
                 .client
@@ -323,5 +348,69 @@ mod tests {
             "YWJj+/=="
         );
         assert!(poll_token("xhr.send(variable);").is_err());
+    }
+
+    #[test]
+    fn rewrites_portal_network_context_without_touching_other_parameters() {
+        let context = NetworkContext {
+            interface_name: "en0".into(),
+            ipv4: "10.35.1.125".into(),
+            mac: "9e:5c:c7:20:84:a0".into(),
+        };
+        let value = CmccContext::with_network_context(
+            "http://172.18.100.65/lfradius/libs/portal/unify/portal.php/login/main/nasid/4/?wlanuserip=old&clientip=old&wlanacname=route1&clientmac=old&paip=172.18.100.91&vlan=0.0&iarmdst=captive.apple.com/hotspot-detect.html",
+            &context,
+        )
+        .unwrap();
+        let url = Url::parse(&value.portal_url).unwrap();
+        let query = url
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            query.get("wlanuserip").map(String::as_str),
+            Some("10.35.1.125")
+        );
+        assert_eq!(
+            query.get("clientip").map(String::as_str),
+            Some("10.35.1.125")
+        );
+        assert_eq!(
+            query.get("clientmac").map(String::as_str),
+            Some("9e:5c:c7:20:84:a0")
+        );
+        assert_eq!(query.get("paip").map(String::as_str), Some(PORTAL_PAIP));
+        assert_eq!(query.get("wlanacname").map(String::as_str), Some("route1"));
+        assert_eq!(
+            query.get("iarmdst").map(String::as_str),
+            Some("captive.apple.com/hotspot-detect.html")
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_interface_values_are_sent_to_portal_form() {
+        let mock = crate::tests::Mock::new("direct");
+        let client = PortalClient::new(&mock.base).unwrap();
+        let network = NetworkContext {
+            interface_name: "en0".into(),
+            ipv4: "192.0.2.77".into(),
+            mac: "02:11:22:33:44:55".into(),
+        };
+        let context =
+            CmccContext::with_network_context(&mock.context().portal_url, &network).unwrap();
+        client
+            .cmcc_login(&context, "test-user", "secret-placeholder")
+            .await
+            .unwrap();
+        let initial = mock
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|request| request.contains("usrname="))
+            .cloned()
+            .unwrap();
+        assert!(initial.contains("usrip=192.0.2.77"));
+        assert!(initial.contains("usrmac=02%3A11%3A22%3A33%3A44%3A55"));
     }
 }

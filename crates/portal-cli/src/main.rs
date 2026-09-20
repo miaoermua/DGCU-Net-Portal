@@ -15,6 +15,12 @@ struct Cli {
     /// 使用进程代理配置（默认直连；不改变 TUN/VPN 路由）
     #[arg(long)]
     use_proxy: bool,
+    /// 指定用于 Portal 的本机网卡名称；省略时自动选择活动网卡
+    #[arg(long, global = true)]
+    interface: Option<String>,
+    /// 输出脱敏的共享认证核心日志到 stderr（默认关闭，不写入文件）
+    #[arg(long, global = true)]
+    log: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -39,6 +45,8 @@ enum Command {
     Disconnect { session_id: String },
     /// 仅 HTTP 探测，获取 Portal URL，不读取网卡
     Discover,
+    /// 列出本机网卡及 IPv4/MAC（不执行认证）
+    Interfaces,
 }
 fn credentials(username: Option<String>) -> Result<Credential, Box<dyn std::error::Error>> {
     let username = match username {
@@ -59,24 +67,43 @@ fn credentials(username: Option<String>) -> Result<Credential, Box<dyn std::erro
 }
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    match run().await {
+    let logs = portal_core::logging::LogBuffer::default();
+    match run(logs.clone()).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
+            logs.record(portal_core::logging::Event::ResponseError);
             eprintln!("{e}");
             std::process::ExitCode::FAILURE
         }
     }
 }
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
+async fn run(logs: portal_core::logging::LogBuffer) -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    logs.stderr(cli.log);
+    logs.set_enabled(cli.log);
     let settings = Settings {
         server: cli.server,
+        interface_name: cli.interface.unwrap_or_default(),
         bypass_proxy: !cli.use_proxy,
+        log_enabled: cli.log,
         ..Default::default()
     };
     if matches!(cli.command, Command::Discover) {
-        let client = PortalClient::with_options(&settings.server, settings.bypass_proxy)?;
+        let client = PortalClient::with_options(&settings.server, settings.bypass_proxy)?
+            .with_logs(logs.clone());
         println!("{}", client.discover(&settings.probe_url).await?.portal_url);
+        return Ok(());
+    }
+    if matches!(cli.command, Command::Interfaces) {
+        for interface in portal_core::network::list()? {
+            println!(
+                "{}\tIPv4={}\tMAC={}{}",
+                interface.name,
+                interface.ipv4.unwrap_or_else(|| "-".into()),
+                interface.mac.unwrap_or_else(|| "-".into()),
+                if interface.internal { "\tinternal" } else { "" }
+            );
+        }
         return Ok(());
     }
     let credential = credentials(cli.username)?;
@@ -86,7 +113,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             one_session,
             session_id,
         } => {
-            let mut controller = Controller::new(settings);
+            let mut controller = Controller::with_logs(settings, logs.clone());
             let url = Zeroizing::new(portal_url.unwrap_or_default());
             let snapshot = controller
                 .connect(credential, &url, false, |phase| println!("状态: {phase:?}"))
@@ -130,7 +157,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         command => {
-            let client = PortalClient::with_options(&settings.server, settings.bypass_proxy)?;
+            let client = PortalClient::with_options(&settings.server, settings.bypass_proxy)?
+                .with_logs(logs.clone());
             client
                 .login(&credential.username, &credential.password)
                 .await?;

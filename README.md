@@ -5,11 +5,17 @@
 ## 运行
 
 ```bash
-# 探测 Portal（只做 HTTP 探测，不读取网卡）
+# 探测 Portal（只做 HTTP 探测，不执行认证）
 cargo run -p portal-cli -- --server http://<认证服务器>/lfradius/ discover
+
+# 列出本机网卡、当前 IPv4 和 MAC
+cargo run -p portal-cli -- interfaces
 
 # CMCC Portal 上线；密码使用隐藏输入
 cargo run -p portal-cli -- --server http://<认证服务器>/lfradius/ --username <账号> connect
+
+# 指定网卡上线；省略 --interface 时自动选择活动网卡
+cargo run -p portal-cli -- --server http://<认证服务器>/lfradius/ --interface en0 --username <账号> connect
 
 # 仅登录 LFRadius 自助后台，不等于校园网上线
 cargo run -p portal-cli -- --server http://<认证服务器>/lfradius/ --username <账号> login
@@ -34,7 +40,7 @@ cargo run -p portal-gui
 pnpm --dir crates/portal-gui/frontend dev
 ```
 
-GUI 与 CLI 共用 `portal-core`。CMCC Portal 1.0/PAP 的普通登录和代拨分支已经接入：客户端解析登录表单，透传服务端生成的隐藏载荷，处理成功页的 200/302，并在代拨页每 3 秒轮询 `__coa_search`，最长等待 20 秒。在线流量只读取 LFRadius `onlinelog` 返回的累计字节，不采集本机网卡。`--demo` 只使用虚构数据。实现文档位于 `docs/`，这些本地分析文档已加入 `.gitignore`。
+GUI 与 CLI 共用 `portal-core`。CMCC Portal 1.0/PAP 的普通登录和代拨分支已经接入：客户端解析登录表单，透传服务端生成的隐藏载荷，处理成功页的 200/302，并在代拨页每 3 秒轮询 `__coa_search`，最长等待 20 秒。认证时只读取用户选择网卡的当前 IPv4 和 MAC，不读取网卡流量；在线流量只读取 LFRadius `onlinelog` 返回的累计字节。Portal URL 的 `wlanuserip`、`clientip`、`clientmac` 会用本机网卡值更新，`paip` 固定为 `172.18.100.65`；表单中的 `basip` 仍以 Portal 服务端返回值为准。`--demo` 只使用虚构数据。实现文档位于 `docs/`，这些本地分析文档已加入 `.gitignore`。
 
 ### 仅一次会话
 
@@ -55,3 +61,34 @@ GUI 使用 Tauri 2 + Vue 3 + [miuix-vue](https://github.com/YuKongA/miuix-vue)�
 `miuix-vue@0.1.1` 的 npm 包把声明文件放在 `dist/src/index.d.ts`，但其导出声明路径指向 `dist/index.d.ts`；前端 `tsconfig.json` 仅为此增加类型路径映射，运行时仍使用原包。密码输入保留原生 `type=password`，因为该版本的 `MiuixInput` 仅支持文本类型。其余按钮、卡片、偏好开关、标签导航和消息条直接使用库组件。
 
 前端校验：`pnpm --dir crates/portal-gui/frontend test`、`pnpm --dir crates/portal-gui/frontend build`。
+
+## 界面、日志与程序图标
+
+- 主界面不显示顶部名称栏；上下线合并为一个随状态切换的按钮，认证网站以旁边的图标打开。
+- “管理会话”默认隐藏，可在设置中打开。隐藏时如需选择下线目标，会弹出选择框，不自动选择其他设备。
+- 显示模式位于设置内，默认跟随系统；管理会话、显示模式和日志开关可以在已登录时即时保存。
+- “仅一次会话”开启时隐藏“记住账号密码”，并在 Rust 中继续禁止保存凭据及后台自动认证。
+- 日志默认关闭。打开后出现“查看 DGCU CLI 日志”入口，以弹窗展示当前 GUI 进程的共享 Rust 认证核心事件；不会额外启动 CLI，不读取其他进程的输出。CLI 可用 `--log` 将同源事件输出到 stderr。
+- 日志只在内存保留最近 300 条，关闭即清空，不写日志文件；仅接受固定事件类型，不记录账号、密码、IP、MAC、URL、Cookie 或原始认证响应。
+- 程序图标来自仓库根目录的 `xiaowei.png`。`scripts/make_icon.py`（需要 Pillow）生成 PNG、Windows ICO、macOS ICNS 和 macOS 模板托盘图标，原图不改动。Demo `.app` 也包含该图标。
+
+## 构建可分发的 macOS 测试包
+
+```bash
+pnpm --dir crates/portal-gui/frontend install --frozen-lockfile
+pnpm --dir crates/portal-gui/frontend build
+cargo build --release -p portal-gui -p portal-cli --features portal-gui/custom-protocol --locked
+python3 scripts/package_macos.py --output target/packages
+```
+
+输出包含真实客户端 `.app`、`dgcu-cli`、测试说明、ZIP 和 SHA-256。页面已内嵌，运行不依赖 Node 或 Rust，也不需要本地前端服务器。程序使用本地 ad-hoc 签名；未进行 Apple Developer ID 签名、公证或 Windows/Linux 实机验证。打包脚本不会自动安装应用或启用后台服务。
+
+仓库：[miaoermua/dgcu-portal](https://github.com/miaoermua/dgcu-portal)。关于页只保留程序图标、版本与仓库入口。
+
+### 0.1.2 探测兼容性修正
+
+- 首选 HTTP 探测失败后，有限尝试 Windows / Android 常用探测地址，每个地址整个跳转链最长 8 秒。
+- 支持 HTTP Location、Refresh 响应头、HTML meta refresh，以及字面量 `location.href` / `location.replace` / `location.assign`，不会执行远端脚本。
+- 区分探测超时、没有认证跳转、服务器不匹配和跳转循环；日志仍不包含地址参数或认证载荷。
+- 已经能上网时，网关可能不再返回认证页，此时应使用“管理会话 → 仅登录后台”查看状态。客户端不会把普通 HTTP 200 直接当作认证成功。
+- 手工粘贴的完整 Portal URL 仍可直接使用，绕开公共探测站点的可达性问题。系统 TUN/VPN 路由不在本程序代理开关的控制范围内。

@@ -16,6 +16,77 @@ function desktop() {
 }
 afterEach(() => vi.useRealTimers())
 describe('Vue migration preserves privacy and IPC behavior', () => {
+  it('saving transient settings keeps typed credentials for the upcoming connection but not in persisted settings', async () => {
+    const state=createPortalState();await state.initialize()
+    state.username.value='synthetic-user';state.password.value='not-real';
+    await state.save()
+    expect(state.saved.value.username).toBe('')
+    expect(state.username.value).toBe('synthetic-user');expect(state.password.value).toBe('not-real')
+    state.dispose();expect(state.password.value).toBe('')
+  })
+  it('opens the repository through a dedicated desktop command without account data', async () => {
+    const mock=desktop(),state=createPortalState(mock.bridge);await state.initialize()
+    await state.openRepository();expect(mock.invoke).toHaveBeenLastCalledWith('open_repository')
+    state.dispose()
+  })
+  it('will not connect under a stale privacy setting before the change is saved', async()=>{
+    const mock=desktop(),state=createPortalState(mock.bridge);await state.initialize()
+    state.draft.one_session=false
+    state.username.value='synthetic';state.password.value='not-real'
+    await state.connect()
+    expect(mock.invoke).not.toHaveBeenCalledWith('connect',expect.anything())
+    expect(state.page.value).toBe(1)
+    expect(state.notice.value).toContain('保存')
+    state.dispose()
+  })
+  it('defaults to hidden management, disabled logs and system theme', async () => {
+    const state=createPortalState();await state.initialize()
+    expect(state.saved.value.show_sessions).toBe(false)
+    expect(state.saved.value.log_enabled).toBe(false)
+    expect(state.saved.value.theme_mode).toBe('system')
+    expect(state.primaryLabel.value).toBe('上线')
+    state.dispose()
+  })
+  it('primary action disconnects while online and never chooses an ambiguous session', async () => {
+    vi.useFakeTimers()
+    const state=createPortalState();await state.initialize()
+    const action=state.primaryAction();await vi.runAllTimersAsync();await action
+    expect(state.primaryLabel.value).toBe('下线')
+    state.snapshot.value.selected_id=null
+    await state.primaryAction()
+    expect(state.sessionPickerOpen.value).toBe(true)
+    expect(state.snapshot.value.selected_id).toBeNull()
+    const picking=state.selectForDisconnect('90002')
+    await vi.waitFor(()=>expect(state.confirmation.value).not.toBeNull())
+    state.answer(true);await picking
+    expect(state.primaryLabel.value).toBe('上线')
+    state.dispose()
+  })
+  it('enables logs on demand and disabling removes entries and the dialog', async () => {
+    vi.useFakeTimers()
+    const state=createPortalState();await state.initialize()
+    const first=state.connect();await vi.runAllTimersAsync();await first
+    expect(state.logEntries.value).toHaveLength(0)
+    await state.updatePreferences({log_enabled:true})
+    const second=state.connect();await vi.runAllTimersAsync();await second
+    expect(state.logEntries.value.length).toBeGreaterThan(1)
+    await state.openLogs();expect(state.logsOpen.value).toBe(true)
+    await state.updatePreferences({log_enabled:false})
+    expect(state.logsOpen.value).toBe(false)
+    expect(state.logEntries.value).toHaveLength(0)
+    state.dispose()
+  })
+  it('changes UI preferences while authenticated without sending credentials', async () => {
+    const mock=desktop(),state=createPortalState(mock.bridge);await state.initialize()
+    state.snapshot.value.authenticated=true
+    state.password.value='never-send-this'
+    mock.invoke.mockImplementationOnce(async(_command,args?:Record<string,unknown>)=>args?.value as never)
+    await state.updatePreferences({show_sessions:true,theme_mode:'dark'})
+    expect(mock.invoke).toHaveBeenLastCalledWith('save_preferences',{value:{show_sessions:true,theme_mode:'dark',log_enabled:false}})
+    expect(state.saved.value.show_sessions).toBe(true)
+    expect(state.password.value).toBe('never-send-this')
+    state.dispose()
+  })
   it('demo never needs the desktop bridge and remains interactive', async () => {
     vi.useFakeTimers()
     const state = createPortalState()

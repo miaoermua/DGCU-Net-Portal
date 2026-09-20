@@ -16,6 +16,7 @@ directories.workspace = true
 webbrowser.workspace = true
 dom_query.workspace = true
 regex.workspace = true
+network-interface.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

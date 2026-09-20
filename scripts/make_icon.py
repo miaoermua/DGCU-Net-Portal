@@ -1,21 +1,22 @@
-"""Generate an original RGBA icon, without third-party art or image dependencies."""
-import struct
-import zlib
+"""Generate application icons from the user-provided xiaowei.png. Requires Pillow.
+
+The source image stays unchanged. White is made transparent only in the
+macOS monochrome tray template; the app/Dock/Windows icons retain the artwork.
+"""
 from pathlib import Path
+from PIL import Image, ImageChops
 
-size = 64
-pixels = bytearray()
-for y in range(size):
-    pixels.append(0)
-    for x in range(size):
-        inside = 7 <= x < 57 and 7 <= y < 57
-        mark = (18 <= x < 24 and 18 <= y < 46) or (24 <= x < 39 and (18 <= y < 24 or 40 <= y < 46)) or (39 <= x < 46 and 24 <= y < 40)
-        pixels.extend((17, 27, 46, 255) if mark else ((92, 204 - y, 196 + x // 3, 255) if inside else (0, 0, 0, 0)))
-
-def chunk(kind, data):
-    return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
-
-png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(pixels)) + chunk(b'IEND', b'')
-path = Path(__file__).resolve().parents[1] / 'crates/portal-gui/icons/icon.png'
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_bytes(png)
+root = Path(__file__).resolve().parents[1]
+source = Image.open(root / "xiaowei.png").convert("RGBA")
+icons = root / "crates/portal-gui/icons"
+icons.mkdir(parents=True, exist_ok=True)
+for name, size in [("icon.png", 256), ("32x32.png", 32), ("128x128.png", 128), ("128x128@2x.png", 256)]:
+    source.resize((size, size), Image.Resampling.LANCZOS).save(icons / name)
+source.save(icons / "icon.ico", sizes=[(size, size) for size in (16, 24, 32, 48, 64, 128, 256)])
+source.save(icons / "icon.icns")
+tray = source.resize((32, 32), Image.Resampling.LANCZOS)
+alpha = ImageChops.multiply(ImageChops.invert(tray.convert("L")), tray.getchannel("A"))
+template = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+template.putalpha(alpha)
+template.save(icons / "tray-template.png")
+(icons / "tray-template.rgba").write_bytes(template.tobytes())

@@ -2,6 +2,7 @@ export interface Settings {
   server: string
   auth_url: string
   probe_url: string
+  interface_name: string
   bypass_proxy: boolean
   one_session: boolean
   auto_redial: boolean
@@ -9,7 +10,18 @@ export interface Settings {
   service_enabled: boolean
   remember_account: boolean
   username: string
+  show_sessions: boolean
+  log_enabled: boolean
+  theme_mode: 'system' | 'light' | 'dark'
 }
+export interface InterfaceInfo {
+  name: string
+  ipv4: string | null
+  mac: string | null
+  internal: boolean
+}
+export type UiPreferences = Pick<Settings, 'show_sessions' | 'log_enabled' | 'theme_mode'>
+export interface LogEntry { sequence: number; timestamp_ms: number; level: 'info' | 'warn' | 'error'; code: string; message: string }
 export interface Session {
   radacctid: string
   username: string

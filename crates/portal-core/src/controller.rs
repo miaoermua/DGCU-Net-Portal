@@ -1,12 +1,14 @@
 use crate::{
     cmcc::Phase,
+    network,
     settings::Settings,
     traffic::{AccountingRates, Rate},
     AppError, CmccContext, Credential, OnlineSession, PortalClient, PortalLoginOutcome,
 };
 use serde::Serialize;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    net::IpAddr,
     time::{Duration, Instant},
 };
 
@@ -23,6 +25,7 @@ pub struct Snapshot {
 }
 pub struct Controller {
     pub settings: Settings,
+    logs: crate::logging::LogBuffer,
     api: Option<PortalClient>,
     credential: Option<Credential>,
     rows: Vec<OnlineSession>,
@@ -35,6 +38,7 @@ pub struct Controller {
     missing: u32,
     attempts: u32,
     last_attempt: Option<Instant>,
+    awaiting_session: Option<HashSet<String>>,
 }
 impl Default for Controller {
     fn default() -> Self {
@@ -43,8 +47,14 @@ impl Default for Controller {
 }
 impl Controller {
     pub fn new(settings: Settings) -> Self {
+        let logs = crate::logging::LogBuffer::default();
+        logs.set_enabled(settings.log_enabled);
+        Self::with_logs(settings, logs)
+    }
+    pub fn with_logs(settings: Settings, logs: crate::logging::LogBuffer) -> Self {
         Self {
             settings,
+            logs,
             api: None,
             credential: None,
             rows: Vec::new(),
@@ -57,6 +67,7 @@ impl Controller {
             missing: 0,
             attempts: 0,
             last_attempt: None,
+            awaiting_session: None,
         }
     }
     pub fn clear(&mut self) {
@@ -69,13 +80,16 @@ impl Controller {
         self.paused = true;
         self.missing = 0;
         self.attempts = 0;
+        self.awaiting_session = None;
     }
     pub fn forget(&mut self) {
         self.clear();
+        self.logs.record(crate::logging::Event::LocalReleased);
         self.status = "idle".into();
         self.message = "已清除本地会话；这不代表远端已经下线".into();
     }
     fn fail(&mut self, e: AppError) -> AppError {
+        self.logs.error(&e);
         if self.settings.one_session {
             self.clear();
         }
@@ -103,13 +117,59 @@ impl Controller {
         progress: F,
     ) -> Result<Snapshot, AppError> {
         self.clear();
-        let api = PortalClient::with_options(&self.settings.server, self.settings.bypass_proxy)?;
-        let portal = PortalClient::with_options(&self.settings.server, self.settings.bypass_proxy)?;
+        let network = if backend_only {
+            None
+        } else {
+            Some(
+                network::resolve(&self.settings.interface_name)
+                    .map_err(AppError::NetworkInterface)
+                    .and_then(|value| {
+                        value.ok_or_else(|| {
+                            AppError::NetworkInterface(
+                                "没有找到带 IPv4 和 MAC 的活动网卡，请在设置中选择网卡".into(),
+                            )
+                        })
+                    })
+                    .map_err(|e| self.fail(e))?,
+            )
+        };
+        let local_address = network.as_ref().map(|value| {
+            value
+                .ipv4
+                .parse::<IpAddr>()
+                .map_err(|_| self.fail(AppError::NetworkInterface("网卡 IPv4 地址无效".into())))
+        });
+        let local_address = match local_address {
+            Some(Ok(value)) => Some(value),
+            Some(Err(error)) => return Err(error),
+            None => None,
+        };
+        let api = PortalClient::with_options_and_local(
+            &self.settings.server,
+            self.settings.bypass_proxy,
+            local_address,
+        )?
+        .with_logs(self.logs.clone());
+        let portal = PortalClient::with_options_and_local(
+            &self.settings.server,
+            self.settings.bypass_proxy,
+            local_address,
+        )?
+        .with_logs(self.logs.clone());
         self.status = "authenticating".into();
-        // Obtain a baseline only after authenticating to the self-service system.
+        // Authenticate the self-service client before Portal login so we can record a
+        // baseline. The same cookie jar is reused after Portal login; a second
+        // user_login request is only needed when this first attempt failed.
+        let mut backend_authenticated = false;
         let baseline = match api.login(&credential.username, &credential.password).await {
-            Ok(()) => api.sessions().await.ok(),
-            Err(_) => None,
+            Ok(()) => {
+                backend_authenticated = true;
+                api.sessions().await.ok()
+            }
+            Err(e) => {
+                self.logs.error(&e);
+                None
+            }
         };
         let outcome = if backend_only {
             None
@@ -121,6 +181,8 @@ impl Controller {
                 CmccContext::from_portal_url(portal_url)
             };
             let ctx = ctx.map_err(|e| self.fail(e))?;
+            let ctx = CmccContext::with_network_context(&ctx.portal_url, network.as_ref().unwrap())
+                .map_err(|e| self.fail(e))?;
             Some(
                 portal
                     .cmcc_login_progress(&ctx, &credential.username, &credential.password, progress)
@@ -129,28 +191,39 @@ impl Controller {
             )
         };
         // Portal cookies do not authorize the separate user self-service endpoints.
-        match api.login(&credential.username, &credential.password).await {
-            Ok(()) => {
-                self.api = Some(api);
+        // If the baseline login succeeded, retain that authenticated API client
+        // instead of issuing a duplicate login request.
+        if !backend_authenticated {
+            match api.login(&credential.username, &credential.password).await {
+                Ok(()) => backend_authenticated = true,
+                Err(e) if outcome.is_some() => {
+                    self.status = "accepted".into();
+                    self.message =
+                        "Portal 已确认成功，但后台登录失败；请重新登录后台查询会话".into();
+                    self.logs.error(&e);
+                    return Ok(self.snapshot());
+                }
+                Err(e) => return Err(self.fail(e)),
             }
-            Err(e) if outcome.is_some() => {
-                self.status = "accepted".into();
-                self.message = "Portal 已确认成功，但后台登录失败；请重新登录后台查询会话".into();
-                let _ = e;
-                return Ok(self.snapshot());
-            }
-            Err(e) => return Err(self.fail(e)),
         }
-        self.rows = self
-            .api
-            .as_ref()
-            .unwrap()
-            .sessions()
-            .await
-            .unwrap_or_default();
-        self.selected = baseline
-            .as_ref()
-            .and_then(|before| crate::new_session_id(before, &self.rows));
+        if backend_authenticated {
+            self.api = Some(api);
+        }
+        let rows = self.api.as_ref().unwrap().sessions().await;
+        let query_failed = rows.is_err();
+        self.rows = match rows {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.logs.error(&error);
+                Vec::new()
+            }
+        };
+        // Retain the pre-login baseline until accounting reports the new session.
+        if outcome.is_some() {
+            self.awaiting_session =
+                baseline.map(|rows| rows.iter().map(|row| row.radacctid.clone()).collect());
+            self.bind_new_session();
+        }
         self.status = if outcome.is_some() {
             "accepted"
         } else {
@@ -163,6 +236,10 @@ impl Controller {
             None => "已登录用户后台；请选择要管理的会话",
         }
         .into();
+        if query_failed {
+            self.message
+                .push_str("；后台会话查询暂不可用，稍后自动重试");
+        }
         self.paused = self.settings.one_session || !self.settings.auto_redial || outcome.is_none();
         if !self.settings.one_session && self.settings.auto_redial {
             self.credential = Some(credential);
@@ -173,6 +250,7 @@ impl Controller {
     pub async fn refresh(&mut self) -> Result<Snapshot, AppError> {
         let api = self.api.as_ref().ok_or(AppError::Rejected)?;
         self.rows = api.sessions().await?;
+        self.bind_new_session();
         self.latest_rates = self.accounting.update(&self.rows);
         if let Some(id) = &self.selected {
             if !self.rows.iter().any(|r| r.radacctid == *id) {
@@ -195,8 +273,29 @@ impl Controller {
             return Err(AppError::SessionNotFound);
         }
         self.selected = Some(id.into());
+        self.awaiting_session = None;
+        self.logs.record(crate::logging::Event::SelectSession);
         self.missing = 0;
         Ok(self.snapshot())
+    }
+    fn bind_new_session(&mut self) {
+        let Some(before) = &self.awaiting_session else {
+            return;
+        };
+        let mut added = self
+            .rows
+            .iter()
+            .filter(|row| !before.contains(&row.radacctid));
+        match (added.next(), added.next()) {
+            (Some(row), None) => {
+                self.selected = Some(row.radacctid.clone());
+                self.awaiting_session = None;
+            }
+            (Some(_), Some(_)) => {
+                self.awaiting_session = None;
+            } // An explicit selection is required.
+            _ => {}
+        }
     }
     pub async fn disconnect(&mut self, id: &str) -> Result<Snapshot, AppError> {
         self.paused = true;
@@ -205,6 +304,7 @@ impl Controller {
             None => Err(AppError::Rejected),
         };
         if let Err(e) = result {
+            self.logs.error(&e);
             if self.settings.one_session {
                 self.clear();
             }
@@ -229,6 +329,7 @@ impl Controller {
             return;
         }
         if let Err(e) = self.refresh().await {
+            self.logs.error(&e);
             self.message = e.to_string();
             return;
         }
@@ -250,6 +351,7 @@ impl Controller {
             return;
         };
         self.last_attempt = Some(Instant::now());
+        self.logs.record(crate::logging::Event::AutoRetry);
         self.attempts += 1;
         let attempts = self.attempts;
         let last = self.last_attempt;
@@ -257,8 +359,41 @@ impl Controller {
         self.attempts = attempts;
         self.last_attempt = last;
         if result.is_err() || self.selected.is_none() {
+            self.logs.record(crate::logging::Event::RetryPaused);
             self.paused = true;
             self.message = "自动重拨未完成或无法绑定新会话，已暂停；请手动检查".into();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::row;
+    #[test]
+    fn binds_unique_session_after_accounting_delay() {
+        let mut c = Controller {
+            awaiting_session: Some(["old".to_owned()].into_iter().collect()),
+            rows: vec![row("old", 60, 0, 0)],
+            ..Default::default()
+        };
+        c.bind_new_session();
+        assert!(c.selected.is_none());
+        assert!(c.awaiting_session.is_some());
+        c.rows.push(row("new", 1, 0, 0));
+        c.bind_new_session();
+        assert_eq!(c.selected.as_deref(), Some("new"));
+        assert!(c.awaiting_session.is_none());
+    }
+    #[test]
+    fn multiple_new_sessions_require_explicit_selection() {
+        let mut c = Controller {
+            awaiting_session: Some(HashSet::new()),
+            rows: vec![row("a", 1, 0, 0), row("b", 1, 0, 0)],
+            ..Default::default()
+        };
+        c.bind_new_session();
+        assert!(c.selected.is_none());
+        assert!(c.awaiting_session.is_none());
     }
 }
