@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=DGCU Portal
+Comment=DGCU 校园网 Portal 客户端
+Exec=dgcu-portal
+Icon=dgcu-portal
+Terminal=false
+Categories=Network;Utility;
+StartupWMClass=dgcu-portal

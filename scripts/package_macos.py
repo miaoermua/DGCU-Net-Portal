@@ -14,17 +14,20 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--output', type=Path, required=True)
+parser.add_argument('--arch', default=platform.machine(), help='包名中使用的架构名（默认本机架构）')
+parser.add_argument('--binary-dir', type=Path, default=None, help='cargo 产物目录（默认 target/release，交叉编译时传 target/<triple>/release）')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 config = json.loads((root / 'crates/portal-gui/tauri.conf.json').read_text())
 version = config['version']
-arch = platform.machine()
+arch = args.arch
+binary_dir = (args.binary_dir or Path('target/release')).resolve()
 name = f'DGCU-Portal-{version}-macos-{arch}'
 folder = args.output.resolve() / name
 if folder.exists():
     raise SystemExit(f'Refusing to overwrite existing package: {folder}')
-binary = root / 'target/release/portal-gui'
-cli = root / 'target/release/portal-cli'
+binary = binary_dir / 'portal-gui'
+cli = binary_dir / 'portal-cli'
 for file in [binary, cli]:
     subprocess.run(['file', str(file)], check=True)
 app = folder / 'DGCU Portal.app'
@@ -53,10 +56,11 @@ with (app / 'Contents/Info.plist').open('wb') as stream:
 subprocess.run(['codesign', '--force', '--sign', '-', str(app)], check=True)
 subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
 subprocess.run(['codesign', '--force', '--sign', '-', str(folder / 'dgcu-cli')], check=True)
+chip = 'Apple Silicon（M 系列芯片）' if arch == 'arm64' else 'Intel 芯片（x86_64）'
 guide = f'''# DGCU Portal {version} · macOS {arch} 测试版
 
 这是可连接校园网的真实客户端，不是 Demo；无需安装 Node.js 或 Rust。
-适用于 Apple Silicon（M 系列芯片）、macOS 12 或更新版本。
+适用于{chip}，macOS 12 或更新版本。
 
 ## 开始测试
 
@@ -94,7 +98,7 @@ guide = f'''# DGCU Portal {version} · macOS {arch} 测试版
 
 这是本地 ad-hoc 签名测试包，没有 Apple Developer ID 签名或公证。
 包含内嵌页面，可以离线启动；真实校园网认证需要你在校园网现场验证。
-macOS/Windows/Linux 代码共享，但本包仅提供本机 macOS {arch} 构建。
+macOS/Windows/Linux 代码共享，但本包仅提供 macOS {arch} 构建。
 没有自动安装系统服务、没有使用任何 HAR 内的账号登录。
 系统 TUN/VPN 仍影响系统路由，“绕过程序代理”不会修改这些设置。
 '''

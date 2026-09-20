@@ -100,6 +100,21 @@ python3 scripts/package_macos.py --output target/packages
 
 输出包含真实客户端 `.app`、`dgcu-cli`、测试说明、ZIP 和 SHA-256。页面已内嵌，运行不依赖 Node 或 Rust，也不需要本地前端服务器。程序使用本地 ad-hoc 签名；未进行 Apple Developer ID 签名、公证或 Windows/Linux 实机验证。打包脚本不会自动安装应用或启用后台服务。
 
+## 持续集成与发布
+
+`.github/workflows/build.yml` 在推送 tag、提交 Pull Request 或手动触发时运行：先构建前端，再并行产出各平台产物。
+
+| 平台 | 产物 |
+| :--- | :--- |
+| macOS arm64 / x86_64 | `DGCU-Portal-<版本>-macos-<架构>.zip`（内含 ad-hoc 签名的 `.app` 与 `dgcu-cli`） |
+| Windows aarch64 / x86_64 | `DGCU-Portal-<版本>-windows-<架构>.zip` |
+| Linux x86_64 | `DGCU-Portal-<版本>-linux-x86_64.tar.gz`、`DGCU-Portal-<版本>-linux-x86_64.AppImage` |
+| Arch Linux | `dgcu-portal-<版本>-1-x86_64.pkg.tar.zst` |
+
+每个包都附带同名 `.sha256`。推送 `v<版本>` tag 时全部产物会自动附加到 GitHub Release，并汇总一份 `SHA256SUMS.txt`。
+
+macOS 使用本地 ad-hoc 签名（没有 Developer ID 与公证），Windows 是未签名 ZIP，AppImage 由 Tauri 打包，Arch 包在 `archlinux` 容器内按 `packaging/arch/PKGBUILD` 生成。Windows ARM64 使用 `windows-11-arm` 运行器，macOS 在 `macos-14` 上交叉编译出 x86_64。本地复现单个平台时可以直接用 `scripts/package_macos.py` 和 `scripts/package_portable.py`。
+
 仓库：[miaoermua/dgcu-portal](https://github.com/miaoermua/dgcu-portal)。关于页只保留程序图标、版本与仓库入口。
 
 ### 0.2.5 Portal 模板、刷新策略与后台入口

@@ -287,7 +287,7 @@ fn main() {
                             c.settings
                                 .refresh_policy
                                 .next_delay()
-                                .unwrap_or_else(|| std::time::Duration::from_secs(1))
+                                .unwrap_or_else(|| std::time::Duration::from_secs(60))
                         })
                         .unwrap_or_else(|| std::time::Duration::from_secs(1));
                     tokio::time::sleep(delay).await;

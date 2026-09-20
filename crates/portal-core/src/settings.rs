@@ -221,4 +221,27 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert!(matches!(decoded.theme_mode, ThemeMode::Dark));
     }
+
+    #[test]
+    fn refresh_policy_has_six_expected_modes() {
+        assert_eq!(
+            RefreshPolicy::OneSecond.next_delay(),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            RefreshPolicy::TwoSeconds.next_delay(),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(
+            RefreshPolicy::FiveSeconds.next_delay(),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            RefreshPolicy::OneMinute.next_delay(),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(RefreshPolicy::Disabled.next_delay(), None);
+        let random = RefreshPolicy::Random.next_delay().unwrap().as_secs();
+        assert!((1..=10).contains(&random));
+    }
 }

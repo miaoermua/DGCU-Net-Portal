@@ -1,0 +1,22 @@
+# Maintainer: dgcu-portal CI <https://github.com/miaoermua/dgcu-portal>
+# 本 PKGBUILD 只负责安装布局：二进制由 .github/workflows/build.yml 的 Linux
+# 构建任务交叉产出后放入 target/arch/，再由 Arch 容器内的 makepkg 打包。
+pkgname=dgcu-portal
+pkgver=0.0.0
+pkgrel=1
+pkgdesc='DGCU 校园网 Portal 客户端（GUI + CLI）'
+arch=('x86_64' 'aarch64')
+url='https://github.com/miaoermua/dgcu-portal'
+license=('GPL-3.0-only')
+depends=('gtk3' 'webkit2gtk-4.1' 'libayatana-appindicator' 'libsecret')
+options=('!strip')
+source=('dgcu-portal' 'dgcu-cli' 'dgcu-portal.desktop' 'dgcu-portal.png' 'LICENSE')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm755 "$srcdir/dgcu-portal" "$pkgdir/usr/bin/dgcu-portal"
+  install -Dm755 "$srcdir/dgcu-cli" "$pkgdir/usr/bin/dgcu-cli"
+  install -Dm644 "$srcdir/dgcu-portal.desktop" "$pkgdir/usr/share/applications/dgcu-portal.desktop"
+  install -Dm644 "$srcdir/dgcu-portal.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/dgcu-portal.png"
+  install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
