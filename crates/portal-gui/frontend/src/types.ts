@@ -4,13 +4,13 @@ export interface Settings {
   probe_url: string
   probe_enabled: boolean
   refresh_policy: 'one_second' | 'two_seconds' | 'five_seconds' | 'random' | 'one_minute' | 'disabled'
+  traffic_enabled: boolean
+  credential_store: 'system' | 'file' | 'memory'
   interface_name: string
   bypass_proxy: boolean
-  one_session: boolean
   auto_redial: boolean
   tray_startup: boolean
   service_enabled: boolean
-  remember_account: boolean
   username: string
   show_sessions: boolean
   log_enabled: boolean
@@ -22,7 +22,7 @@ export interface InterfaceInfo {
   mac: string | null
   internal: boolean
 }
-export type UiPreferences = Pick<Settings, 'show_sessions' | 'log_enabled' | 'theme_mode' | 'refresh_policy'>
+export type UiPreferences = Pick<Settings, 'show_sessions' | 'log_enabled' | 'theme_mode' | 'refresh_policy' | 'traffic_enabled'>
 export interface LogEntry { sequence: number; timestamp_ms: number; level: 'info' | 'warn' | 'error'; code: string; message: string }
 export interface Session {
   radacctid: string

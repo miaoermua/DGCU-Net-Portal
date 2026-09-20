@@ -317,12 +317,13 @@ fn transient_settings_cannot_persist_account_or_background_mode() {
         username: "test-user".into(),
         auto_redial: true,
         service_enabled: true,
-        remember_account: true,
+        credential_store: settings::CredentialStore::Memory,
         ..Default::default()
     };
     s.normalize().unwrap();
     assert!(s.username.is_empty());
-    assert!(!s.remember_account && !s.auto_redial && !s.service_enabled);
+    assert_eq!(s.credential_store, settings::CredentialStore::Memory);
+    assert!(!s.auto_redial && !s.service_enabled);
 }
 #[test]
 fn unicode_redaction_does_not_panic() {

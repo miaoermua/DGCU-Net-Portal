@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use portal_cli::{
     daemon,
     ipc::{self, Request},
-    network,
+    network, service,
     settings::{RefreshPolicy, Settings},
     Credential,
 };
@@ -123,6 +123,13 @@ fn set_config(mut settings: Settings, key: &str, value: &str) -> Result<(), Stri
                 _ => return Err("auto-redial 应为 on 或 off".into()),
             }
         }
+        "traffic" => {
+            settings.traffic_enabled = match value {
+                "on" => true,
+                "off" => false,
+                _ => return Err("traffic 应为 on 或 off".into()),
+            }
+        }
         _ => return Err(format!("未知配置项：{key}")),
     }
     settings.save()
@@ -209,13 +216,49 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 set_config(Settings::load(), &key, &value)?;
                 println!("已保存配置：{key}");
             }
-            ConfigCommand::Account => println!("请由 GUI 配置账号，daemon 只从凭据库读取账号密码"),
+            ConfigCommand::Account => {
+                let credential = credentials()?;
+                let mut settings = Settings::load();
+                settings.username = credential.username.clone();
+                settings.credential_store = portal_cli::settings::CredentialStore::System;
+                settings.save()?;
+                portal_cli::settings::save_password(&credential.password)?;
+                println!("账号凭据已保存到系统凭据库");
+            }
             ConfigCommand::Reset => return Err("配置重置需要明确指定配置文件路径".into()),
         },
-        Command::Service { command } => println!(
-            "服务管理由当前平台 service adapter 执行：{:?}",
-            std::mem::discriminant(&command)
-        ),
+        Command::Service { command } => {
+            let executable = std::env::current_exe().map_err(|_| "无法获取 portal-cli 路径")?;
+            match command {
+                ServiceCommand::Enable => {
+                    service::enable(&executable)?;
+                    println!("后台服务已启用");
+                }
+                ServiceCommand::Disable => {
+                    service::disable()?;
+                    println!("后台服务已禁用");
+                }
+                ServiceCommand::Start => {
+                    if ipc::request(Request::Status).await.is_err() {
+                        service::start()?;
+                    }
+                    println!("daemon 已启动");
+                }
+                ServiceCommand::Status => {
+                    let response = ipc::request(Request::Status).await?;
+                    println!("{}", response.message);
+                }
+                ServiceCommand::Stop => {
+                    service::stop()?;
+                    println!("后台服务已停止");
+                }
+                ServiceCommand::Restart => {
+                    service::stop().ok();
+                    service::start()?;
+                    println!("后台服务已重启");
+                }
+            }
+        }
         Command::Diagnose { command } => match command {
             DiagnoseCommand::Interfaces => {
                 for interface in network::list()? {

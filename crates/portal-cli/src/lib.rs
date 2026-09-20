@@ -6,6 +6,7 @@ mod discovery;
 pub mod ipc;
 pub mod logging;
 pub mod network;
+pub mod service;
 pub mod settings;
 pub mod traffic;
 pub use cmcc::{CmccContext, PortalLoginOutcome};

@@ -21,6 +21,7 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let logs = LogBuffer::default();
     let settings = Settings::load();
     logs.set_enabled(settings.log_enabled);
+    let auto_settings = settings.clone();
     let state: Shared = Arc::new(Mutex::new(Controller::with_logs(settings, logs.clone())));
     let name = SOCKET_NAME.to_ns_name::<GenericNamespaced>()?;
     let listener = ListenerOptions::new()
@@ -28,6 +29,25 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .try_overwrite(true)
         .create_tokio()?;
     let worker_state = state.clone();
+    if auto_settings.credential_store != crate::settings::CredentialStore::Memory {
+        let password = match auto_settings.credential_store {
+            crate::settings::CredentialStore::System => crate::settings::password(),
+            crate::settings::CredentialStore::File => crate::settings::file_password(),
+            crate::settings::CredentialStore::Memory => unreachable!(),
+        };
+        if let Ok(password) = password {
+            let startup_state = state.clone();
+            let username = auto_settings.username.clone();
+            tokio::spawn(async move {
+                let credential = Credential::new(username, password.to_string());
+                let _ = startup_state
+                    .lock()
+                    .await
+                    .connect(credential, "", false, |_| {})
+                    .await;
+            });
+        }
+    }
     tokio::spawn(async move {
         loop {
             let delay = worker_state

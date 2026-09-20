@@ -24,6 +24,7 @@ pub struct UiPreferences {
     pub log_enabled: bool,
     pub theme_mode: ThemeMode,
     pub refresh_policy: RefreshPolicy,
+    pub traffic_enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +37,15 @@ pub enum RefreshPolicy {
     Random,
     OneMinute,
     Disabled,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialStore {
+    #[default]
+    System,
+    File,
+    Memory,
 }
 impl RefreshPolicy {
     pub fn next_delay(self) -> Option<Duration> {
@@ -66,15 +76,15 @@ pub struct Settings {
     /// Try public captive-check discovery only after the DGCU template fails.
     pub probe_enabled: bool,
     pub refresh_policy: RefreshPolicy,
+    pub traffic_enabled: bool,
     /// Name of the interface whose IPv4/MAC are sent to the Portal gateway.
     /// Empty means automatic selection of the first active non-loopback one.
     pub interface_name: String,
     pub bypass_proxy: bool,
-    pub one_session: bool,
+    pub credential_store: CredentialStore,
     pub auto_redial: bool,
     pub tray_startup: bool,
     pub service_enabled: bool,
-    pub remember_account: bool,
     pub username: String,
     pub show_sessions: bool,
     pub log_enabled: bool,
@@ -88,13 +98,13 @@ impl Default for Settings {
             probe_url: "http://captive.apple.com/hotspot-detect.html".into(),
             probe_enabled: true,
             refresh_policy: RefreshPolicy::FiveSeconds,
+            traffic_enabled: false,
             interface_name: String::new(),
             bypass_proxy: true,
-            one_session: true,
+            credential_store: CredentialStore::System,
             auto_redial: false,
             tray_startup: false,
             service_enabled: false,
-            remember_account: false,
             username: String::new(),
             show_sessions: false,
             log_enabled: false,
@@ -114,6 +124,7 @@ impl Settings {
             log_enabled: self.log_enabled,
             theme_mode: self.theme_mode,
             refresh_policy: self.refresh_policy,
+            traffic_enabled: self.traffic_enabled,
         }
     }
     pub fn set_ui_preferences(&mut self, value: &UiPreferences) {
@@ -121,18 +132,15 @@ impl Settings {
         self.log_enabled = value.log_enabled;
         self.theme_mode = value.theme_mode;
         self.refresh_policy = value.refresh_policy;
+        self.traffic_enabled = value.traffic_enabled;
     }
     pub fn normalize(&mut self) -> Result<(), String> {
         for value in [&self.server, &self.auth_url, &self.probe_url] {
             validate_url(value).map_err(|e| e.to_string())?;
         }
-        if self.one_session {
-            self.remember_account = false;
+        if self.credential_store == CredentialStore::Memory {
             self.auto_redial = false;
             self.service_enabled = false;
-            self.username.clear();
-        }
-        if !self.remember_account {
             self.username.clear();
         }
         Ok(())
@@ -169,6 +177,9 @@ impl Settings {
 fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new("net.dgcu.portal", "saved-account").map_err(|_| "无法访问系统凭据库".into())
 }
+fn password_path() -> Result<PathBuf, String> {
+    config_path().map(|path| path.with_file_name("credentials"))
+}
 pub fn save_password(password: &str) -> Result<(), String> {
     entry()?
         .set_password(password)
@@ -180,7 +191,32 @@ pub fn password() -> Result<Zeroizing<String>, String> {
         .map(Zeroizing::new)
         .map_err(|_| "没有保存的密码或凭据库不可用".into())
 }
+pub fn save_file_password(password: &str) -> Result<(), String> {
+    let path = password_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|_| "无法创建凭据目录")?;
+    }
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|_| "无法写入明文凭据文件")?;
+    file.write_all(password.as_bytes())
+        .map_err(|_| "无法写入明文凭据文件")?;
+    file.sync_all().map_err(|_| "无法同步明文凭据文件".into())
+}
+pub fn file_password() -> Result<Zeroizing<String>, String> {
+    let bytes = fs::read(password_path()?).map_err(|_| "没有保存的明文凭据")?;
+    String::from_utf8(bytes)
+        .map(Zeroizing::new)
+        .map_err(|_| "明文凭据文件编码无效".into())
+}
 pub fn forget_password() -> Result<(), String> {
+    let _ = fs::remove_file(password_path()?);
     match entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(_) => Err("无法删除系统凭据；请在系统凭据库中手动移除".into()),
@@ -202,8 +238,7 @@ mod tests {
     fn changing_display_preferences_does_not_change_authentication_options() {
         let mut settings = Settings {
             username: "test-user".into(),
-            one_session: false,
-            remember_account: true,
+            credential_store: CredentialStore::System,
             ..Default::default()
         };
         settings.set_ui_preferences(&UiPreferences {
@@ -211,12 +246,13 @@ mod tests {
             log_enabled: true,
             theme_mode: ThemeMode::Dark,
             refresh_policy: RefreshPolicy::Random,
+            traffic_enabled: true,
         });
         assert_eq!(settings.username, "test-user");
-        assert!(settings.remember_account);
-        assert!(!settings.one_session);
+        assert_eq!(settings.credential_store, CredentialStore::System);
         assert!(settings.show_sessions && settings.log_enabled);
         assert_eq!(settings.refresh_policy, RefreshPolicy::Random);
+        assert!(settings.traffic_enabled);
         let decoded: Settings =
             serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert!(matches!(decoded.theme_mode, ThemeMode::Dark));

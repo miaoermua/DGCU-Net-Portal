@@ -14,6 +14,11 @@ fn run(command: &mut Command) -> Result<(), String> {
     }
 }
 pub fn enable(executable: &Path) -> Result<(), String> {
+    if Path::new("/etc/openwrt_release").is_file() {
+        return Err(
+            "OpenWrt 使用 /etc/init.d/portal-cli 管理 procd，不调用 portal-cli service".into(),
+        );
+    }
     if !executable.is_file() {
         return Err("程序路径无效".into());
     }
@@ -22,6 +27,12 @@ pub fn enable(executable: &Path) -> Result<(), String> {
         return Err("程序路径包含不支持的字符".into());
     }
     enable_platform(path)
+}
+pub fn start() -> Result<(), String> {
+    start_platform()
+}
+pub fn stop() -> Result<(), String> {
+    stop_platform()
 }
 #[cfg(target_os = "macos")]
 fn plist_path() -> Result<PathBuf, String> {
@@ -57,6 +68,17 @@ pub fn disable() -> Result<(), String> {
     // without terminating this application's in-flight logout request.
     fs::remove_file(path).map_err(|_| "无法移除用户 LaunchAgent".into())
 }
+#[cfg(target_os = "macos")]
+fn start_platform() -> Result<(), String> {
+    run(Command::new("launchctl")
+        .arg("load")
+        .arg("-w")
+        .arg(plist_path()?))
+}
+#[cfg(target_os = "macos")]
+fn stop_platform() -> Result<(), String> {
+    run(Command::new("launchctl").arg("unload").arg(plist_path()?))
+}
 #[cfg(target_os = "linux")]
 fn unit_path() -> Result<PathBuf, String> {
     Ok(directories::BaseDirs::new()
@@ -83,6 +105,20 @@ pub fn disable() -> Result<(), String> {
     fs::remove_file(path).map_err(|_| "无法删除服务文件")?;
     run(Command::new("systemctl").args(["--user", "daemon-reload"]))
 }
+#[cfg(target_os = "linux")]
+fn start_platform() -> Result<(), String> {
+    if Path::new("/etc/openwrt_release").is_file() {
+        return Err("OpenWrt 使用 /etc/init.d/portal-cli start".into());
+    }
+    run(Command::new("systemctl").args(["--user", "start", "dgcu-portal.service"]))
+}
+#[cfg(target_os = "linux")]
+fn stop_platform() -> Result<(), String> {
+    if Path::new("/etc/openwrt_release").is_file() {
+        return Err("OpenWrt 使用 /etc/init.d/portal-cli stop".into());
+    }
+    run(Command::new("systemctl").args(["--user", "stop", "dgcu-portal.service"]))
+}
 #[cfg(target_os = "windows")]
 fn enable_platform(executable: &str) -> Result<(), String> {
     run(Command::new("schtasks").args([
@@ -101,4 +137,12 @@ fn enable_platform(executable: &str) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 pub fn disable() -> Result<(), String> {
     run(Command::new("schtasks").args(["/Delete", "/F", "/TN", "DGCU-Portal"]))
+}
+#[cfg(target_os = "windows")]
+fn start_platform() -> Result<(), String> {
+    run(Command::new("schtasks").args(["/Run", "/TN", "DGCU-Portal"]))
+}
+#[cfg(target_os = "windows")]
+fn stop_platform() -> Result<(), String> {
+    run(Command::new("schtasks").args(["/End", "/TN", "DGCU-Portal"]))
 }

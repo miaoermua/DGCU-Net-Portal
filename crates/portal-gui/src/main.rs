@@ -1,10 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-mod service;
 use portal_cli::{
     controller::Snapshot,
     ipc::{self, Request},
     logging::LogEntry,
-    settings::{self, Settings, UiPreferences},
+    settings::{self, CredentialStore, Settings, UiPreferences},
     validate_url, Credential,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -61,9 +60,14 @@ async fn connect(
     let mut credential = Credential::new(username, password);
     if credential.password.is_empty() {
         let settings = Settings::load();
-        if settings.remember_account && !settings.one_session {
+        if settings.credential_store != CredentialStore::Memory {
             credential.username = settings.username;
-            credential.password = settings::password()?.to_string();
+            credential.password = match settings.credential_store {
+                CredentialStore::System => settings::password()?,
+                CredentialStore::File => settings::file_password()?,
+                CredentialStore::Memory => unreachable!(),
+            }
+            .to_string();
         }
     }
     if credential.username.is_empty() || credential.password.is_empty() {
@@ -89,7 +93,7 @@ async fn connect(
             selected_id: None,
             background_paused: false,
             authenticated: true,
-            one_session: false,
+            one_session: Settings::load().credential_store == CredentialStore::Memory,
         }))
 }
 #[tauri::command]
@@ -161,20 +165,23 @@ async fn save_settings(
         return Err("Demo 不写入系统设置".into());
     }
     value.normalize()?;
-    if value.one_session || !value.remember_account {
-        // Remove saved identity as well as memory, before claiming transient mode is enabled.
+    if value.credential_store == CredentialStore::Memory {
         settings::forget_password()?;
     } else if !password.is_empty() {
-        settings::save_password(&password)?;
+        match value.credential_store {
+            CredentialStore::System => settings::save_password(&password)?,
+            CredentialStore::File => settings::save_file_password(&password)?,
+            CredentialStore::Memory => unreachable!(),
+        }
     } else if Settings::load().username != value.username || Settings::load().server != value.server
     {
         return Err("切换账号或服务器时请重新输入密码".into());
     }
     if value.service_enabled != Settings::load().service_enabled {
         if value.service_enabled {
-            service::enable(&daemon_binary()?)?;
+            portal_cli::service::enable(&daemon_binary()?)?;
         } else {
-            service::disable()?;
+            portal_cli::service::disable()?;
         }
     }
     value.save()?;

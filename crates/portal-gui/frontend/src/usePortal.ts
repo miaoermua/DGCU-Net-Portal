@@ -1,12 +1,11 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { DesktopBridge, InterfaceInfo, LogEntry, Session, Settings, Snapshot, UiPreferences, Unlisten } from './types'
 
-export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/lfradius/', auth_url: 'http://172.18.100.65/lfradius/web/admin/login', probe_url: 'http://captive.apple.com/hotspot-detect.html', probe_enabled: true, refresh_policy: 'five_seconds', interface_name: '', bypass_proxy: true, one_session: true, remember_account: false, username: '', auto_redial: false, tray_startup: false, service_enabled: false, show_sessions: false, log_enabled: false, theme_mode: 'system' })
+export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/lfradius/', auth_url: 'http://172.18.100.65/lfradius/web/admin/login', probe_url: 'http://captive.apple.com/hotspot-detect.html', probe_enabled: true, refresh_policy: 'five_seconds', traffic_enabled: false, credential_store: 'system', interface_name: '', bypass_proxy: true, username: '', auto_redial: false, tray_startup: false, service_enabled: false, show_sessions: false, log_enabled: false, theme_mode: 'system' })
 export const emptySnapshot = (): Snapshot => ({ sessions: [], rates: {}, selected_id: null, authenticated: false, one_session: true, background_paused: true, status: 'idle', message: '填写账号后连接校园网' })
 export function normalizeSettings(value: Settings): Settings {
   const next = { ...value }
-  if (next.one_session) { next.remember_account = false; next.auto_redial = false; next.service_enabled = false }
-  if (!next.remember_account) next.username = ''
+  if (next.credential_store === 'memory') { next.auto_redial = false; next.service_enabled = false; next.username = '' }
   return next
 }
 export function formatBytes(value: number | undefined | null): string {
@@ -26,15 +25,15 @@ const demoSessions = (): Session[] => [
 const phaseLabels: Record<string, string> = { discovering: '正在寻找认证页', reading_form: '正在读取认证表单', authenticating: '正在提交认证', waiting_portal: '正在等待 Portal 认证', waiting_dial: '正在等待代拨结果', accepted: 'Portal 已确认成功' }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.2.5')
+  const version = ref('0.3.4')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
   const preferencesBusy = ref(false), logEntries = ref<LogEntry[]>([]), logsOpen = ref(false), sessionPickerOpen = ref(false)
-  let logEpoch = 0, demoSequence = 0, logTimer: ReturnType<typeof setInterval> | undefined
+  let logEpoch = 0, demoSequence = 0, logTimer: ReturnType<typeof setInterval> | undefined, snapshotTimer: ReturnType<typeof setInterval> | undefined
   const selected = computed(() => snapshot.value.sessions.find(row => row.radacctid === snapshot.value.selected_id))
   const hasUnsavedConnectionSettings = computed(() => {
-    const keys: (keyof Settings)[] = ['server', 'auth_url', 'probe_url', 'probe_enabled', 'refresh_policy', 'interface_name', 'bypass_proxy', 'one_session', 'remember_account', 'auto_redial', 'tray_startup', 'service_enabled']
+    const keys: (keyof Settings)[] = ['server', 'auth_url', 'probe_url', 'probe_enabled', 'refresh_policy', 'traffic_enabled', 'credential_store', 'interface_name', 'bypass_proxy', 'auto_redial', 'tray_startup', 'service_enabled']
     const value=normalizeSettings(draft)
     return keys.some(key=>value[key]!==saved.value[key])
   })
@@ -70,7 +69,7 @@ export function createPortalState(bridge?: DesktopBridge) {
     if (preferencesBusy.value || !ready.value) return
     preferencesBusy.value = true
     try {
-      const value: UiPreferences = { show_sessions: saved.value.show_sessions, log_enabled: saved.value.log_enabled, theme_mode: saved.value.theme_mode, refresh_policy: saved.value.refresh_policy, ...patch }
+      const value: UiPreferences = { show_sessions: saved.value.show_sessions, log_enabled: saved.value.log_enabled, theme_mode: saved.value.theme_mode, refresh_policy: saved.value.refresh_policy, traffic_enabled: saved.value.traffic_enabled, ...patch }
       const result = demo.value ? value : await bridge!.core.invoke<UiPreferences>('save_preferences', { value })
       const wasLogging = saved.value.log_enabled
       Object.assign(saved.value, result); Object.assign(draft, result)
@@ -118,16 +117,16 @@ export function createPortalState(bridge?: DesktopBridge) {
           demoLog('auth.phase', status)
           phase.value = status; await new Promise(resolve => setTimeout(resolve, 300))
         }
-        receive({ ...emptySnapshot(), status: backendOnly ? 'backend' : 'accepted', message: '模拟流程完成，没有访问校园网', authenticated: true, one_session: saved.value.one_session, sessions: demoSessions(), selected_id: backendOnly ? null : '90001' })
+        receive({ ...emptySnapshot(), status: backendOnly ? 'backend' : 'accepted', message: '模拟流程完成，没有访问校园网', authenticated: true, one_session: saved.value.credential_store === 'memory', sessions: demoSessions(), selected_id: backendOnly ? null : '90001' })
         page.value = 0; return
       }
-      if ((!username.value || !password.value) && !saved.value.remember_account) { page.value = 1; notify('请填写账号和密码'); return }
+      if ((!username.value || !password.value) && saved.value.credential_store === 'memory') { page.value = 1; notify('请填写账号和密码'); return }
       let user = username.value, secret = password.value, entry = portalUrl.value
       password.value = ''
       try {
         receive(await bridge!.core.invoke<Snapshot>('connect', { username: user, password: secret, portalUrl: entry, backendOnly }))
         page.value = 0
-      } finally { user = ''; secret = ''; entry = ''; if (saved.value.one_session) clearFields() }
+      } finally { user = ''; secret = ''; entry = ''; if (saved.value.credential_store === 'memory') clearFields() }
     })
   }
   async function refresh() { await run(async () => { demoLog('sessions.read', '读取后台会话列表'); receive(demo.value ? { ...snapshot.value, rates: {}, message: '后台计费尚未更新（模拟）' } : await bridge!.core.invoke<Snapshot>('refresh')) }) }
@@ -138,10 +137,10 @@ export function createPortalState(bridge?: DesktopBridge) {
     await run(async () => {
       try {
         demoLog('session.disconnect', '请求指定会话下线')
-        if (demo.value) receive({ ...snapshot.value, status: 'offline', message: '所选会话已确认下线（模拟）', authenticated: !saved.value.one_session, sessions: saved.value.one_session ? [] : snapshot.value.sessions.filter(s => s.radacctid !== id), selected_id: null, rates: {} })
+        if (demo.value) receive({ ...snapshot.value, status: 'offline', message: '所选会话已确认下线（模拟）', authenticated: saved.value.credential_store !== 'memory', sessions: saved.value.credential_store === 'memory' ? [] : snapshot.value.sessions.filter(s => s.radacctid !== id), selected_id: null, rates: {} })
         else receive(await bridge!.core.invoke<Snapshot>('disconnect', { id }))
         demoLog('session.disconnected', '已确认下线并释放本地会话')
-      } finally { if (saved.value.one_session) clearFields() }
+      } finally { if (saved.value.credential_store === 'memory') clearFields() }
     })
   }
   async function forget() {
@@ -149,7 +148,6 @@ export function createPortalState(bridge?: DesktopBridge) {
     await run(async () => { receive(demo.value ? emptySnapshot() : await bridge!.core.invoke<Snapshot>('forget')); clearFields() })
   }
   async function save() {
-    if (snapshot.value.authenticated && !demo.value) { notify('请先结束本地会话，再修改连接与账号设置'); return }
     if (draft.service_enabled !== saved.value.service_enabled && !demo.value) {
       if (!await ask('更改后台启动', draft.service_enabled ? '将为当前用户写入登录时启动任务。只有保存设置后才会执行。' : '将停用当前用户的登录启动任务。', '保存更改')) return
     }
@@ -158,10 +156,10 @@ export function createPortalState(bridge?: DesktopBridge) {
       try {
         const value = normalizeSettings({ ...draft, username: username.value })
         const result = demo.value ? value : await bridge!.core.invoke<Settings>('save_settings', { value, password: secret })
-        saved.value = { ...result }; Object.assign(draft, result); snapshot.value.one_session = result.one_session
+        saved.value = { ...result }; Object.assign(draft, result); snapshot.value.one_session = result.credential_store === 'memory'
         // Keep unsaved transient credentials in this window until login/end of session.
         // Only an explicit "remember" saves them to the OS credential store.
-        if (result.remember_account) password.value = ''
+        if (result.credential_store !== 'memory') password.value = ''
         notify(demo.value ? '演示设置已更新，仅在此窗口中生效' : '设置已保存')
       } finally { secret = '' }
     })
@@ -184,8 +182,12 @@ export function createPortalState(bridge?: DesktopBridge) {
     try { networkInterfaces.value = await bridge.core.invoke<InterfaceInfo[]>('list_interfaces') }
     catch (error) { notify(error) }
   }
+  async function pollSnapshot() {
+    if (!bridge || demo.value || busy.value || !ready.value || disposed) return
+    try { receive(await bridge.core.invoke<Snapshot>('snapshot')) } catch { /* daemon may be starting or stopped */ }
+  }
   async function close() {
-    if (!await ask('退出客户端', saved.value.one_session ? '若已选择会话，将尝试下线后清除本地信息；未选择会话时仅清除本地信息。' : '退出并释放本地内存，远端会话可能继续在线。', '退出')) return
+    if (!await ask('退出客户端', saved.value.credential_store === 'memory' ? '若已选择会话，将尝试下线后清除本地信息；未选择会话时仅清除本地信息。' : '退出并释放本地内存，远端会话可能继续在线。', '退出')) return
     await run(async () => { clearFields(); if (bridge) await bridge.core.invoke('exit_app') })
   }
   function simulateUpdate() {
@@ -203,7 +205,7 @@ export function createPortalState(bridge?: DesktopBridge) {
           const listed = await bridge.core.invoke<unknown>('list_interfaces')
           networkInterfaces.value = Array.isArray(listed) ? listed as InterfaceInfo[] : []
         } catch { networkInterfaces.value = [] }
-        username.value = initial.settings.one_session ? '' : initial.settings.username
+        username.value = initial.settings.credential_store === 'memory' ? '' : initial.settings.username
         for (const [name, handler] of [
           ['auth-phase', (payload: string) => { phase.value = phaseLabels[payload] ?? '正在连接' }],
           ['snapshot', (payload: Snapshot) => { if (!busy.value && !demo.value) receive(payload) }],
@@ -213,16 +215,17 @@ export function createPortalState(bridge?: DesktopBridge) {
           if (disposed) unlisten(); else unlisteners.push(unlisten)
         }
       }
-      snapshot.value.one_session = saved.value.one_session
+      snapshot.value.one_session = saved.value.credential_store === 'memory'
       ready.value = true
+      if (bridge && !demo.value) snapshotTimer = setInterval(() => { void pollSnapshot() }, 2000)
     } catch (error) { notify(`启动失败：${String(error)}`) }
   }
-  const stopWatch = watch(() => draft.one_session, value => { if (value) { draft.remember_account = false; draft.auto_redial = false; draft.service_enabled = false } }, { flush: 'sync' })
+  const stopWatch = watch(() => draft.credential_store, value => { if (value === 'memory') { draft.auto_redial = false; draft.service_enabled = false } }, { flush: 'sync' })
   const stopLogWatch = watch(logsOpen, open => {
     if (logTimer) clearInterval(logTimer)
     if (open) logTimer = setInterval(() => { void readLogs() }, 1000)
   })
-  function dispose() { disposed = true; stopWatch(); stopLogWatch(); if (logTimer) clearInterval(logTimer); logEpoch++; logEntries.value = []; unlisteners.splice(0).forEach(stop => stop()); clearFields(); answer(false) }
+  function dispose() { disposed = true; stopWatch(); stopLogWatch(); if (logTimer) clearInterval(logTimer); if (snapshotTimer) clearInterval(snapshotTimer); logEpoch++; logEntries.value = []; unlisteners.splice(0).forEach(stop => stop()); clearFields(); answer(false) }
   return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces }
 }
 export function usePortal() { const state = createPortalState(window.__TAURI__); onMounted(state.initialize); onUnmounted(state.dispose); return state }

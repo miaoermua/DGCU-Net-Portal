@@ -11,7 +11,9 @@ const themeMode = computed({ get: () => saved.value.theme_mode, set: (value: The
 watch(() => saved.value.theme_mode, value => setThemeMode(value), { immediate: true })
 const styleNonce = document.querySelector<HTMLStyleElement>('#motion-csp')?.nonce || undefined
 const locked = computed(() => busy.value || !ready.value)
-const settingsLocked = computed(() => locked.value || (snapshot.value.authenticated && !demo.value))
+// Settings are persisted through the daemon and can be edited while a session
+// is online; changing them does not terminate the current daemon session.
+const settingsLocked = computed(() => locked.value)
 const dialog = ref<HTMLDialogElement>()
 const logDialog = ref<HTMLDialogElement>(), sessionDialog = ref<HTMLDialogElement>(), licenseDialog = ref<HTMLDialogElement>()
 let previousFocus: HTMLElement | null = null
@@ -49,14 +51,14 @@ const selectedInterface = computed(() => networkInterfaces.value.find(item => it
     <main>
       <section v-if="page === 0" class="overview" aria-label="网络概览">
         <MiuixCard class="connection-card">
-          <div class="connection-main"><div class="status-icon" :class="{ online: isOnline }" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 8.5a15 15 0 0 1 18 0M6 12a10 10 0 0 1 12 0m-9 3.5a5 5 0 0 1 6 0"/><circle cx="12" cy="19" r="1"/></svg></div><div class="connection-copy"><div class="status-line"><h2>{{ phase || title }}</h2><span v-if="saved.one_session" class="privacy-tag">仅一次会话</span></div><p class="status-message" role="status">{{ phase ? '请稍候，等待认证系统返回结果' : snapshot.message }}</p></div></div>
+          <div class="connection-main"><div class="status-icon" :class="{ online: isOnline }" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 8.5a15 15 0 0 1 18 0M6 12a10 10 0 0 1 12 0m-9 3.5a5 5 0 0 1 6 0"/><circle cx="12" cy="19" r="1"/></svg></div><div class="connection-copy"><div class="status-line"><h2>{{ phase || title }}</h2><span v-if="saved.credential_store === 'memory'" class="privacy-tag">仅一次会话</span></div><p class="status-message" role="status">{{ phase ? '请稍候，等待认证系统返回结果' : snapshot.message }}</p></div></div>
           <div class="connection-actions"><MiuixButton type="primary" :disabled="locked" @click="primaryAction">{{ primaryLabel }}</MiuixButton><MiuixButton class="auth-site-icon" :disabled="locked" aria-label="打开认证后台" title="打开认证后台" @click="openSite"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M10 5H5a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-5"/></svg></MiuixButton></div>
         </MiuixCard>
         <div class="traffic-grid" aria-label="后台计费流量">
-          <MiuixCard class="metric"><span class="metric-label">↓ 累计下载</span><strong>{{ selected ? formatBytes(selected.acctoutputoctets) : '—' }}</strong><span class="metric-note">所选后台会话</span></MiuixCard>
-          <MiuixCard class="metric"><span class="metric-label">↑ 累计上传</span><strong>{{ selected ? formatBytes(selected.acctinputoctets) : '—' }}</strong><span class="metric-note">所选后台会话</span></MiuixCard>
-          <MiuixCard class="metric"><span class="metric-label">↓ 区间下载速率</span><strong :class="{ waiting: rate?.download_bps == null }">{{ formatRate(rate?.download_bps) }}</strong><span class="metric-note">{{ rate?.sample_seconds ? `最近 ${rate.sample_seconds} 秒平均` : '等待后台计费更新' }}</span></MiuixCard>
-          <MiuixCard class="metric"><span class="metric-label">↑ 区间上传速率</span><strong :class="{ waiting: rate?.upload_bps == null }">{{ formatRate(rate?.upload_bps) }}</strong><span class="metric-note">按后台计费时间计算</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">↓ 累计下载</span><strong>{{ saved.traffic_enabled && selected ? formatBytes(selected.acctoutputoctets) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '所选后台会话' : '设置中开启后台流量统计' }}</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">↑ 累计上传</span><strong>{{ saved.traffic_enabled && selected ? formatBytes(selected.acctinputoctets) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '所选后台会话' : '设置中开启后台流量统计' }}</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">↓ 区间下载速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.download_bps == null }">{{ saved.traffic_enabled ? formatRate(rate?.download_bps) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? (rate?.sample_seconds ? `最近 ${rate.sample_seconds} 秒平均` : '等待后台计费更新') : '设置中开启后台流量统计' }}</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">↑ 区间上传速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.upload_bps == null }">{{ saved.traffic_enabled ? formatRate(rate?.upload_bps) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '按后台计费时间计算' : '设置中开启后台流量统计' }}</span></MiuixCard>
         </div>
         <div v-if="saved.show_sessions" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixButton :disabled="locked" @click="connect(true)">仅登录后台</MiuixButton><MiuixButton :disabled="locked || !snapshot.authenticated" @click="refresh">刷新</MiuixButton></div></div>
         <MiuixCard v-if="saved.show_sessions" class="session-list">
@@ -71,27 +73,33 @@ const selectedInterface = computed(() => networkInterfaces.value.find(item => it
         <h3 class="group-heading">登录项</h3>
         <MiuixCard>
           <form class="credential-fields" autocomplete="off" @submit.prevent="connect(false)"><label class="field">账号<input v-model="username" :disabled="locked" autocomplete="off" placeholder="校园网账号" spellcheck="false"></label><label class="field">密码<input v-model="password" :disabled="locked" type="password" autocomplete="new-password" placeholder="仅当前会话使用"><button type="submit" class="sr-only" :disabled="locked" tabindex="-1">上线</button></label></form>
-          <MiuixSwitchPreference v-model="draft.one_session" title="仅一次会话" summary="结束后释放凭据与 Cookie，适合公共电脑" :disabled="settingsLocked" />
-          <MiuixSwitchPreference v-if="!draft.one_session" v-model="draft.remember_account" title="记住账号密码" summary="密码保存在系统凭据库" :disabled="settingsLocked" />
+          <label class="display-mode credential-store"><div><strong>会话账户保存方式</strong><span>默认使用系统凭据，更安全</span></div><select v-model="draft.credential_store" :disabled="settingsLocked" aria-label="会话账户保存方式"><option value="system">系统凭证（推荐）</option><option value="file">配置文件（明文，仅测试）</option><option value="memory">仅一次会话</option></select></label>
+          <p v-if="draft.credential_store === 'file'" class="security-note">配置文件会以明文保存密码，仅建议用于测试或系统没有可用凭据库的设备。</p>
+          <p v-if="draft.credential_store === 'memory'" class="security-note">仅一次会话不会保存密码，结束后释放本地凭据并关闭自动重拨。</p>
         </MiuixCard>
-        <h3 class="group-heading">界面与日志</h3>
+        <h3 class="group-heading">认证</h3>
+        <MiuixCard>
+          <div class="interface-picker"><div class="interface-picker-heading"><div><strong>认证网卡</strong><span>使用所选网卡的 IPv4 和 MAC 生成 Portal 参数</span></div><MiuixButton :disabled="!ready || preferencesBusy || demo" @click="refreshInterfaces">刷新</MiuixButton></div><select v-model="draft.interface_name" :disabled="settingsLocked" aria-label="认证网卡"><option value="">自动选择活动网卡</option><option v-for="item in networkInterfaces" :key="item.name" :value="item.name" :disabled="!item.ipv4 || !item.mac">{{ item.name }} · {{ item.ipv4 || '无 IPv4' }}{{ item.internal ? '（内部）' : '' }}</option></select><p v-if="selectedInterface" class="interface-details">{{ draft.interface_name ? '' : '自动选择：' }}IPv4 {{ selectedInterface.ipv4 || '未分配' }} · MAC {{ selectedInterface.mac || '未读取' }}</p><p v-else class="interface-details">{{ demo ? 'Demo 不读取本机网卡' : '未找到带 IPv4 和 MAC 的活动网卡，请刷新或手动检查系统网络' }}</p></div>
+          <MiuixSwitchPreference v-model="draft.bypass_proxy" title="绕过程序代理" summary="直连认证服务器；TUN / VPN 路由仍由系统决定" :disabled="settingsLocked" />
+          <MiuixSwitchPreference v-model="draft.probe_enabled" title="认证失败后自动探测" summary="默认先按 DGCU Portal 模板提交，模板失败后再探测公共 HTTP 地址" :disabled="settingsLocked" />
+        </MiuixCard>
+        <h3 class="group-heading">系统</h3>
+        <MiuixCard>
+          <MiuixSwitchPreference v-model="draft.auto_redial" title="掉线重拨" summary="会话连续消失后重拨，手动下线后暂停" :disabled="settingsLocked || draft.credential_store === 'memory'" />
+          <MiuixSwitchPreference v-model="draft.tray_startup" title="托盘启动" summary="下次启动隐藏窗口，可从托盘打开" :disabled="settingsLocked" />
+          <MiuixSwitchPreference v-model="draft.service_enabled" title="写入用户后台服务" summary="当前用户登录系统时启动 portal-cli daemon" :disabled="settingsLocked || draft.credential_store === 'memory'" />
+        </MiuixCard>
+        <h3 class="group-heading">界面</h3>
         <MiuixCard>
           <label class="display-mode"><div><strong>显示模式</strong><span>默认跟随系统外观</span></div><select v-model="themeMode" :disabled="!ready || preferencesBusy" aria-label="显示模式"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
           <MiuixSwitchPreference :model-value="saved.show_sessions" title="管理会话" summary="在网络页显示会话列表和管理操作，默认隐藏" :disabled="!ready || preferencesBusy" @update:model-value="updatePreferences({ show_sessions: $event })" />
           <MiuixSwitchPreference :model-value="saved.log_enabled" title="开启日志" summary="只在内存保留最近 300 条脱敏事件，默认关闭" :disabled="!ready || preferencesBusy" @update:model-value="updatePreferences({ log_enabled: $event })" />
-          <button v-if="saved.log_enabled" class="log-entry preference-action" :disabled="!ready || preferencesBusy" @click="openLogs"><span><strong>查看 DGCU CLI 日志</strong><small>{{ demo ? '演示模式显示模拟事件' : '来自 GUI 与 CLI 共用的 Rust 认证核心' }}</small></span><span aria-hidden="true">›</span></button>
+          <button v-if="saved.log_enabled" class="log-entry preference-action" :disabled="!ready || preferencesBusy" @click="openLogs"><span><strong>查看 portal-cli 日志</strong><small>{{ demo ? '演示模式显示模拟事件' : '来自 portal-cli daemon 的统一日志' }}</small></span><span aria-hidden="true">›</span></button>
+          <label class="display-mode"><div><strong>后台刷新频率</strong><span>在线会话和后台数据</span></div><select v-model="draft.refresh_policy" :disabled="!ready || preferencesBusy" aria-label="后台刷新频率" @change="updatePreferences({ refresh_policy: draft.refresh_policy })"><option value="one_second">每 1 秒</option><option value="two_seconds">每 2 秒</option><option value="five_seconds">每 5 秒</option><option value="random">随机 1-10 秒</option><option value="one_minute">每 1 分钟</option><option value="disabled">禁止刷新</option></select></label>
+          <MiuixSwitchPreference :model-value="saved.traffic_enabled" title="后台流量统计" summary="默认关闭；开启后计算后台累计字节的区间速率" :disabled="!ready || preferencesBusy" @update:model-value="updatePreferences({ traffic_enabled: $event })" />
         </MiuixCard>
-        <h3 class="group-heading">系统</h3>
-        <MiuixCard>
-          <div class="interface-picker"><div class="interface-picker-heading"><div><strong>认证网卡</strong><span>使用所选网卡的 IPv4 和 MAC 生成 Portal 参数</span></div><MiuixButton :disabled="!ready || preferencesBusy || demo" @click="refreshInterfaces">刷新</MiuixButton></div><select v-model="draft.interface_name" :disabled="settingsLocked" aria-label="认证网卡"><option value="">自动选择活动网卡</option><option v-for="item in networkInterfaces" :key="item.name" :value="item.name" :disabled="!item.ipv4 || !item.mac">{{ item.name }} · {{ item.ipv4 || '无 IPv4' }}{{ item.internal ? '（内部）' : '' }}</option></select><p v-if="selectedInterface" class="interface-details">{{ draft.interface_name ? '' : '自动选择：' }}IPv4 {{ selectedInterface.ipv4 || '未分配' }} · MAC {{ selectedInterface.mac || '未读取' }}</p><p v-else class="interface-details">{{ demo ? 'Demo 不读取本机网卡' : '未找到带 IPv4 和 MAC 的活动网卡，请刷新或手动检查系统网络' }}</p></div>
-          <MiuixSwitchPreference v-model="draft.bypass_proxy" title="绕过程序代理" summary="直连认证服务器；TUN / VPN 路由仍由系统决定" :disabled="settingsLocked" />
-          <label class="display-mode"><div><strong>后台刷新频率</strong><span>在线会话和后台流量数据</span></div><select v-model="draft.refresh_policy" :disabled="!ready || preferencesBusy" aria-label="后台刷新频率" @change="updatePreferences({ refresh_policy: draft.refresh_policy })"><option value="one_second">每 1 秒</option><option value="two_seconds">每 2 秒</option><option value="five_seconds">每 5 秒</option><option value="random">随机 1-10 秒</option><option value="one_minute">每 1 分钟</option><option value="disabled">禁止刷新</option></select></label>
-          <MiuixSwitchPreference v-model="draft.probe_enabled" title="认证失败后自动探测" summary="默认先按 DGCU Portal 模板提交，模板失败后再探测公共 HTTP 地址" :disabled="settingsLocked" />
-          <MiuixSwitchPreference v-model="draft.auto_redial" title="掉线重拨" summary="会话连续消失后重拨，手动下线后暂停" :disabled="settingsLocked || draft.one_session" />
-          <MiuixSwitchPreference v-model="draft.tray_startup" title="托盘启动" summary="下次启动隐藏窗口，可从托盘打开" :disabled="settingsLocked" />
-          <MiuixSwitchPreference v-model="draft.service_enabled" title="写入用户后台服务" summary="当前用户登录系统时启动客户端" :disabled="settingsLocked || draft.one_session" />
-        </MiuixCard>
-        <details class="advanced-settings"><summary>高级连接设置</summary><MiuixCard class="advanced-fields"><label class="field">认证服务器<input v-model="draft.server" :disabled="settingsLocked" spellcheck="false"></label><label class="field">认证后台<input v-model="draft.auth_url" :disabled="settingsLocked" spellcheck="false"></label><label class="field">Portal URL（可选）<input v-model="portalUrl" :disabled="locked" autocomplete="off" spellcheck="false" placeholder="留空使用 DGCU 模板，或粘贴当前网络的认证网址"></label><label class="field">HTTP 探测地址<input v-model="draft.probe_url" :disabled="settingsLocked" spellcheck="false"></label><p class="advanced-note">默认先使用 DGCU Portal 模板；模板失败且“认证失败后自动探测”开启时，才访问这里的探测地址。认证请求会把 paip 固定为 172.18.100.65。</p></MiuixCard></details>
+        <h3 class="group-heading">高级</h3>
+        <details class="advanced-settings"><summary>连接地址和探测参数</summary><MiuixCard class="advanced-fields"><label class="field">认证服务器<input v-model="draft.server" :disabled="settingsLocked" spellcheck="false"></label><label class="field">认证后台<input v-model="draft.auth_url" :disabled="settingsLocked" spellcheck="false"></label><label class="field">Portal URL（可选）<input v-model="portalUrl" :disabled="locked" autocomplete="off" spellcheck="false" placeholder="留空使用 DGCU 模板，或粘贴当前网络的认证网址"></label><label class="field">HTTP 探测地址<input v-model="draft.probe_url" :disabled="settingsLocked" spellcheck="false"></label><p class="advanced-note">默认先使用 DGCU Portal 模板；模板失败且“认证失败后自动探测”开启时，才访问这里的探测地址。认证请求会把 paip 固定为 172.18.100.65。</p></MiuixCard></details>
         <div class="settings-footer"><span>界面与日志设置即时保存；其他设置点击保存生效。</span><div class="row-actions"><MiuixButton :disabled="settingsLocked" @click="save">保存设置</MiuixButton></div></div>
       </section>
 

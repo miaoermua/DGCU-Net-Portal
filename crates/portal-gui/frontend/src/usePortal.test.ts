@@ -21,8 +21,8 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     const state=createPortalState();await state.initialize()
     state.username.value='synthetic-user';state.password.value='not-real';
     await state.save()
-    expect(state.saved.value.username).toBe('')
-    expect(state.username.value).toBe('synthetic-user');expect(state.password.value).toBe('not-real')
+    expect(state.saved.value.username).toBe('synthetic-user')
+    expect(state.username.value).toBe('synthetic-user');expect(state.password.value).toBe('')
     state.dispose();expect(state.password.value).toBe('')
   })
   it('opens the repository through a dedicated desktop command without account data', async () => {
@@ -49,7 +49,7 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
   })
   it('will not connect under a stale privacy setting before the change is saved', async()=>{
     const mock=desktop(),state=createPortalState(mock.bridge);await state.initialize()
-    state.draft.one_session=false
+    state.draft.credential_store='memory'
     state.username.value='synthetic';state.password.value='not-real'
     await state.connect()
     expect(mock.invoke).not.toHaveBeenCalledWith('connect',expect.anything())
@@ -83,7 +83,7 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
   it('enables logs on demand and disabling removes entries and the dialog', async () => {
     vi.useFakeTimers()
     const state=createPortalState();await state.initialize()
-    const first=state.connect();await vi.runAllTimersAsync();await first
+    state.saved.value.credential_store='memory'; state.draft.credential_store='memory'; const first=state.connect();await vi.runAllTimersAsync();await first
     expect(state.logEntries.value).toHaveLength(0)
     await state.updatePreferences({log_enabled:true})
     const second=state.connect();await vi.runAllTimersAsync();await second
@@ -100,7 +100,7 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     state.password.value='never-send-this'
     mock.invoke.mockImplementationOnce(async(_command,args?:Record<string,unknown>)=>args?.value as never)
     await state.updatePreferences({show_sessions:true,theme_mode:'dark'})
-    expect(mock.invoke).toHaveBeenLastCalledWith('save_preferences',{value:{show_sessions:true,theme_mode:'dark',log_enabled:false,refresh_policy:'five_seconds'}})
+    expect(mock.invoke).toHaveBeenLastCalledWith('save_preferences',{value:{show_sessions:true,theme_mode:'dark',log_enabled:false,refresh_policy:'five_seconds',traffic_enabled:false}})
     expect(state.saved.value.show_sessions).toBe(true)
     expect(state.password.value).toBe('never-send-this')
     state.dispose()
@@ -109,6 +109,7 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     vi.useFakeTimers()
     const state = createPortalState()
     await state.initialize()
+    state.saved.value.credential_store='memory'; state.draft.credential_store='memory'
     const connecting = state.connect()
     await vi.runAllTimersAsync(); await connecting
     expect(state.snapshot.value.sessions).toHaveLength(2)
@@ -123,7 +124,7 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     const mock = desktop(), state = createPortalState(mock.bridge)
     await state.initialize()
     mock.invoke.mockRejectedValueOnce(new Error('Synthetic connection failure'))
-    state.username.value = 'synthetic'; state.password.value = 'not-a-real-password'; state.portalUrl.value = 'http://example.test/portal'
+    state.username.value = 'synthetic'; state.password.value = 'not-a-real-password'; state.portalUrl.value = 'http://example.test/portal'; state.saved.value.credential_store='memory'; state.draft.credential_store='memory'
     await state.connect()
     expect(state.username.value).toBe(''); expect(state.password.value).toBe(''); expect(state.portalUrl.value).toBe('')
     expect(state.busy.value).toBe(false)
@@ -142,10 +143,10 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     state.dispose()
   })
   it('normalizes one-session settings before sending them to Rust', async () => {
-    const value = normalizeSettings({ ...defaultSettings(), username: 'synthetic', remember_account: true, auto_redial: true, service_enabled: true })
-    expect(value.username).toBe(''); expect(value.remember_account).toBe(false); expect(value.auto_redial).toBe(false); expect(value.service_enabled).toBe(false)
+    const value = normalizeSettings({ ...defaultSettings(), credential_store: 'memory', username: 'synthetic', auto_redial: true, service_enabled: true })
+    expect(value.username).toBe(''); expect(value.credential_store).toBe('memory'); expect(value.auto_redial).toBe(false); expect(value.service_enabled).toBe(false)
     const state = createPortalState(); await state.initialize()
-    state.draft.one_session = false; state.draft.auto_redial = true; state.draft.one_session = true
+    state.draft.credential_store = 'system'; state.draft.auto_redial = true; state.draft.credential_store = 'memory'
     expect(state.draft.auto_redial).toBe(false)
     state.dispose()
   })

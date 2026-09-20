@@ -21,6 +21,7 @@ cargo run -p portal-cli -- config show
 cargo run -p portal-cli -- config set interface en0
 cargo run -p portal-cli -- config set refresh 5s
 cargo run -p portal-cli -- config set auto-redial on
+cargo run -p portal-cli -- config set traffic off
 cargo run -p portal-cli -- logs
 cargo run -p portal-cli -- diagnose interfaces
 ```
@@ -54,6 +55,8 @@ cargo run -p portal-gui
 
 GUI 负责账号、网卡、刷新、流量展示、日志查看、托盘和桌面服务配置。关闭主窗口只隐藏到托盘；退出 GUI 不会停止 daemon。停止后台服务是单独操作。
 
+账户保存方式有三种：系统凭证、配置文件明文、仅一次会话。默认使用系统凭证；配置文件明文只建议用于测试或没有可用系统凭据库的设备；仅一次会话只在内存中使用密码，结束后释放。
+
 ## 构建
 
 ```bash
@@ -72,6 +75,14 @@ portal-cli
 ```
 
 OpenWrt 使用 `portal-cli run --daemon`，由 procd 负责拉起和停止；桌面系统服务也只启动 `portal-cli run --daemon`。
+
+OpenWrt 的 procd 脚本位于 `packaging/openwrt/etc/init.d/portal-cli`，安装后使用：
+
+```bash
+/etc/init.d/portal-cli enable
+/etc/init.d/portal-cli start
+/etc/init.d/portal-cli stop
+```
 
 ## 目录
 

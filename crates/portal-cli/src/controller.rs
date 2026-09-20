@@ -1,7 +1,7 @@
 use crate::{
     cmcc::Phase,
     network,
-    settings::Settings,
+    settings::{CredentialStore, Settings},
     traffic::{AccountingRates, Rate},
     AppError, CmccContext, Credential, OnlineSession, PortalClient, PortalLoginOutcome,
 };
@@ -93,7 +93,7 @@ impl Controller {
     }
     fn fail(&mut self, e: AppError) -> AppError {
         self.logs.error(&e);
-        if self.settings.one_session {
+        if self.settings.credential_store == CredentialStore::Memory {
             self.clear();
         }
         self.status = "error".into();
@@ -109,7 +109,7 @@ impl Controller {
             selected_id: self.selected.clone(),
             background_paused: self.paused,
             authenticated: self.api.is_some(),
-            one_session: self.settings.one_session,
+            one_session: self.settings.credential_store == CredentialStore::Memory,
         }
     }
     pub async fn connect<F: Fn(Phase)>(
@@ -261,8 +261,10 @@ impl Controller {
             self.message
                 .push_str("；后台会话查询暂不可用，稍后自动重试");
         }
-        self.paused = self.settings.one_session || !self.settings.auto_redial || outcome.is_none();
-        if !self.settings.one_session && self.settings.auto_redial {
+        self.paused = self.settings.credential_store == CredentialStore::Memory
+            || !self.settings.auto_redial
+            || outcome.is_none();
+        if self.settings.credential_store != CredentialStore::Memory && self.settings.auto_redial {
             self.credential = Some(credential);
         }
         // Otherwise credential drops here, before the online session ends.
@@ -272,13 +274,18 @@ impl Controller {
         let api = self.api.as_ref().ok_or(AppError::Rejected)?;
         self.rows = api.sessions().await?;
         self.bind_new_session();
-        self.latest_rates = self.accounting.update(&self.rows);
+        self.latest_rates = if self.settings.traffic_enabled {
+            self.accounting.update(&self.rows)
+        } else {
+            self.accounting.clear();
+            HashMap::new()
+        };
         if let Some(id) = &self.selected {
             if !self.rows.iter().any(|r| r.radacctid == *id) {
                 self.missing += 1;
                 self.status = "offline".into();
                 self.message = "所选会话已从后台在线列表消失".into();
-                if self.settings.one_session {
+                if self.settings.credential_store == CredentialStore::Memory {
                     self.clear();
                 }
             } else {
@@ -326,7 +333,7 @@ impl Controller {
         };
         if let Err(e) = result {
             self.logs.error(&e);
-            if self.settings.one_session {
+            if self.settings.credential_store == CredentialStore::Memory {
                 self.clear();
             }
             self.status = "unknown".into();
@@ -337,7 +344,7 @@ impl Controller {
         if self.selected.as_deref() == Some(id) {
             self.selected = None;
         }
-        if self.settings.one_session {
+        if self.settings.credential_store == CredentialStore::Memory {
             self.clear();
         }
         self.status = "offline".into();
@@ -357,7 +364,7 @@ impl Controller {
             return;
         }
         if self.paused
-            || self.settings.one_session
+            || self.settings.credential_store == CredentialStore::Memory
             || !self.settings.auto_redial
             || self.missing < 3
             || self.attempts >= 3
