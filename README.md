@@ -1,4 +1,10 @@
-# DGCU Portal
+# DGCU-Net-Portal
+
+## 特色功能
+
+- **轻量**：Rust engine + Tauri GUI，体积小、运行占用低，主界面紧凑友好；不打开 GUI 时只运行轻量的 `portal-cli daemon`。
+- **跨平台**：支持 Windows、macOS、Linux，以及无桌面环境的 OpenWrt；桌面平台使用 `portal-gui`，服务和 OpenWrt 使用 `portal-cli`。
+- **便捷**：配置简单，支持网卡自动识别、Portal/Unify 认证、自动重试、掉线重拨、会话管理、日志和可选后台流量统计。
 
 DGCU 校园网客户端。当前工作区只保留两个 Rust package：
 
@@ -42,7 +48,7 @@ session_monitor  = on
 traffic_monitor  = off
 ```
 
-GUI 桌面配置可以开启后台流量展示；OpenWrt/无 GUI 运行默认不计算流量。后台刷新策略支持 1 秒、2 秒、5 秒、随机 1-10 秒、1 分钟和禁止刷新。
+GUI 桌面配置可以开启后台流量展示；OpenWrt/无 GUI 运行默认不计算流量。后台刷新按服务端约 1 分钟更新，客户端在 1 分钟基础上增加 0.5-5 秒随机抖动，也可以禁止后台刷新。
 
 ## GUI
 
@@ -70,7 +76,7 @@ python3 scripts/package_macos.py --output target/packages
 macOS 包中包含：
 
 ```text
-DGCU Portal.app
+DGCU-Net-Portal.app
 portal-cli
 ```
 

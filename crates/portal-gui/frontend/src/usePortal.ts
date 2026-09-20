@@ -1,7 +1,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { DesktopBridge, InterfaceInfo, LogEntry, Session, Settings, Snapshot, UiPreferences, Unlisten } from './types'
 
-export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/lfradius/', auth_url: 'http://172.18.100.65/lfradius/web/admin/login', probe_url: 'http://captive.apple.com/hotspot-detect.html', probe_enabled: true, refresh_policy: 'five_seconds', traffic_enabled: false, credential_store: 'system', interface_name: '', bypass_proxy: true, username: '', auto_redial: false, tray_startup: false, service_enabled: false, show_sessions: false, log_enabled: false, theme_mode: 'system' })
+export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/lfradius/', auth_url: 'http://172.18.100.65/lfradius/web/admin/login', probe_url: 'http://captive.apple.com/hotspot-detect.html', probe_enabled: true, refresh_policy: 'one_minute', traffic_enabled: false, credential_store: 'system', interface_name: '', bypass_proxy: true, username: '', auto_redial: false, tray_startup: false, service_enabled: false, show_sessions: false, log_enabled: false, theme_mode: 'system' })
 export const emptySnapshot = (): Snapshot => ({ sessions: [], rates: {}, selected_id: null, authenticated: false, one_session: true, background_paused: true, status: 'idle', message: '填写账号后连接校园网' })
 export function normalizeSettings(value: Settings): Settings {
   const next = { ...value }
@@ -25,7 +25,7 @@ const demoSessions = (): Session[] => [
 const phaseLabels: Record<string, string> = { discovering: '正在寻找认证页', reading_form: '正在读取认证表单', authenticating: '正在提交认证', waiting_portal: '正在等待 Portal 认证', waiting_dial: '正在等待代拨结果', accepted: 'Portal 已确认成功' }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.3.4')
+  const version = ref('0.3.5')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')

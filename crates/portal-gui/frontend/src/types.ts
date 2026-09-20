@@ -3,7 +3,7 @@ export interface Settings {
   auth_url: string
   probe_url: string
   probe_enabled: boolean
-  refresh_policy: 'one_second' | 'two_seconds' | 'five_seconds' | 'random' | 'one_minute' | 'disabled'
+  refresh_policy: 'one_minute' | 'disabled'
   traffic_enabled: boolean
   credential_store: 'system' | 'file' | 'memory'
   interface_name: string

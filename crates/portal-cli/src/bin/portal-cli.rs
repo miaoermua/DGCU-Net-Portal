@@ -86,10 +86,6 @@ fn credentials() -> Result<Credential, Box<dyn std::error::Error + Send + Sync>>
 }
 fn parse_refresh(value: &str) -> Option<RefreshPolicy> {
     Some(match value {
-        "1s" => RefreshPolicy::OneSecond,
-        "2s" => RefreshPolicy::TwoSeconds,
-        "5s" => RefreshPolicy::FiveSeconds,
-        "random" => RefreshPolicy::Random,
         "1m" | "60s" => RefreshPolicy::OneMinute,
         "off" => RefreshPolicy::Disabled,
         _ => return None,
@@ -99,8 +95,7 @@ fn set_config(mut settings: Settings, key: &str, value: &str) -> Result<(), Stri
     match key {
         "interface" => settings.interface_name = value.into(),
         "refresh" => {
-            settings.refresh_policy =
-                parse_refresh(value).ok_or("刷新策略应为 1s、2s、5s、random、1m 或 off")?
+            settings.refresh_policy = parse_refresh(value).ok_or("刷新策略应为 1m 或 off")?
         }
         "portal-probe" => {
             settings.probe_enabled = match value {

@@ -30,7 +30,7 @@ binary = binary_dir / 'portal-gui'
 cli = binary_dir / 'portal-cli'
 for file in [binary, cli]:
     subprocess.run(['file', str(file)], check=True)
-app = folder / 'DGCU Portal.app'
+app = folder / 'DGCU-Net-Portal.app'
 macos = app / 'Contents/MacOS'
 resources = app / 'Contents/Resources'
 macos.mkdir(parents=True)
@@ -58,7 +58,7 @@ subprocess.run(['codesign', '--force', '--sign', '-', str(app)], check=True)
 subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
 subprocess.run(['codesign', '--force', '--sign', '-', str(folder / 'portal-cli')], check=True)
 chip = 'Apple Silicon（M 系列芯片）' if arch == 'arm64' else 'Intel 芯片（x86_64）'
-guide = f'''# DGCU Portal {version} · macOS {arch} 测试版
+guide = f'''# DGCU-Net-Portal {version} · macOS {arch} 测试版
 
 这是可连接校园网的真实客户端，不是 Demo；无需安装 Node.js 或 Rust。
 适用于{chip}，macOS 12 或更新版本。
@@ -66,7 +66,7 @@ guide = f'''# DGCU Portal {version} · macOS {arch} 测试版
 ## 开始测试
 
 1. 先退出旧 Demo / 旧版客户端，避免单实例机制唤起旧窗口。
-2. 解压后打开 `DGCU Portal.app`。如需启用登录启动，先将它移动到“应用程序”目录，再开启后台服务。
+2. 解压后打开 `DGCU-Net-Portal.app`。如需启用登录启动，先将它移动到“应用程序”目录，再开启后台服务。
 3. 在“设置”输入校园网账号、密码。首次建议保持“仅一次会话”，打开日志，暂不开启后台服务与自动重拨。
 4. 回到“网络”点击“上线”。程序会探测 Portal，依次显示认证和代拨状态。
 5. 若模板和自动探测都不可用，点击认证后台图标打开后台；Portal URL 仍可在高级连接设置中手工填入。不要使用旧 HAR 里的 IP/MAC 参数。

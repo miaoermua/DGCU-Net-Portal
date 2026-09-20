@@ -30,11 +30,7 @@ pub struct UiPreferences {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RefreshPolicy {
-    OneSecond,
-    TwoSeconds,
     #[default]
-    FiveSeconds,
-    Random,
     OneMinute,
     Disabled,
 }
@@ -49,21 +45,18 @@ pub enum CredentialStore {
 }
 impl RefreshPolicy {
     pub fn next_delay(self) -> Option<Duration> {
-        let seconds = match self {
-            Self::OneSecond => 1,
-            Self::TwoSeconds => 2,
-            Self::FiveSeconds => 5,
-            Self::Random => {
+        match self {
+            Self::OneMinute => {
                 let nanos = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .subsec_nanos();
-                u64::from(nanos % 10 + 1)
+                Some(Duration::from_millis(
+                    60_000 + 500 + u64::from(nanos % 4_501),
+                ))
             }
-            Self::OneMinute => 60,
-            Self::Disabled => return None,
-        };
-        Some(Duration::from_secs(seconds))
+            Self::Disabled => None,
+        }
     }
 }
 
@@ -97,7 +90,7 @@ impl Default for Settings {
             auth_url: format!("{DEFAULT_SERVER}web/admin/login"),
             probe_url: "http://captive.apple.com/hotspot-detect.html".into(),
             probe_enabled: true,
-            refresh_policy: RefreshPolicy::FiveSeconds,
+            refresh_policy: RefreshPolicy::OneMinute,
             traffic_enabled: false,
             interface_name: String::new(),
             bypass_proxy: true,
@@ -245,13 +238,13 @@ mod tests {
             show_sessions: true,
             log_enabled: true,
             theme_mode: ThemeMode::Dark,
-            refresh_policy: RefreshPolicy::Random,
+            refresh_policy: RefreshPolicy::OneMinute,
             traffic_enabled: true,
         });
         assert_eq!(settings.username, "test-user");
         assert_eq!(settings.credential_store, CredentialStore::System);
         assert!(settings.show_sessions && settings.log_enabled);
-        assert_eq!(settings.refresh_policy, RefreshPolicy::Random);
+        assert_eq!(settings.refresh_policy, RefreshPolicy::OneMinute);
         assert!(settings.traffic_enabled);
         let decoded: Settings =
             serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
@@ -260,24 +253,8 @@ mod tests {
 
     #[test]
     fn refresh_policy_has_six_expected_modes() {
-        assert_eq!(
-            RefreshPolicy::OneSecond.next_delay(),
-            Some(Duration::from_secs(1))
-        );
-        assert_eq!(
-            RefreshPolicy::TwoSeconds.next_delay(),
-            Some(Duration::from_secs(2))
-        );
-        assert_eq!(
-            RefreshPolicy::FiveSeconds.next_delay(),
-            Some(Duration::from_secs(5))
-        );
-        assert_eq!(
-            RefreshPolicy::OneMinute.next_delay(),
-            Some(Duration::from_secs(60))
-        );
+        let delay = RefreshPolicy::OneMinute.next_delay().unwrap();
+        assert!((60_500..=64_999).contains(&delay.as_millis()));
         assert_eq!(RefreshPolicy::Disabled.next_delay(), None);
-        let random = RefreshPolicy::Random.next_delay().unwrap().as_secs();
-        assert!((1..=10).contains(&random));
     }
 }

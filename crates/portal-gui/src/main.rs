@@ -248,7 +248,7 @@ fn main() {
             TrayIconBuilder::new()
                 .icon(tray_icon)
                 .icon_as_template(cfg!(target_os = "macos"))
-                .tooltip("DGCU Portal")
+                .tooltip("DGCU-Net-Portal")
                 .menu(&menu)
                 .on_menu_event(|app, event| {
                     show(app);
@@ -290,5 +290,5 @@ fn main() {
             exit_app
         ])
         .run(tauri::generate_context!())
-        .expect("DGCU Portal startup failed");
+        .expect("DGCU-Net-Portal startup failed");
 }
