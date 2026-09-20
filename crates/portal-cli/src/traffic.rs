@@ -3,7 +3,7 @@ use crate::OnlineSession;
 use serde::Serialize;
 use std::collections::HashMap;
 
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, Serialize, serde::Deserialize, Debug)]
 pub struct Rate {
     pub upload_bps: Option<f64>,
     pub download_bps: Option<f64>,

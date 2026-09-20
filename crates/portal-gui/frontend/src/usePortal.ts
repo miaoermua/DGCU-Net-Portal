@@ -173,6 +173,12 @@ export function createPortalState(bridge?: DesktopBridge) {
       else if (typeof window !== 'undefined') window.open('https://github.com/miaoermua/dgcu-portal', '_blank', 'noopener,noreferrer')
     })
   }
+  async function openUrl(url: string) {
+    await run(async () => {
+      if (bridge) await bridge.core.invoke('open_external', { url })
+      else if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
+    })
+  }
   async function refreshInterfaces() {
     if (!bridge || demo.value || !ready.value) return
     try { networkInterfaces.value = await bridge.core.invoke<InterfaceInfo[]>('list_interfaces') }
@@ -217,6 +223,6 @@ export function createPortalState(bridge?: DesktopBridge) {
     if (open) logTimer = setInterval(() => { void readLogs() }, 1000)
   })
   function dispose() { disposed = true; stopWatch(); stopLogWatch(); if (logTimer) clearInterval(logTimer); logEpoch++; logEntries.value = []; unlisteners.splice(0).forEach(stop => stop()); clearFields(); answer(false) }
-  return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, refreshInterfaces }
+  return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces }
 }
 export function usePortal() { const state = createPortalState(window.__TAURI__); onMounted(state.initialize); onUnmounted(state.dispose); return state }

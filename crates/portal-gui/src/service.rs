@@ -42,7 +42,7 @@ fn xml(value: &str) -> String {
 fn enable_platform(executable: &str) -> Result<(), String> {
     let path = plist_path()?;
     fs::create_dir_all(path.parent().unwrap()).map_err(|_| "无法创建 LaunchAgents")?;
-    let body=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>net.dgcu.portal</string><key>ProgramArguments</key><array><string>{}</string><string>--background</string></array><key>RunAtLoad</key><true/></dict></plist>",xml(executable));
+    let body=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>net.dgcu.portal</string><key>ProgramArguments</key><array><string>{}</string><string>run</string><string>--daemon</string></array><key>RunAtLoad</key><true/></dict></plist>",xml(executable));
     fs::write(&path, body).map_err(|_| "无法写入用户 LaunchAgent")?;
     // -w makes the user logon job available; RunAtLoad will launch the single instance.
     run(Command::new("launchctl").arg("load").arg("-w").arg(path))
@@ -69,7 +69,7 @@ fn enable_platform(executable: &str) -> Result<(), String> {
     let path = unit_path()?;
     fs::create_dir_all(path.parent().unwrap()).map_err(|_| "无法创建用户服务目录")?;
     let escaped = executable.replace('\\', "\\\\").replace('%', "%%");
-    fs::write(&path,format!("[Unit]\nDescription=DGCU Portal user desktop client\nAfter=graphical-session.target\n[Service]\nExecStart=\"{escaped}\" --background\n[Install]\nWantedBy=graphical-session.target\n")).map_err(|_|"无法写入用户服务")?;
+    fs::write(&path,format!("[Unit]\nDescription=DGCU Portal authentication daemon\nAfter=graphical-session.target\n[Service]\nExecStart=\"{escaped}\" run --daemon\n[Install]\nWantedBy=graphical-session.target\n")).map_err(|_|"无法写入用户服务")?;
     run(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
     run(Command::new("systemctl").args(["--user", "enable", "dgcu-portal.service"]))
 }
@@ -93,7 +93,7 @@ fn enable_platform(executable: &str) -> Result<(), String> {
         "/TN",
         "DGCU-Portal",
         "/TR",
-        &format!("\"{executable}\" --background"),
+        &format!("\"{executable}\" run --daemon"),
         "/RL",
         "LIMITED",
     ]))

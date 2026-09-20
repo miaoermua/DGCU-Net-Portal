@@ -9,7 +9,7 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
-portal-core = { path = "../portal-core" }
+portal-cli = { path = "../portal-cli" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

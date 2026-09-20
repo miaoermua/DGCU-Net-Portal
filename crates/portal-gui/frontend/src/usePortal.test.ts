@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createPortalState, defaultSettings, emptySnapshot, formatRate, normalizeSettings } from './usePortal'
+import { licenseGroups } from './licenses'
 import type { DesktopBridge, Session } from './types'
 
 const row = (id: string): Session => ({ radacctid: id, username: 'synthetic-user', framedipaddress: '192.0.2.1', acctstarttime: '', acctsessiontime: 60, acctinputoctets: 600, acctoutputoctets: 6000 })
@@ -28,6 +29,23 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     const mock=desktop(),state=createPortalState(mock.bridge);await state.initialize()
     await state.openRepository();expect(mock.invoke).toHaveBeenLastCalledWith('open_repository')
     state.dispose()
+  })
+  it('opens an open source license link with the url as the only payload', async () => {
+    const mock=desktop(),state=createPortalState(mock.bridge);await state.initialize()
+    await state.openUrl('https://github.com/vuejs/core')
+    expect(mock.invoke).toHaveBeenLastCalledWith('open_external',{url:'https://github.com/vuejs/core'})
+    expect(mock.invoke).not.toHaveBeenCalledWith('connect',expect.anything())
+    state.dispose()
+  })
+  it('keeps every open source entry unique and pointing at an https page', () => {
+    const entries=licenseGroups.flatMap(group=>group.entries)
+    expect(entries.length).toBeGreaterThan(0)
+    for(const entry of entries){
+      expect(entry.url).toMatch(/^https:\/\/[^\s]+$/)
+      expect(entry.name.trim()).toBe(entry.name)
+      expect(entry.license.trim()).not.toBe('')
+    }
+    expect(new Set(entries.map(entry=>entry.name)).size).toBe(entries.length)
   })
   it('will not connect under a stale privacy setting before the change is saved', async()=>{
     const mock=desktop(),state=createPortalState(mock.bridge);await state.initialize()

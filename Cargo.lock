@@ -1024,6 +1024,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "doctest-file"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2008,6 +2014,21 @@ checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "block-padding",
  "generic-array",
+]
+
+[[package]]
+name = "interprocess"
+version = "2.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cb02ffbf25e8ef0f4a95bff054eef75f6d1bf16919474cf2caa63b21997478a"
+dependencies = [
+ "doctest-file",
+ "futures-core",
+ "libc",
+ "recvmsg",
+ "tokio",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3013,23 +3034,14 @@ name = "portal-cli"
 version = "0.2.5"
 dependencies = [
  "clap",
- "portal-core",
- "rpassword",
- "serde_json",
- "tokio",
- "zeroize",
-]
-
-[[package]]
-name = "portal-core"
-version = "0.2.5"
-dependencies = [
  "directories",
  "dom_query",
+ "interprocess",
  "keyring",
  "network-interface",
  "regex",
  "reqwest 0.12.28",
+ "rpassword",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -3044,7 +3056,7 @@ name = "portal-gui"
 version = "0.2.5"
 dependencies = [
  "directories",
- "portal-core",
+ "portal-cli",
  "serde",
  "serde_json",
  "tauri",
@@ -3310,6 +3322,12 @@ name = "raw-window-handle"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
+
+[[package]]
+name = "recvmsg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
 
 [[package]]
 name = "redox_syscall"
@@ -5213,6 +5231,12 @@ dependencies = [
  "windows",
  "windows-core",
 ]
+
+[[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "winapi"

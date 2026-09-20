@@ -3,18 +3,19 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { MotionConfig } from 'motion-v'
 import { MiuixButton, MiuixCard, MiuixSwitchPreference, MiuixTabRow, MiuixSnackbarHost, showSnackbar, setThemeMode, type ThemeMode } from 'miuix-vue'
 import { usePortal, formatBytes, formatRate, formatDuration, mask } from './usePortal'
+import { licenseGroups, licenseNotice } from './licenses'
 import xiaoweiLogo from './assets/xiaowei.png'
 
-const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, refreshInterfaces } = usePortal()
+const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces } = usePortal()
 const themeMode = computed({ get: () => saved.value.theme_mode, set: (value: ThemeMode) => { void updatePreferences({ theme_mode: value }) } })
 watch(() => saved.value.theme_mode, value => setThemeMode(value), { immediate: true })
 const styleNonce = document.querySelector<HTMLStyleElement>('#motion-csp')?.nonce || undefined
 const locked = computed(() => busy.value || !ready.value)
 const settingsLocked = computed(() => locked.value || (snapshot.value.authenticated && !demo.value))
 const dialog = ref<HTMLDialogElement>()
-const logDialog = ref<HTMLDialogElement>(), sessionDialog = ref<HTMLDialogElement>()
+const logDialog = ref<HTMLDialogElement>(), sessionDialog = ref<HTMLDialogElement>(), licenseDialog = ref<HTMLDialogElement>()
 let previousFocus: HTMLElement | null = null
-let logFocus: HTMLElement | null = null, sessionFocus: HTMLElement | null = null
+let logFocus: HTMLElement | null = null, sessionFocus: HTMLElement | null = null, licenseFocus: HTMLElement | null = null
 watch(notice, message => { if (message) { void showSnackbar({ message, withDismissAction: true, duration: 6000 }); notice.value = '' } })
 watch(confirmation, async value => {
   if (value) { previousFocus = document.activeElement as HTMLElement; await nextTick(); dialog.value?.showModal(); dialog.value?.querySelector<HTMLButtonElement>('button')?.focus() }
@@ -29,7 +30,13 @@ watch(sessionPickerOpen, async open => {
   if (open) { sessionFocus = document.activeElement as HTMLElement; await nextTick(); sessionDialog.value?.showModal() }
   else { sessionDialog.value?.close(); sessionFocus?.focus() }
 })
-onUnmounted(() => { logDialog.value?.close(); sessionDialog.value?.close() })
+const licensesOpen = ref(false)
+const licenseCount = computed(() => licenseGroups.reduce((total, group) => total + group.entries.length, 0))
+watch(licensesOpen, async open => {
+  if (open) { licenseFocus = document.activeElement as HTMLElement; await nextTick(); licenseDialog.value?.showModal(); licenseDialog.value?.querySelector<HTMLButtonElement>('button')?.focus() }
+  else { licenseDialog.value?.close(); licenseFocus?.focus() }
+})
+onUnmounted(() => { logDialog.value?.close(); sessionDialog.value?.close(); licenseDialog.value?.close() })
 const logTime = (value: number) => new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
 const selectedInterface = computed(() => networkInterfaces.value.find(item => item.name === draft.interface_name) || networkInterfaces.value.find(item => !item.internal && item.ipv4 && item.mac))
 </script>
@@ -88,11 +95,12 @@ const selectedInterface = computed(() => networkInterfaces.value.find(item => it
         <div class="settings-footer"><span>界面与日志设置即时保存；其他设置点击保存生效。</span><div class="row-actions"><MiuixButton :disabled="settingsLocked" @click="save">保存设置</MiuixButton></div></div>
       </section>
 
-      <section v-else class="about-page" aria-label="关于"><MiuixCard class="about-card"><div class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><div><h2>DGCU Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></div></div><button class="repository-link" :disabled="locked" @click="openRepository"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4M14 3h7v7M21 3 10 14"/></svg><span><strong>GitHub 仓库</strong><small>miaoermua/dgcu-portal</small></span><span aria-hidden="true">↗</span></button></MiuixCard></section>
+      <section v-else class="about-page" aria-label="关于"><MiuixCard class="about-card"><div class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><div><h2>DGCU Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></div></div><button class="repository-link" :disabled="locked" @click="openRepository"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4M14 3h7v7M21 3 10 14"/></svg><span><strong>GitHub 仓库</strong><small>miaoermua/dgcu-portal</small></span><span aria-hidden="true">↗</span></button><button class="repository-link license-entry" :disabled="locked" @click="licensesOpen = true"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 3h8l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v5h5M8.5 13h7M8.5 17h4"/></svg><span><strong>开源软件声明</strong><small>{{ licenseCount }} 个开源项目 · 名称 / 地址 / 许可证</small></span><span aria-hidden="true">›</span></button></MiuixCard></section>
     </main>
     <dialog ref="dialog" class="confirm-dialog" aria-labelledby="dialog-title" @cancel.prevent="answer(false)"><template v-if="confirmation"><h2 id="dialog-title">{{ confirmation.title }}</h2><p>{{ confirmation.text }}</p><div class="dialog-actions"><MiuixButton @click="answer(false)">取消</MiuixButton><MiuixButton type="primary" @click="answer(true)">{{ confirmation.label }}</MiuixButton></div></template></dialog>
     <dialog ref="logDialog" class="logs-dialog" aria-labelledby="logs-title" @cancel.prevent="logsOpen = false"><div class="logs-heading"><h2 id="logs-title">DGCU CLI 日志 <span v-if="demo" class="mode-badge">模拟</span></h2><MiuixButton @click="logsOpen = false">关闭</MiuixButton></div><p class="dialog-caption">{{ demo ? '仅为 Demo 操作生成的模拟事件。' : '当前 GUI 进程与 CLI 共用认证核心的日志，不读取其他 CLI 进程。' }} 不记录账号、密码、URL 或 Cookie。</p><div class="logs-body" role="log" aria-label="客户端日志" aria-live="off"><p v-if="!logEntries.length" class="logs-empty">暂无日志，开启后执行认证操作即可查看。</p><div v-for="entry in logEntries" :key="entry.sequence" class="log-line"><time>{{ logTime(entry.timestamp_ms) }}</time><span class="log-level" :class="entry.level">{{ entry.level.toUpperCase() }}</span><code>{{ entry.code }}</code><span>{{ entry.message }}</span></div></div><div class="logs-footer"><span>{{ logEntries.length }} / 300 条 · 关闭日志开关即清空</span><MiuixButton @click="clearLogs">清空日志</MiuixButton></div></dialog>
     <dialog ref="sessionDialog" class="confirm-dialog session-picker" aria-labelledby="picker-title" @cancel.prevent="sessionPickerOpen = false"><h2 id="picker-title">选择要下线的会话</h2><p>无法唯一确定本次连接，请选择目标；不会自动下线其他设备。</p><div class="picker-list"><button v-for="row in snapshot.sessions" :key="row.radacctid" class="picker-session" :disabled="locked" @click="selectForDisconnect(row.radacctid)"><strong>会话 {{ row.radacctid }}</strong><span>{{ row.framedipaddress || 'IP 未上报' }} · {{ mask(row.username) }}</span></button><p v-if="!snapshot.sessions.length">暂无可选会话，请打开认证后台确认远端状态。</p></div><div class="dialog-actions"><MiuixButton @click="sessionPickerOpen = false">取消</MiuixButton><MiuixButton v-if="!snapshot.sessions.length" @click="openSite">认证后台</MiuixButton></div></dialog>
+    <dialog ref="licenseDialog" class="logs-dialog license-dialog" aria-labelledby="licenses-title" @cancel.prevent="licensesOpen = false"><div class="logs-heading"><h2 id="licenses-title">开源软件声明</h2><MiuixButton @click="licensesOpen = false">关闭</MiuixButton></div><p class="dialog-caption">{{ licenseNotice }}</p><div class="license-groups" role="list"><section v-for="group in licenseGroups" :key="group.title" class="license-group"><h3>{{ group.title }}</h3><button v-for="entry in group.entries" :key="entry.name" role="listitem" class="license-row" :disabled="locked" :title="`打开 ${entry.name} 仓库`" @click="openUrl(entry.url)"><span class="license-head"><strong>{{ entry.name }}</strong><span class="license-tag">{{ entry.license }}</span></span><span class="license-summary">{{ entry.summary }}</span></button></section></div></dialog>
     <MiuixSnackbarHost />
   </div>
   </MotionConfig>

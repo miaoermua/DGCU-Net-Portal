@@ -150,13 +150,13 @@ impl Event {
         }
     }
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize, Debug)]
 pub struct LogEntry {
     pub sequence: u64,
     pub timestamp_ms: u64,
-    pub level: &'static str,
-    pub code: &'static str,
-    pub message: &'static str,
+    pub level: String,
+    pub code: String,
+    pub message: String,
 }
 #[derive(Default)]
 struct Inner {
@@ -198,9 +198,9 @@ impl LogBuffer {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
-            level,
-            code,
-            message,
+            level: level.into(),
+            code: code.into(),
+            message: message.into(),
         };
         if inner.stderr {
             eprintln!("[{}] [{}] {} {}", entry.timestamp_ms, level, code, message);

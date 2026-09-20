@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/portal-core", "crates/portal-cli", "crates/portal-gui"]
+members = ["crates/portal-cli", "crates/portal-gui"]
 resolver = "2"
 
 [workspace.package]
@@ -22,6 +22,7 @@ webbrowser = "1"
 dom_query = "0.27"
 regex = "1"
 network-interface = "2.0.5"
+interprocess = { version = "2.4.4", features = ["tokio"] }
 
 [profile.release]
 opt-level = "z"

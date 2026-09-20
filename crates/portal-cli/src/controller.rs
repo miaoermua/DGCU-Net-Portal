@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize, Debug)]
 pub struct Snapshot {
     pub status: String,
     pub message: String,

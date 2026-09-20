@@ -1,106 +1,139 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod service;
-use portal_core::{
-    cmcc::Phase,
-    controller::{Controller, Snapshot},
-    logging::{LogBuffer, LogEntry},
+use portal_cli::{
+    controller::Snapshot,
+    ipc::{self, Request},
+    logging::LogEntry,
     settings::{self, Settings, UiPreferences},
     validate_url, Credential,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
 struct AppState {
-    inner: Mutex<Controller>,
     demo: bool,
-    logs: LogBuffer,
+}
+fn daemon_binary() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|_| "无法获取 GUI 路径")?;
+    for parent in exe.ancestors().skip(1) {
+        let candidate = parent.join("portal-cli");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err("找不到同包内的 portal-cli daemon".into())
+}
+async fn daemon_request(request: Request) -> Result<portal_cli::ipc::Response, String> {
+    match ipc::request(request.clone()).await {
+        Ok(response) => Ok(response),
+        Err(_) => {
+            let binary = daemon_binary()?;
+            std::process::Command::new(binary)
+                .arg("run")
+                .arg("--daemon")
+                .spawn()
+                .map_err(|_| "无法启动 portal-cli daemon")?;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            ipc::request(request)
+                .await
+                .map_err(|error| error.to_string())
+        }
+    }
 }
 #[tauri::command]
 async fn initial(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let c = state.inner.lock().await;
     Ok(
-        serde_json::json!({"settings":c.settings,"demo":state.demo,"version":env!("CARGO_PKG_VERSION")}),
+        serde_json::json!({"settings":Settings::load(),"demo":state.demo,"version":env!("CARGO_PKG_VERSION")}),
     )
 }
 #[tauri::command]
 async fn connect(
-    app: AppHandle,
+    _app: AppHandle,
     state: State<'_, AppState>,
     username: String,
     password: String,
     portal_url: String,
     backend_only: bool,
 ) -> Result<Snapshot, String> {
-    let mut c = state.inner.lock().await;
     if state.demo {
         return Err("Demo 模式不连接网络".into());
     }
     let mut credential = Credential::new(username, password);
-    if credential.password.is_empty() && c.settings.remember_account && !c.settings.one_session {
-        credential.username = c.settings.username.clone();
-        credential.password = settings::password()?.to_string();
+    if credential.password.is_empty() {
+        let settings = Settings::load();
+        if settings.remember_account && !settings.one_session {
+            credential.username = settings.username;
+            credential.password = settings::password()?.to_string();
+        }
     }
     if credential.username.is_empty() || credential.password.is_empty() {
         return Err("请输入账号和密码".into());
     }
-    let url = Zeroizing::new(portal_url);
-    c.connect(credential, &url, backend_only, |phase| {
-        let _ = app.emit("auth-phase", phase);
+    let response = daemon_request(Request::Up {
+        username: credential.username.clone(),
+        password: credential.password.clone(),
+        portal_url: Zeroizing::new(portal_url).to_string(),
+        backend_only,
     })
-    .await
-    .map_err(|e| e.to_string())
+    .await?;
+    if !response.ok {
+        return Err(response.message);
+    }
+    Ok(response
+        .snapshot
+        .unwrap_or_else(|| portal_cli::controller::Snapshot {
+            status: "accepted".into(),
+            message: response.message,
+            sessions: vec![],
+            rates: std::collections::HashMap::new(),
+            selected_id: None,
+            background_paused: false,
+            authenticated: true,
+            one_session: false,
+        }))
 }
 #[tauri::command]
-async fn refresh(state: State<'_, AppState>) -> Result<Snapshot, String> {
-    state
-        .inner
-        .lock()
-        .await
-        .refresh()
-        .await
-        .map_err(|e| e.to_string())
+async fn refresh(_state: State<'_, AppState>) -> Result<Snapshot, String> {
+    let response = daemon_request(Request::Sessions).await?;
+    response.snapshot.ok_or(response.message)
 }
 #[tauri::command]
-async fn snapshot(state: State<'_, AppState>) -> Result<Snapshot, String> {
-    Ok(state.inner.lock().await.snapshot())
+async fn snapshot(_state: State<'_, AppState>) -> Result<Snapshot, String> {
+    let response = daemon_request(Request::Status).await?;
+    response.snapshot.ok_or(response.message)
 }
 #[tauri::command]
-async fn select_session(state: State<'_, AppState>, id: String) -> Result<Snapshot, String> {
-    state
-        .inner
-        .lock()
-        .await
-        .select(&id)
-        .map_err(|e| e.to_string())
+async fn select_session(_state: State<'_, AppState>, id: String) -> Result<Snapshot, String> {
+    let response = daemon_request(Request::Select { session_id: id }).await?;
+    response.snapshot.ok_or(response.message)
 }
 #[tauri::command]
-async fn disconnect(state: State<'_, AppState>, id: String) -> Result<Snapshot, String> {
-    state
-        .inner
-        .lock()
-        .await
-        .disconnect(&id)
-        .await
-        .map_err(|e| e.to_string())
+async fn disconnect(_state: State<'_, AppState>, id: String) -> Result<Snapshot, String> {
+    let response = daemon_request(Request::Down { session_id: id }).await?;
+    response.snapshot.ok_or(response.message)
 }
 #[tauri::command]
-async fn forget(state: State<'_, AppState>) -> Result<Snapshot, String> {
-    let mut c = state.inner.lock().await;
-    c.forget();
-    Ok(c.snapshot())
+async fn forget(_state: State<'_, AppState>) -> Result<Snapshot, String> {
+    let response = daemon_request(Request::Forget).await?;
+    response.snapshot.ok_or(response.message)
 }
 #[tauri::command]
-fn read_logs(state: State<'_, AppState>) -> Vec<LogEntry> {
-    state.logs.entries()
+async fn read_logs(_state: State<'_, AppState>) -> Result<Vec<LogEntry>, String> {
+    let response = daemon_request(Request::Logs).await?;
+    response.logs.ok_or(response.message)
 }
 #[tauri::command]
-fn clear_logs(state: State<'_, AppState>) {
-    state.logs.clear();
+async fn clear_logs(_state: State<'_, AppState>) -> Result<(), String> {
+    let response = daemon_request(Request::ClearLogs).await?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(response.message)
+    }
 }
 #[tauri::command]
-fn list_interfaces() -> Result<Vec<portal_core::network::InterfaceInfo>, String> {
-    portal_core::network::list()
+fn list_interfaces() -> Result<Vec<portal_cli::network::InterfaceInfo>, String> {
+    portal_cli::network::list()
 }
 // UI preferences remain adjustable while an account is signed in, without touching credentials.
 #[tauri::command]
@@ -111,17 +144,10 @@ async fn save_preferences(
     if state.demo {
         return Err("Demo 不写入系统设置".into());
     }
-    let mut c = state.inner.lock().await;
-    let mut next = c.settings.clone();
+    let mut next = Settings::load();
     next.set_ui_preferences(&value);
     next.save()?;
-    c.settings = next;
-    state.logs.set_enabled(value.log_enabled);
-    state
-        .logs
-        .record(portal_core::logging::Event::refresh_policy(
-            value.refresh_policy,
-        ));
+    daemon_request(Request::Reload).await?;
     Ok(value)
 }
 #[tauri::command]
@@ -131,37 +157,28 @@ async fn save_settings(
     password: String,
 ) -> Result<Settings, String> {
     let password = Zeroizing::new(password);
-    let mut c = state.inner.lock().await;
     if state.demo {
         return Err("Demo 不写入系统设置".into());
     }
     value.normalize()?;
-    if c.snapshot().authenticated {
-        return Err("请先结束本地会话，再修改连接与账号设置".into());
-    }
     if value.one_session || !value.remember_account {
         // Remove saved identity as well as memory, before claiming transient mode is enabled.
         settings::forget_password()?;
     } else if !password.is_empty() {
         settings::save_password(&password)?;
-    } else if c.settings.username != value.username || c.settings.server != value.server {
+    } else if Settings::load().username != value.username || Settings::load().server != value.server
+    {
         return Err("切换账号或服务器时请重新输入密码".into());
     }
-    if value.service_enabled != c.settings.service_enabled {
+    if value.service_enabled != Settings::load().service_enabled {
         if value.service_enabled {
-            service::enable(&std::env::current_exe().map_err(|_| "无法获取程序路径")?)?;
+            service::enable(&daemon_binary()?)?;
         } else {
             service::disable()?;
         }
     }
     value.save()?;
-    state.logs.set_enabled(value.log_enabled);
-    state
-        .logs
-        .record(portal_core::logging::Event::refresh_policy(
-            value.refresh_policy,
-        ));
-    c.settings = value.clone();
+    daemon_request(Request::Reload).await?;
     Ok(value)
 }
 #[tauri::command]
@@ -178,18 +195,14 @@ fn open_repository() -> Result<(), String> {
         .map_err(|_| "无法打开 GitHub 仓库".into())
 }
 #[tauri::command]
-async fn exit_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let mut c = state.inner.lock().await;
-    if c.settings.one_session {
-        let s = c.snapshot();
-        if let Some(id) = s.selected_id {
-            if let Err(e) = c.disconnect(&id).await {
-                return Err(format!("{}；本地凭据已释放，再次退出可关闭窗口。", e));
-            }
-        }
-    }
-    c.forget();
-    drop(c);
+fn open_external(url: String) -> Result<(), String> {
+    let url = validate_url(&url).map_err(|e| e.to_string())?;
+    webbrowser::open(url.as_str())
+        .map(|_| ())
+        .map_err(|_| "无法打开系统浏览器".into())
+}
+#[tauri::command]
+async fn exit_app(app: AppHandle, _state: State<'_, AppState>) -> Result<(), String> {
     app.exit(0);
     Ok(())
 }
@@ -206,20 +219,9 @@ fn main() {
             .and_then(|p| p.file_name().map(|v| v == "dgcu-portal-demo"))
             .unwrap_or(false);
     let background = std::env::args().any(|v| v == "--background");
-    let settings = if demo {
-        Settings::default()
-    } else {
-        Settings::load()
-    };
-    let logs = LogBuffer::default();
-    logs.set_enabled(settings.log_enabled);
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
-        .manage(AppState {
-            inner: Mutex::new(Controller::with_logs(settings, logs.clone())),
-            demo,
-            logs,
-        })
+        .manage(AppState { demo })
         .setup(move |app| {
             use tauri::{
                 menu::{Menu, MenuItem},
@@ -248,62 +250,12 @@ fn main() {
                     }
                 })
                 .build(app)?;
-            let state = app.state::<AppState>();
-            let cfg = state.inner.blocking_lock().settings.clone();
+            let cfg = Settings::load();
             if !demo && (background || cfg.tray_startup) {
                 if let Some(w) = app.get_webview_window("main") {
                     w.hide()?;
                 }
             }
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if !demo
-                    && background
-                    && !cfg.one_session
-                    && cfg.remember_account
-                    && cfg.auto_redial
-                {
-                    if let Ok(password) = settings::password() {
-                        let credential =
-                            Credential::new(cfg.username.clone(), password.to_string());
-                        let _ = handle
-                            .state::<AppState>()
-                            .inner
-                            .lock()
-                            .await
-                            .connect(credential, "", false, |p| {
-                                let _ = handle.emit("auth-phase", p);
-                            })
-                            .await;
-                    }
-                }
-                loop {
-                    let delay = handle
-                        .state::<AppState>()
-                        .inner
-                        .try_lock()
-                        .ok()
-                        .map(|c| {
-                            c.settings
-                                .refresh_policy
-                                .next_delay()
-                                .unwrap_or_else(|| std::time::Duration::from_secs(60))
-                        })
-                        .unwrap_or_else(|| std::time::Duration::from_secs(1));
-                    tokio::time::sleep(delay).await;
-                    if demo {
-                        continue;
-                    }
-                    let state = handle.state::<AppState>();
-                    if let Ok(mut c) = state.inner.try_lock() {
-                        c.tick(|p: Phase| {
-                            let _ = handle.emit("auth-phase", p);
-                        })
-                        .await;
-                        let _ = handle.emit("snapshot", c.snapshot());
-                    };
-                }
-            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -327,6 +279,7 @@ fn main() {
             save_settings,
             open_auth_site,
             open_repository,
+            open_external,
             exit_app
         ])
         .run(tauri::generate_context!())

@@ -1,7 +1,7 @@
 """Package release binaries into a local ad-hoc signed macOS test application.
 
 No installation or service registration is performed. Build first with:
-cargo build --release -p portal-gui -p portal-cli --features portal-gui/custom-protocol --locked
+    cargo build --release -p portal-gui -p portal-cli --features portal-gui/custom-protocol --locked
 """
 import argparse
 import hashlib
@@ -36,7 +36,8 @@ resources = app / 'Contents/Resources'
 macos.mkdir(parents=True)
 resources.mkdir(parents=True)
 shutil.copy2(binary, macos / 'dgcu-portal')
-shutil.copy2(cli, folder / 'dgcu-cli')
+shutil.copy2(cli, macos / 'portal-cli')
+shutil.copy2(cli, folder / 'portal-cli')
 shutil.copy2(root / 'crates/portal-gui/icons/icon.icns', resources / 'icon.icns')
 shutil.copy2(root / 'LICENSE', folder / 'LICENSE')
 with (app / 'Contents/Info.plist').open('wb') as stream:
@@ -55,7 +56,7 @@ with (app / 'Contents/Info.plist').open('wb') as stream:
     }, stream)
 subprocess.run(['codesign', '--force', '--sign', '-', str(app)], check=True)
 subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
-subprocess.run(['codesign', '--force', '--sign', '-', str(folder / 'dgcu-cli')], check=True)
+subprocess.run(['codesign', '--force', '--sign', '-', str(folder / 'portal-cli')], check=True)
 chip = 'Apple Silicon（M 系列芯片）' if arch == 'arm64' else 'Intel 芯片（x86_64）'
 guide = f'''# DGCU Portal {version} · macOS {arch} 测试版
 
@@ -82,11 +83,11 @@ guide = f'''# DGCU Portal {version} · macOS {arch} 测试版
 
 在本目录终端运行：
 ```
-./dgcu-cli --log connect --one-session
-./dgcu-cli sessions
-./dgcu-cli disconnect <会话ID>
+./portal-cli up
+./portal-cli sessions
+./portal-cli down <会话ID>
 ```
-密码使用隐藏输入，不通过命令参数传递。CLI 的 `--log` 输出脱敏核心事件至 stderr。
+密码使用隐藏输入，不通过命令参数传递。CLI 通过 `logs` 查看 daemon 的统一脱敏日志。
 
 ## 测试反馈
 

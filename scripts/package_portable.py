@@ -31,7 +31,7 @@ binary_dir = (args.binary_dir or Path('target/release')).resolve()
 exe_suffix = '.exe' if args.platform == 'windows' else ''
 files = {
     f'dgcu-portal{exe_suffix}': binary_dir / f'portal-gui{exe_suffix}',
-    f'dgcu-cli{exe_suffix}': binary_dir / f'portal-cli{exe_suffix}',
+    f'portal-cli{exe_suffix}': binary_dir / f'portal-cli{exe_suffix}',
     'LICENSE': root / 'LICENSE',
 }
 for label, path in files.items():
@@ -50,9 +50,9 @@ if args.platform == 'windows':
     shell_lines = '''
 在本目录 PowerShell 中运行：
 ```
-.\\dgcu-cli.exe --log connect --one-session
-.\\dgcu-cli.exe sessions
-.\\dgcu-cli.exe disconnect <会话ID>
+.\\portal-cli.exe up
+.\\portal-cli.exe sessions
+.\\portal-cli.exe down <会话ID>
 ```
 '''
     extra = '''Windows 版本是免安装的绿色包，直接双击 `dgcu-portal.exe` 即可。
@@ -63,9 +63,9 @@ else:
     shell_lines = '''
 在本目录终端运行：
 ```
-./dgcu-cli --log connect --one-session
-./dgcu-cli sessions
-./dgcu-cli disconnect <会话ID>
+./portal-cli up
+./portal-cli sessions
+./portal-cli down <会话ID>
 ```
 '''
     extra = '''Linux 版本是免安装的绿色包，直接运行 `./dgcu-portal` 即可。
@@ -78,7 +78,7 @@ Arch Linux 可以直接用同一个 Release 里的 `dgcu-portal-*.pkg.tar.zst`�
 sudo pacman -U dgcu-portal-*.pkg.tar.zst
 ```
 “后台服务”在 Linux 上表现为当前用户的 systemd user service。
-无桌面环境时可以使用 `./dgcu-cli` 完成认证。'''
+无桌面环境时可以使用 `./portal-cli` 完成认证。'''
 
 guide = f'''# DGCU Portal {version} · {args.platform} {args.arch} 测试版
 
@@ -100,7 +100,7 @@ guide = f'''# DGCU Portal {version} · {args.platform} {args.arch} 测试版
 
 ## CLI
 {shell_lines}
-密码使用隐藏输入，不通过命令参数传递。CLI 的 `--log` 输出脱敏核心事件至 stderr。
+密码使用隐藏输入，不通过命令参数传递。CLI 通过 `logs` 查看 daemon 的统一脱敏日志。
 
 ## 测试反馈
 

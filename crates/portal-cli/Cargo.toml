@@ -4,10 +4,39 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "portal_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "portal-cli"
+path = "src/bin/portal-cli.rs"
+
 [dependencies]
 clap.workspace = true
-portal-core = { path = "../portal-core" }
-tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+tokio.workspace = true
 zeroize.workspace = true
+directories.workspace = true
+webbrowser.workspace = true
+dom_query.workspace = true
+regex.workspace = true
+network-interface.workspace = true
+interprocess.workspace = true
 rpassword.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }

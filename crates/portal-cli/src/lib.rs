@@ -1,7 +1,9 @@
 //! LFRadius API clients. Portal login and self-service login are separate sessions.
 pub mod cmcc;
 pub mod controller;
+pub mod daemon;
 mod discovery;
+pub mod ipc;
 pub mod logging;
 pub mod network;
 pub mod settings;
@@ -91,7 +93,7 @@ struct Envelope {
     d: serde_json::Value,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OnlineSession {
     pub radacctid: String,
     pub username: String,
