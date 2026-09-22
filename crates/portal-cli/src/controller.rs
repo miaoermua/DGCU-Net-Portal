@@ -289,12 +289,21 @@ impl Controller {
         let api = self.api.as_ref().ok_or(AppError::Rejected)?;
         self.rows = api.sessions().await?;
         self.bind_new_session();
+        self.update_rates();
+        if !self.settings.auto_redial {
+            self.update_session_status();
+        }
+        Ok(self.snapshot())
+    }
+    fn update_rates(&mut self) {
         self.latest_rates = if self.settings.traffic_enabled {
             self.accounting.update(&self.rows)
         } else {
             self.accounting.clear();
             HashMap::new()
         };
+    }
+    fn update_session_status(&mut self) {
         if let Some(id) = &self.selected {
             if !self.rows.iter().any(|r| r.radacctid == *id) {
                 self.missing += 1;
@@ -309,7 +318,6 @@ impl Controller {
                 self.message = "所选会话在后台在线列表中".into();
             }
         }
-        Ok(self.snapshot())
     }
     pub fn select(&mut self, id: &str) -> Result<Snapshot, AppError> {
         if !self.rows.iter().any(|r| r.radacctid == id) {
@@ -367,7 +375,7 @@ impl Controller {
         Ok(self.snapshot())
     }
     /// Invoked by the app's worker, not by the WebView timer (works with window hidden).
-    pub async fn tick<F: Fn(Phase)>(&mut self, progress: F) {
+    pub async fn tick(&mut self) {
         if self.api.is_none()
             || self.settings.refresh_policy == crate::settings::RefreshPolicy::Disabled
         {
@@ -376,7 +384,34 @@ impl Controller {
         if let Err(e) = self.refresh().await {
             self.logs.error(&e);
             self.message = e.to_string();
+        }
+    }
+    /// Check the selected session on the short drop-detection cadence. This is
+    /// intentionally separate from `tick`: it reads session presence but does
+    /// not update accounting-rate samples.
+    pub async fn redial_tick<F: Fn(Phase)>(&mut self, progress: F) {
+        if self.api.is_none()
+            || self.settings.credential_store == CredentialStore::Memory
+            || !self.settings.auto_redial
+            || self.paused
+        {
             return;
+        }
+        let rows = match self.api.as_ref().ok_or(AppError::Rejected) {
+            Ok(api) => api.sessions().await,
+            Err(error) => Err(error),
+        };
+        match rows {
+            Ok(rows) => {
+                self.rows = rows;
+                self.bind_new_session();
+                self.update_session_status();
+            }
+            Err(error) => {
+                self.logs.error(&error);
+                self.message = error.to_string();
+                return;
+            }
         }
         if self.paused
             || self.settings.credential_store == CredentialStore::Memory

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "DGCU-Net-Portal",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "identifier": "net.dgcu.portal",
   "build": {
     "frontendDist": "frontend/dist"

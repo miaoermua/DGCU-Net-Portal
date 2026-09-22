@@ -48,6 +48,7 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             });
         }
     }
+    let redial_state = state.clone();
     tokio::spawn(async move {
         loop {
             let settings = worker_state.lock().await.settings.clone();
@@ -56,7 +57,17 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .next_delay(settings.poll_jitter)
                 .unwrap_or_else(|| std::time::Duration::from_secs(1));
             tokio::time::sleep(delay).await;
-            worker_state.lock().await.tick(|_| {}).await;
+            worker_state.lock().await.tick().await;
+        }
+    });
+    tokio::spawn(async move {
+        loop {
+            let settings = redial_state.lock().await.settings.clone();
+            let delay = settings
+                .poll_jitter
+                .apply(std::time::Duration::from_secs(5));
+            tokio::time::sleep(delay).await;
+            redial_state.lock().await.redial_tick(|_| {}).await;
         }
     });
     eprintln!("portal-cli daemon ready");
