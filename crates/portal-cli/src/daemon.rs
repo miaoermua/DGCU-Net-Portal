@@ -185,7 +185,9 @@ async fn handle(
         Request::Reload => {
             let settings = Settings::load();
             logs.set_enabled(settings.log_enabled);
-            logs.record(crate::logging::Event::refresh_policy(settings.refresh_policy));
+            logs.record(crate::logging::Event::refresh_policy(
+                settings.refresh_policy,
+            ));
             logs.record(crate::logging::Event::poll_jitter(settings.poll_jitter));
             let mut controller = state.lock().await;
             controller.settings = settings;

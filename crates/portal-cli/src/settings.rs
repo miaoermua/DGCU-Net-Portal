@@ -3,6 +3,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    net::IpAddr,
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -39,7 +40,10 @@ pub enum RefreshPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum PollJitter {
     #[default]
-    Enabled,
+    #[serde(alias = "enabled")]
+    Low,
+    Medium,
+    High,
     Disabled,
 }
 
@@ -54,23 +58,34 @@ pub enum CredentialStore {
 impl RefreshPolicy {
     pub fn next_delay(self, jitter: PollJitter) -> Option<Duration> {
         match self {
-            Self::OneMinute => Some(Duration::from_secs(60) + jitter.duration()),
+            Self::OneMinute => Some(jitter.apply(Duration::from_secs(60))),
             Self::Disabled => None,
         }
     }
 }
 impl PollJitter {
-    pub fn duration(self) -> Duration {
+    pub const fn percent(self) -> u64 {
         match self {
-            Self::Enabled => {
-                let nanos = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .subsec_nanos();
-                Duration::from_millis(500 + u64::from(nanos % 4_501))
-            }
-            Self::Disabled => Duration::ZERO,
+            Self::Low => 5,
+            Self::Medium => 10,
+            Self::High => 20,
+            Self::Disabled => 0,
         }
+    }
+    pub fn apply(self, base: Duration) -> Duration {
+        let percent = self.percent();
+        if percent == 0 {
+            return base;
+        }
+        let base_ms = base.as_millis();
+        let span = (base_ms * u128::from(percent) / 100).max(1);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        let offset = u128::from(nanos) % (span * 2 + 1);
+        let result = base_ms + offset - span;
+        Duration::from_millis(result.min(u128::from(u64::MAX)) as u64)
     }
 }
 
@@ -80,6 +95,9 @@ pub struct Settings {
     pub server: String,
     pub auth_url: String,
     pub probe_url: String,
+    #[serde(default = "default_paip")]
+    pub paip: String,
+    pub basip: String,
     /// Try public captive-check discovery only after the DGCU template fails.
     pub probe_enabled: bool,
     pub refresh_policy: RefreshPolicy,
@@ -104,9 +122,11 @@ impl Default for Settings {
             server: DEFAULT_SERVER.into(),
             auth_url: format!("{DEFAULT_SERVER}web/admin/login"),
             probe_url: "http://captive.apple.com/hotspot-detect.html".into(),
+            paip: default_paip(),
+            basip: String::new(),
             probe_enabled: true,
             refresh_policy: RefreshPolicy::OneMinute,
-            poll_jitter: PollJitter::Enabled,
+            poll_jitter: PollJitter::Low,
             traffic_enabled: false,
             interface_name: String::new(),
             bypass_proxy: true,
@@ -147,6 +167,14 @@ impl Settings {
         for value in [&self.server, &self.auth_url, &self.probe_url] {
             validate_url(value).map_err(|e| e.to_string())?;
         }
+        self.paip
+            .parse::<IpAddr>()
+            .map_err(|_| "paip 必须是有效的 IP 地址".to_string())?;
+        if !self.basip.is_empty() {
+            self.basip
+                .parse::<IpAddr>()
+                .map_err(|_| "basip 覆盖值必须是有效的 IP 地址".to_string())?;
+        }
         if self.credential_store == CredentialStore::Memory {
             self.auto_redial = false;
             self.service_enabled = false;
@@ -182,6 +210,9 @@ impl Settings {
         fs::rename(&temp, &path).map_err(|_| "无法替换设置")?;
         Ok(())
     }
+}
+fn default_paip() -> String {
+    crate::cmcc::PORTAL_PAIP.into()
 }
 fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new("net.dgcu.portal", "saved-account").map_err(|_| "无法访问系统凭据库".into())
@@ -269,9 +300,18 @@ mod tests {
 
     #[test]
     fn refresh_policy_and_jitter_have_expected_delays() {
-        let delay = RefreshPolicy::OneMinute.next_delay(PollJitter::Enabled).unwrap();
-        assert!((60_500..=64_999).contains(&delay.as_millis()));
-        assert_eq!(RefreshPolicy::OneMinute.next_delay(PollJitter::Disabled).unwrap(), Duration::from_secs(60));
-        assert_eq!(RefreshPolicy::Disabled.next_delay(PollJitter::Enabled), None);
+        let delay = RefreshPolicy::OneMinute
+            .next_delay(PollJitter::Low)
+            .unwrap();
+        assert!((57_000..=63_000).contains(&delay.as_millis()));
+        let high = PollJitter::High.apply(Duration::from_secs(5));
+        assert!((4_000..=6_000).contains(&high.as_millis()));
+        assert_eq!(
+            RefreshPolicy::OneMinute
+                .next_delay(PollJitter::Disabled)
+                .unwrap(),
+            Duration::from_secs(60)
+        );
+        assert_eq!(RefreshPolicy::Disabled.next_delay(PollJitter::Low), None);
     }
 }

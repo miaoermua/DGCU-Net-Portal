@@ -42,10 +42,9 @@ const logTime = (value: number) => new Date(value).toLocaleTimeString('zh-CN', {
 const selectedInterface = computed(() => networkInterfaces.value.find(item => item.name === draft.interface_name) || networkInterfaces.value.find(item => !item.internal && item.ipv4 && item.mac))
 const credentialStoreItems = ['系统凭证（推荐）', '配置文件（明文，仅测试）', '仅一次会话']
 const credentialStoreIndex = computed({ get: () => ({ system: 0, file: 1, memory: 2 }[draft.credential_store]), set: (value: number) => { draft.credential_store = (['system', 'file', 'memory'] as const)[value] ?? 'system' } })
-const refreshItems = ['每 1 分钟', '禁止刷新']
-const refreshIndex = computed({ get: () => draft.refresh_policy === 'disabled' ? 1 : 0, set: (value: number) => { draft.refresh_policy = value === 1 ? 'disabled' : 'one_minute'; void updatePreferences({ refresh_policy: draft.refresh_policy }) } })
-const jitterItems = ['开启（0.5-5 秒，推荐）', '关闭']
-const jitterIndex = computed({ get: () => draft.poll_jitter === 'disabled' ? 1 : 0, set: (value: number) => { draft.poll_jitter = value === 1 ? 'disabled' : 'enabled' } })
+const refreshEnabled = computed({ get: () => draft.refresh_policy !== 'disabled', set: (value: boolean) => { draft.refresh_policy = value ? 'one_minute' : 'disabled'; void updatePreferences({ refresh_policy: draft.refresh_policy }) } })
+const jitterItems = ['低（±5%）', '中（±10%）', '高（±20%）', '禁用（0%）']
+const jitterIndex = computed({ get: () => ({ low: 0, medium: 1, high: 2, disabled: 3 }[draft.poll_jitter]), set: (value: number) => { draft.poll_jitter = (['low', 'medium', 'high', 'disabled'] as const)[value] ?? 'low' } })
 const themeItems = ['跟随系统', '浅色', '深色']
 const themeIndex = computed({ get: () => ({ system: 0, light: 1, dark: 2 }[saved.value.theme_mode]), set: (value: number) => { void updatePreferences({ theme_mode: (['system', 'light', 'dark'] as const)[value] ?? 'system' }) } })
 const interfaceItems = computed(() => [{ text: '自动选择活动网卡', summary: '使用第一个可用 IPv4/MAC 接口' }, ...networkInterfaces.value.map(item => ({ text: item.name, summary: `${item.ipv4 || '无 IPv4'} · ${item.mac || '无 MAC'}`, disabled: !item.ipv4 || !item.mac }))])
@@ -110,11 +109,11 @@ const interfaceSummary = computed(() => {
           <MiuixSwitchPreference :model-value="saved.show_sessions" title="管理会话" summary="在网络页显示会话列表和管理操作，默认隐藏" :disabled="!ready || preferencesBusy" @update:model-value="updatePreferences({ show_sessions: $event })" />
           <MiuixSwitchPreference :model-value="saved.log_enabled" title="开启日志" summary="只在内存保留最近 300 条脱敏事件，默认关闭" :disabled="!ready || preferencesBusy" @update:model-value="updatePreferences({ log_enabled: $event })" />
           <button v-if="saved.log_enabled" class="log-entry preference-action" :disabled="!ready || preferencesBusy" @click="openLogs"><span><strong>查看 portal-cli 日志</strong><small>{{ demo ? '演示模式显示模拟事件' : '来自 portal-cli daemon 的统一日志' }}</small></span><span aria-hidden="true">›</span></button>
-          <MiuixDropdownPreference v-model="refreshIndex" title="后台刷新频率" summary="服务端约每 1 分钟；是否增加抖动由认证中的轮询频率设置控制" :items="refreshItems" :disabled="!ready || preferencesBusy" />
+          <MiuixSwitchPreference v-model="refreshEnabled" title="后台刷新" summary="按服务端约 1 分钟的周期读取会话；抖动由认证中的轮询频率设置控制" :disabled="!ready || preferencesBusy" />
           <MiuixSwitchPreference :model-value="saved.traffic_enabled" title="后台流量统计" summary="默认关闭；开启后计算后台累计字节的区间速率" :disabled="!ready || preferencesBusy" @update:model-value="updatePreferences({ traffic_enabled: $event })" />
         </MiuixCard>
         <h3 class="group-heading">高级</h3>
-        <details class="advanced-settings"><summary>连接地址和探测参数</summary><MiuixCard class="advanced-fields"><label class="field">认证服务器<input v-model="draft.server" :disabled="settingsLocked" spellcheck="false"></label><label class="field">认证后台<input v-model="draft.auth_url" :disabled="settingsLocked" spellcheck="false"></label><label class="field">Portal URL（可选）<input v-model="portalUrl" :disabled="locked" autocomplete="off" spellcheck="false" placeholder="留空使用 DGCU 模板，或粘贴当前网络的认证网址"></label><label class="field">HTTP 探测地址<input v-model="draft.probe_url" :disabled="settingsLocked" spellcheck="false"></label><p class="advanced-note">默认先使用 DGCU-Net-Portal 模板；模板失败且“认证失败后自动探测”开启时，才访问这里的探测地址。认证请求会把 paip 固定为 172.18.100.65。</p></MiuixCard></details>
+        <details class="advanced-settings"><summary>连接地址和探测参数</summary><MiuixCard class="advanced-fields"><label class="field">HTTP 探测地址<input v-model="draft.probe_url" :disabled="settingsLocked" spellcheck="false"></label><label class="field">认证后台<input v-model="draft.auth_url" :disabled="settingsLocked" spellcheck="false"></label><label class="field">认证服务器<input v-model="draft.server" :disabled="settingsLocked" spellcheck="false"></label><label class="field">Portal URL（可选）<input v-model="portalUrl" :disabled="locked" autocomplete="off" spellcheck="false" placeholder="留空使用 DGCU 模板，或粘贴当前网络的认证网址"></label><label class="field">paip（Portal 参数）<input v-model="draft.paip" :disabled="settingsLocked" spellcheck="false" placeholder="172.18.100.65"></label><label class="field">basip 覆盖值（可选）<input v-model="draft.basip" :disabled="settingsLocked" spellcheck="false" placeholder="留空使用认证页返回值"></label><p class="advanced-note">paip 默认是 172.18.100.65，会写入 Portal URL 查询参数。basip 默认留空，程序会使用认证入口表单返回的隐藏值；只有填写覆盖值时才替换服务器返回值。两者都必须是 IP 地址。</p></MiuixCard></details>
         <div class="settings-footer"><span>界面与日志设置即时保存；其他设置点击保存生效。</span><div class="row-actions"><MiuixButton :disabled="settingsLocked" @click="save">保存设置</MiuixButton></div></div>
       </section>
 

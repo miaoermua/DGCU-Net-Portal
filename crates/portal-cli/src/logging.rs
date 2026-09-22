@@ -46,7 +46,9 @@ pub enum Event {
     DisconnectPending,
     RefreshOneMinute,
     RefreshDisabled,
-    JitterEnabled,
+    JitterLow,
+    JitterMedium,
+    JitterHigh,
     JitterDisabled,
 }
 impl Event {
@@ -58,7 +60,9 @@ impl Event {
     }
     pub fn poll_jitter(jitter: PollJitter) -> Self {
         match jitter {
-            PollJitter::Enabled => Self::JitterEnabled,
+            PollJitter::Low => Self::JitterLow,
+            PollJitter::Medium => Self::JitterMedium,
+            PollJitter::High => Self::JitterHigh,
             PollJitter::Disabled => Self::JitterDisabled,
         }
     }
@@ -141,16 +145,22 @@ impl Event {
                 "session.pending",
                 "已提交下线请求，远端状态尚未确认",
             ),
-            Self::RefreshOneMinute => (
-                "info",
-                "refresh.policy",
-                "后台刷新策略：每 1 分钟",
-            ),
+            Self::RefreshOneMinute => ("info", "refresh.policy", "后台刷新策略：每 1 分钟"),
             Self::RefreshDisabled => ("info", "refresh.policy", "后台刷新策略：禁止刷新"),
-            Self::JitterEnabled => (
+            Self::JitterLow => (
                 "info",
                 "poll.jitter",
-                "轮询频率抖动：已开启（0.5-5 秒），给程序行为增加时间抖动，可降低风控特征",
+                "轮询频率抖动：低（±5%），给程序行为增加时间抖动，可降低风控特征",
+            ),
+            Self::JitterMedium => (
+                "info",
+                "poll.jitter",
+                "轮询频率抖动：中（±10%），给程序行为增加时间抖动，可降低风控特征",
+            ),
+            Self::JitterHigh => (
+                "info",
+                "poll.jitter",
+                "轮询频率抖动：高（±20%），给程序行为增加时间抖动，可降低风控特征",
             ),
             Self::JitterDisabled => (
                 "warn",

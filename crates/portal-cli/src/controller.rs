@@ -183,16 +183,25 @@ impl Controller {
                 // The DGCU gateway accepts the standard CMCC entry with the
                 // current interface context. This avoids depending on public
                 // captive-check hosts, which often time out before login.
-                let template = CmccContext::from_server_context(
+                let template = CmccContext::from_server_context_options(
                     &self.settings.server,
                     network.as_ref().unwrap(),
+                    &self.settings.paip,
+                    (!self.settings.basip.is_empty()).then_some(self.settings.basip.as_str()),
                 )?;
                 if self.settings.probe_enabled {
                     match portal.portal_form_available(&template).await {
                         Ok(()) => Ok(template),
                         Err(_) => {
                             progress(Phase::Discovering);
-                            portal.discover(&self.settings.probe_url).await
+                            let discovered = portal.discover(&self.settings.probe_url).await?;
+                            CmccContext::with_network_context_options(
+                                &discovered.portal_url,
+                                network.as_ref().unwrap(),
+                                &self.settings.paip,
+                                (!self.settings.basip.is_empty())
+                                    .then_some(self.settings.basip.as_str()),
+                            )
                         }
                     }
                 } else {
@@ -201,7 +210,12 @@ impl Controller {
             } else {
                 progress(Phase::ReadingForm);
                 CmccContext::from_portal_url(portal_url).and_then(|ctx| {
-                    CmccContext::with_network_context(&ctx.portal_url, network.as_ref().unwrap())
+                    CmccContext::with_network_context_options(
+                        &ctx.portal_url,
+                        network.as_ref().unwrap(),
+                        &self.settings.paip,
+                        (!self.settings.basip.is_empty()).then_some(self.settings.basip.as_str()),
+                    )
                 })
             };
             let ctx = ctx.map_err(|e| self.fail(e))?;
@@ -372,14 +386,13 @@ impl Controller {
         {
             return;
         }
-        if self
-            .last_attempt
-            .is_some_and(|t| {
-                t.elapsed()
-                    < Duration::from_secs(30 * (1 << self.attempts))
-                        + self.settings.poll_jitter.duration()
-            })
-        {
+        if self.last_attempt.is_some_and(|t| {
+            t.elapsed()
+                < self
+                    .settings
+                    .poll_jitter
+                    .apply(Duration::from_secs(30 * (1 << self.attempts)))
+        }) {
             return;
         }
         let Some(credential) = self.credential.take() else {

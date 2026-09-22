@@ -15,6 +15,7 @@ pub struct CmccContext {
     pub portal_url: String,
     local_ipv4: Option<String>,
     local_mac: Option<String>,
+    basip_override: Option<String>,
 }
 impl CmccContext {
     pub fn from_portal_url(value: &str) -> Result<Self, AppError> {
@@ -26,13 +27,23 @@ impl CmccContext {
             portal_url: u.to_string(),
             local_ipv4: None,
             local_mac: None,
+            basip_override: None,
         })
     }
 
     /// Apply the selected local interface to the gateway context. The gateway
-    /// supplies the authoritative hidden `basip`; the client only rewrites the
-    /// standard Portal query values and the fixed Portal server address (`paip`).
+    /// supplies the authoritative hidden `basip`; the client rewrites the
+    /// standard Portal query values and the configured Portal server address (`paip`).
     pub fn with_network_context(value: &str, network: &NetworkContext) -> Result<Self, AppError> {
+        Self::with_network_context_options(value, network, PORTAL_PAIP, None)
+    }
+
+    pub fn with_network_context_options(
+        value: &str,
+        network: &NetworkContext,
+        paip: &str,
+        basip: Option<&str>,
+    ) -> Result<Self, AppError> {
         let mut portal = validate_url(value)?;
         let mut pairs = portal.query_pairs().into_owned().collect::<Vec<_>>();
         fn set(pairs: &mut Vec<(String, String)>, key: &str, value: &str) {
@@ -42,7 +53,7 @@ impl CmccContext {
         set(&mut pairs, "wlanuserip", &network.ipv4);
         set(&mut pairs, "clientip", &network.ipv4);
         set(&mut pairs, "clientmac", &network.mac);
-        set(&mut pairs, "paip", PORTAL_PAIP);
+        set(&mut pairs, "paip", paip);
         portal.set_query(None);
         {
             let mut query = portal.query_pairs_mut();
@@ -55,6 +66,7 @@ impl CmccContext {
         let mut context = Self::from_portal_url(portal.as_str())?;
         context.local_ipv4 = Some(network.ipv4.clone());
         context.local_mac = Some(network.mac.clone());
+        context.basip_override = basip.map(str::to_owned).filter(|value| !value.is_empty());
         Ok(context)
     }
 
@@ -62,9 +74,18 @@ impl CmccContext {
     /// return a redirect. The gateway accepts the standard context as query
     /// values, so this path still avoids reading any other interface.
     pub fn from_server_context(server: &str, network: &NetworkContext) -> Result<Self, AppError> {
+        Self::from_server_context_options(server, network, PORTAL_PAIP, None)
+    }
+
+    pub fn from_server_context_options(
+        server: &str,
+        network: &NetworkContext,
+        paip: &str,
+        basip: Option<&str>,
+    ) -> Result<Self, AppError> {
         let base = validate_url(server)?;
         let entry = base.join("libs/portal/unify/portal.php/login/main/nasid/4/")?;
-        let mut context = Self::with_network_context(entry.as_str(), network)?;
+        let mut context = Self::with_network_context_options(entry.as_str(), network, paip, basip)?;
         let mut url = Url::parse(&context.portal_url)?;
         url.query_pairs_mut()
             .append_pair("wlanacname", "route1")
@@ -186,13 +207,17 @@ impl PortalClient {
             "nasid",
             "usrmac",
             "usrip",
-            "basip",
             "portal_version",
             "portal_papchap",
         ] {
             if form.fields.get(name).is_none_or(|v| v.is_empty()) {
                 return Err(AppError::InvalidResponse("认证页缺少网络上下文"));
             }
+        }
+        if let Some(override_value) = &context.basip_override {
+            form.fields.insert("basip".into(), override_value.clone());
+        } else if form.fields.get("basip").is_none_or(|v| v.is_empty()) {
+            return Err(AppError::InvalidResponse("认证页缺少网络上下文"));
         }
         if form.fields["portal_version"] != "1" || form.fields["portal_papchap"] != "pap" {
             return Err(AppError::InvalidResponse("目前仅验证 Portal 1.0/PAP"));
@@ -462,5 +487,36 @@ mod tests {
             .unwrap();
         assert!(initial.contains("usrip=192.0.2.77"));
         assert!(initial.contains("usrmac=02%3A11%3A22%3A33%3A44%3A55"));
+    }
+
+    #[tokio::test]
+    async fn custom_paip_and_basip_override_are_used_when_configured() {
+        let mock = crate::tests::Mock::new("direct");
+        let client = PortalClient::new(&mock.base).unwrap();
+        let network = NetworkContext {
+            interface_name: "en0".into(),
+            ipv4: "192.0.2.77".into(),
+            mac: "02:11:22:33:44:55".into(),
+        };
+        let context = CmccContext::with_network_context_options(
+            &mock.context().portal_url,
+            &network,
+            "192.0.2.66",
+            Some("192.0.2.88"),
+        )
+        .unwrap();
+        client
+            .cmcc_login(&context, "test-user", "secret-placeholder")
+            .await
+            .unwrap();
+        let requests = mock.requests.lock().unwrap();
+        let initial = requests
+            .iter()
+            .find(|request| request.contains("usrname="))
+            .unwrap();
+        assert!(initial.contains("basip=192.0.2.88"));
+        assert!(requests
+            .iter()
+            .any(|request| request.contains("paip=192.0.2.66")));
     }
 }

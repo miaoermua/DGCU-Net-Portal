@@ -94,14 +94,24 @@ fn parse_refresh(value: &str) -> Option<RefreshPolicy> {
 fn set_config(mut settings: Settings, key: &str, value: &str) -> Result<(), String> {
     match key {
         "interface" => settings.interface_name = value.into(),
+        "paip" => settings.paip = value.into(),
+        "basip" => {
+            settings.basip = if value == "auto" {
+                String::new()
+            } else {
+                value.into()
+            }
+        }
         "refresh" => {
             settings.refresh_policy = parse_refresh(value).ok_or("刷新策略应为 1m 或 off")?
         }
         "jitter" => {
             settings.poll_jitter = match value {
-                "on" => PollJitter::Enabled,
+                "low" => PollJitter::Low,
+                "medium" => PollJitter::Medium,
+                "high" => PollJitter::High,
                 "off" => PollJitter::Disabled,
-                _ => return Err("jitter 应为 on 或 off".into()),
+                _ => return Err("jitter 应为 low、medium、high 或 off".into()),
             }
         }
         "portal-probe" => {

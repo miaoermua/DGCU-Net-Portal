@@ -25,8 +25,13 @@ cargo run -p portal-cli -- status
 cargo run -p portal-cli -- sessions
 cargo run -p portal-cli -- config show
 cargo run -p portal-cli -- config set interface en0
-cargo run -p portal-cli -- config set refresh 5s
+cargo run -p portal-cli -- config set paip 172.18.100.65
+cargo run -p portal-cli -- config set basip 172.18.100.61
+# 恢复为使用认证表单返回值
+cargo run -p portal-cli -- config set basip auto
+cargo run -p portal-cli -- config set refresh 1m
 cargo run -p portal-cli -- config set auto-redial on
+cargo run -p portal-cli -- config set jitter low
 cargo run -p portal-cli -- config set traffic off
 cargo run -p portal-cli -- logs
 cargo run -p portal-cli -- diagnose interfaces
@@ -38,7 +43,7 @@ daemon 的本地 IPC 使用 `portal-cli.sock`。GUI 首次需要认证时会拉�
 
 ## 认证行为
 
-留空 Portal URL 时，daemon 先按 DGCU CMCC 模板构造 `main/nasid/4/` 入口，读取表单并执行 Unify 认证。模板失败且 `probe_enabled` 开启时，才回退到公共 HTTP 探测。Portal 参数使用所选网卡当前 IPv4/MAC，`paip` 固定为 `172.18.100.65`；后台接口使用 LFRadius `home.php` API。
+留空 Portal URL 时，daemon 先按 DGCU CMCC 模板构造 `main/nasid/4/` 入口，读取表单并执行 Unify 认证。模板失败且 `probe_enabled` 开启时，才回退到公共 HTTP 探测。Portal 参数使用所选网卡当前 IPv4/MAC，`paip` 默认是 `172.18.100.65`，可按学校修改；`basip` 默认留空并使用认证表单返回值，填写后才覆盖该返回值。后台接口使用 LFRadius `home.php` API。
 
 默认监控策略：
 
@@ -48,12 +53,14 @@ session_monitor  = on
 traffic_monitor  = off
 ```
 
-GUI 桌面配置可以开启后台流量展示；OpenWrt/无 GUI 运行默认不计算流量。后台刷新按服务端约 1 分钟更新，可以在认证设置中开启 0.5-5 秒随机抖动，也可以禁止后台刷新。掉线重拨在连续 3 次检测不到所选会话后触发，并使用同一抖动设置延后重试。
+GUI 桌面配置可以开启后台流量展示；OpenWrt/无 GUI 运行默认不计算流量。后台刷新是一个开关，开启后按服务端约 1 分钟更新。认证设置中的轮询频率抖动可以选择低（±5%）、中（±10%）、高（±20%）或禁用（0%），同一百分比同时用于掉线检测周期和重拨退避。
 
 轮询抖动也可以通过 CLI 设置：
 
 ```bash
-portal-cli config set jitter on
+portal-cli config set jitter low
+portal-cli config set jitter medium
+portal-cli config set jitter high
 portal-cli config set jitter off
 ```
 
