@@ -24,11 +24,11 @@ jobs:
     name: 前端构建
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -36,7 +36,7 @@ jobs:
       - run: pnpm --dir crates/portal-gui/frontend install --frozen-lockfile
       - run: pnpm --dir crates/portal-gui/frontend test
       - run: pnpm --dir crates/portal-gui/frontend build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: frontend-dist
           path: crates/portal-gui/frontend/dist
@@ -53,14 +53,14 @@ jobs:
           - { target: aarch64-apple-darwin, arch: arm64 }
           - { target: x86_64-apple-darwin, arch: x86_64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: macos-${{ matrix.arch }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: frontend-dist
           path: crates/portal-gui/frontend/dist
@@ -72,7 +72,7 @@ jobs:
         run: >-
           python3 scripts/package_macos.py --output target/packages
           --arch ${{ matrix.arch }} --binary-dir target/${{ matrix.target }}/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.arch }}
           path: |
@@ -89,14 +89,14 @@ jobs:
           - { os: windows-2022, target: x86_64-pc-windows-msvc, arch: x86_64 }
           - { os: windows-11-arm, target: aarch64-pc-windows-msvc, arch: aarch64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows-${{ matrix.arch }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: frontend-dist
           path: crates/portal-gui/frontend/dist
@@ -109,7 +109,7 @@ jobs:
           python scripts/package_portable.py --platform windows
           --arch ${{ matrix.arch }} --output target/packages
           --binary-dir target/${{ matrix.target }}/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-${{ matrix.arch }}
           path: |
@@ -124,7 +124,7 @@ jobs:
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 安装 Tauri 系统依赖
         run: |
           sudo apt-get update
@@ -135,7 +135,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: linux-x86_64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: frontend-dist
           path: crates/portal-gui/frontend/dist
@@ -158,14 +158,14 @@ jobs:
           name="DGCU-Net-Portal-${version}-linux-x86_64.AppImage"
           cp "$src" "target/packages/$name"
           (cd target/packages && sha256sum "$name" > "$name.sha256")
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64
           path: |
             target/packages/*.tar.gz
             target/packages/*.AppImage
             target/packages/*.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-binaries
           path: |
@@ -177,8 +177,8 @@ jobs:
     needs: [frontend, linux]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: linux-binaries
           path: target/release
@@ -209,7 +209,7 @@ jobs:
           pkg=$(ls dgcu-net-portal-*.pkg.tar.zst)
           sha256sum "$pkg" > "$pkg.sha256"
           cat "$pkg.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: archlinux-x86_64
           path: target/arch/dgcu-net-portal-*.pkg.tar.zst*
@@ -222,7 +222,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true
