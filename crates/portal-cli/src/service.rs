@@ -1,9 +1,13 @@
 //! Current-user background startup only. Never installs a root/system-wide service.
 use std::{
-    fs,
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
 };
+
+// fs / PathBuf 只被 macOS 的 LaunchAgent 与 Linux 的 systemd 分支使用，
+// Windows（schtasks）分支不需要，无条件导入会在 Windows 上产生 unused 警告。
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::{fs, path::PathBuf};
 
 fn run(command: &mut Command) -> Result<(), String> {
     let result = command.output().map_err(|_| "无法运行服务管理工具")?;
