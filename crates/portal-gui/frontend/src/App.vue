@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { MotionConfig } from 'motion-v'
-import { MiuixButton, MiuixCard, MiuixSwitchPreference, MiuixTabRow, MiuixSnackbarHost, showSnackbar, setThemeMode, type ThemeMode } from 'miuix-vue'
+import { MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixSwitchPreference, MiuixTabRow, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
 import { usePortal, formatBytes, formatRate, formatDuration, mask } from './usePortal'
 import { licenseGroups, licenseNotice } from './licenses'
 import xiaoweiLogo from './assets/xiaowei.png'
 
 const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces } = usePortal()
-const themeMode = computed({ get: () => saved.value.theme_mode, set: (value: ThemeMode) => { void updatePreferences({ theme_mode: value }) } })
 watch(() => saved.value.theme_mode, value => setThemeMode(value), { immediate: true })
 const styleNonce = document.querySelector<HTMLStyleElement>('#motion-csp')?.nonce || undefined
 const locked = computed(() => busy.value || !ready.value)
@@ -41,6 +40,21 @@ watch(licensesOpen, async open => {
 onUnmounted(() => { logDialog.value?.close(); sessionDialog.value?.close(); licenseDialog.value?.close() })
 const logTime = (value: number) => new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
 const selectedInterface = computed(() => networkInterfaces.value.find(item => item.name === draft.interface_name) || networkInterfaces.value.find(item => !item.internal && item.ipv4 && item.mac))
+const credentialStoreItems = ['系统凭证（推荐）', '配置文件（明文，仅测试）', '仅一次会话']
+const credentialStoreIndex = computed({ get: () => ({ system: 0, file: 1, memory: 2 }[draft.credential_store]), set: (value: number) => { draft.credential_store = (['system', 'file', 'memory'] as const)[value] ?? 'system' } })
+const refreshItems = ['每 1 分钟', '禁止刷新']
+const refreshIndex = computed({ get: () => draft.refresh_policy === 'disabled' ? 1 : 0, set: (value: number) => { draft.refresh_policy = value === 1 ? 'disabled' : 'one_minute'; void updatePreferences({ refresh_policy: draft.refresh_policy }) } })
+const jitterItems = ['开启（0.5-5 秒，推荐）', '关闭']
+const jitterIndex = computed({ get: () => draft.poll_jitter === 'disabled' ? 1 : 0, set: (value: number) => { draft.poll_jitter = value === 1 ? 'disabled' : 'enabled' } })
+const themeItems = ['跟随系统', '浅色', '深色']
+const themeIndex = computed({ get: () => ({ system: 0, light: 1, dark: 2 }[saved.value.theme_mode]), set: (value: number) => { void updatePreferences({ theme_mode: (['system', 'light', 'dark'] as const)[value] ?? 'system' }) } })
+const interfaceItems = computed(() => [{ text: '自动选择活动网卡', summary: '使用第一个可用 IPv4/MAC 接口' }, ...networkInterfaces.value.map(item => ({ text: item.name, summary: `${item.ipv4 || '无 IPv4'} · ${item.mac || '无 MAC'}`, disabled: !item.ipv4 || !item.mac }))])
+const interfaceIndex = computed({ get: () => { const index = networkInterfaces.value.findIndex(item => item.name === draft.interface_name); return index < 0 ? 0 : index + 1 }, set: (value: number) => { draft.interface_name = value === 0 ? '' : (networkInterfaces.value[value - 1]?.name ?? '') } })
+const interfaceSummary = computed(() => {
+  if (!selectedInterface.value) return demo ? 'Demo 不读取本机网卡' : '未找到带 IPv4 和 MAC 的活动网卡'
+  const address = `${selectedInterface.value.ipv4 || '无 IPv4'} · ${selectedInterface.value.mac || '无 MAC'}`
+  return draft.interface_name ? `${selectedInterface.value.name} · ${address}` : `自动选择 · ${address}`
+})
 </script>
 
 <template>
@@ -73,29 +87,30 @@ const selectedInterface = computed(() => networkInterfaces.value.find(item => it
         <h3 class="group-heading">登录项</h3>
         <MiuixCard>
           <form class="credential-fields" autocomplete="off" @submit.prevent="connect(false)"><label class="field">账号<input v-model="username" :disabled="locked" autocomplete="off" placeholder="校园网账号" spellcheck="false"></label><label class="field">密码<input v-model="password" :disabled="locked" type="password" autocomplete="new-password" placeholder="仅当前会话使用"><button type="submit" class="sr-only" :disabled="locked" tabindex="-1">上线</button></label></form>
-          <label class="display-mode credential-store"><div><strong>会话账户保存方式</strong><span>默认使用系统凭据，更安全</span></div><select v-model="draft.credential_store" :disabled="settingsLocked" aria-label="会话账户保存方式"><option value="system">系统凭证（推荐）</option><option value="file">配置文件（明文，仅测试）</option><option value="memory">仅一次会话</option></select></label>
+          <MiuixDropdownPreference v-model="credentialStoreIndex" title="会话账户保存方式" summary="默认使用系统凭据，更安全" :items="credentialStoreItems" :disabled="settingsLocked" />
           <p v-if="draft.credential_store === 'file'" class="security-note">配置文件会以明文保存密码，仅建议用于测试或系统没有可用凭据库的设备。</p>
           <p v-if="draft.credential_store === 'memory'" class="security-note">仅一次会话不会保存密码，结束后释放本地凭据并关闭自动重拨。</p>
         </MiuixCard>
         <h3 class="group-heading">认证</h3>
         <MiuixCard>
-          <div class="interface-picker"><div class="interface-picker-heading"><div><strong>认证网卡</strong><span>使用所选网卡的 IPv4 和 MAC 生成 Portal 参数</span></div><MiuixButton :disabled="!ready || preferencesBusy || demo" @click="refreshInterfaces">刷新</MiuixButton></div><select v-model="draft.interface_name" :disabled="settingsLocked" aria-label="认证网卡"><option value="">自动选择活动网卡</option><option v-for="item in networkInterfaces" :key="item.name" :value="item.name" :disabled="!item.ipv4 || !item.mac">{{ item.name }} · {{ item.ipv4 || '无 IPv4' }}{{ item.internal ? '（内部）' : '' }}</option></select><p v-if="selectedInterface" class="interface-details">{{ draft.interface_name ? '' : '自动选择：' }}IPv4 {{ selectedInterface.ipv4 || '未分配' }} · MAC {{ selectedInterface.mac || '未读取' }}</p><p v-else class="interface-details">{{ demo ? 'Demo 不读取本机网卡' : '未找到带 IPv4 和 MAC 的活动网卡，请刷新或手动检查系统网络' }}</p></div>
+          <div class="interface-picker"><div class="interface-picker-heading"><span>使用所选网卡的 IPv4 和 MAC 生成 Portal 参数</span><MiuixButton :disabled="!ready || preferencesBusy || demo" @click="refreshInterfaces">刷新</MiuixButton></div><MiuixDropdownPreference v-model="interfaceIndex" title="认证网卡" :summary="interfaceSummary" :items="interfaceItems" :disabled="settingsLocked" /></div>
           <MiuixSwitchPreference v-model="draft.bypass_proxy" title="绕过程序代理" summary="直连认证服务器；TUN / VPN 路由仍由系统决定" :disabled="settingsLocked" />
           <MiuixSwitchPreference v-model="draft.probe_enabled" title="认证失败后自动探测" summary="默认先按 DGCU-Net-Portal 模板提交，模板失败后再探测公共 HTTP 地址" :disabled="settingsLocked" />
+          <MiuixSwitchPreference v-model="draft.auto_redial" title="掉线重拨" summary="连续 3 次后台检测不到会话后重拨；检测间隔跟随后台刷新策略" :disabled="settingsLocked || draft.credential_store === 'memory'" />
+          <MiuixDropdownPreference v-model="jitterIndex" title="轮询频率抖动" summary="给掉线检测和后台刷新增加时间抖动，可降低风控特征" :items="jitterItems" :disabled="settingsLocked" />
         </MiuixCard>
         <h3 class="group-heading">系统</h3>
         <MiuixCard>
-          <MiuixSwitchPreference v-model="draft.auto_redial" title="掉线重拨" summary="会话连续消失后重拨，手动下线后暂停" :disabled="settingsLocked || draft.credential_store === 'memory'" />
           <MiuixSwitchPreference v-model="draft.tray_startup" title="托盘启动" summary="下次启动隐藏窗口，可从托盘打开" :disabled="settingsLocked" />
           <MiuixSwitchPreference v-model="draft.service_enabled" title="写入用户后台服务" summary="当前用户登录系统时启动 portal-cli daemon" :disabled="settingsLocked || draft.credential_store === 'memory'" />
         </MiuixCard>
         <h3 class="group-heading">界面</h3>
         <MiuixCard>
-          <label class="display-mode"><div><strong>显示模式</strong><span>默认跟随系统外观</span></div><select v-model="themeMode" :disabled="!ready || preferencesBusy" aria-label="显示模式"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+          <MiuixDropdownPreference v-model="themeIndex" title="显示模式" summary="默认跟随系统外观" :items="themeItems" :disabled="!ready || preferencesBusy" />
           <MiuixSwitchPreference :model-value="saved.show_sessions" title="管理会话" summary="在网络页显示会话列表和管理操作，默认隐藏" :disabled="!ready || preferencesBusy" @update:model-value="updatePreferences({ show_sessions: $event })" />
           <MiuixSwitchPreference :model-value="saved.log_enabled" title="开启日志" summary="只在内存保留最近 300 条脱敏事件，默认关闭" :disabled="!ready || preferencesBusy" @update:model-value="updatePreferences({ log_enabled: $event })" />
           <button v-if="saved.log_enabled" class="log-entry preference-action" :disabled="!ready || preferencesBusy" @click="openLogs"><span><strong>查看 portal-cli 日志</strong><small>{{ demo ? '演示模式显示模拟事件' : '来自 portal-cli daemon 的统一日志' }}</small></span><span aria-hidden="true">›</span></button>
-          <label class="display-mode"><div><strong>后台刷新频率</strong><span>服务端约每 1 分钟更新；客户端增加 0.5-5 秒抖动</span></div><select v-model="draft.refresh_policy" :disabled="!ready || preferencesBusy" aria-label="后台刷新频率" @change="updatePreferences({ refresh_policy: draft.refresh_policy })"><option value="one_minute">1 分钟 + 0.5-5 秒抖动</option><option value="disabled">禁止刷新</option></select></label>
+          <MiuixDropdownPreference v-model="refreshIndex" title="后台刷新频率" summary="服务端约每 1 分钟；是否增加抖动由认证中的轮询频率设置控制" :items="refreshItems" :disabled="!ready || preferencesBusy" />
           <MiuixSwitchPreference :model-value="saved.traffic_enabled" title="后台流量统计" summary="默认关闭；开启后计算后台累计字节的区间速率" :disabled="!ready || preferencesBusy" @update:model-value="updatePreferences({ traffic_enabled: $event })" />
         </MiuixCard>
         <h3 class="group-heading">高级</h3>
@@ -103,7 +118,7 @@ const selectedInterface = computed(() => networkInterfaces.value.find(item => it
         <div class="settings-footer"><span>界面与日志设置即时保存；其他设置点击保存生效。</span><div class="row-actions"><MiuixButton :disabled="settingsLocked" @click="save">保存设置</MiuixButton></div></div>
       </section>
 
-      <section v-else class="about-page" aria-label="关于"><MiuixCard class="about-card"><div class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><div><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></div></div><button class="repository-link" :disabled="locked" @click="openRepository"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4M14 3h7v7M21 3 10 14"/></svg><span><strong>GitHub 仓库</strong><small>miaoermua/dgcu-portal</small></span><span aria-hidden="true">↗</span></button><button class="repository-link license-entry" :disabled="locked" @click="licensesOpen = true"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 3h8l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v5h5M8.5 13h7M8.5 17h4"/></svg><span><strong>开源软件声明</strong><small>{{ licenseCount }} 个开源项目 · 名称 / 地址 / 许可证</small></span><span aria-hidden="true">›</span></button></MiuixCard></section>
+      <section v-else class="about-page" aria-label="关于"><MiuixCard class="about-card"><div class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><div><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></div></div><MiuixBasicComponent title="GitHub 仓库" summary="miaoermua/DGCU-Net-Portal" :disabled="locked" clickable @click="openRepository"><template #start><svg class="about-entry-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4M14 3h7v7M21 3 10 14"/></svg></template><template #end><span class="about-entry-arrow" aria-hidden="true">↗</span></template></MiuixBasicComponent><MiuixBasicComponent title="开源软件声明" :summary="`${licenseCount} 个开源项目 · 名称 / 地址 / 许可证`" :disabled="locked" clickable @click="licensesOpen = true"><template #start><svg class="about-entry-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M6 3h8l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v5h5M8.5 13h7M8.5 17h4"/></svg></template><template #end><span class="about-entry-arrow" aria-hidden="true">›</span></template></MiuixBasicComponent></MiuixCard></section>
     </main>
     <dialog ref="dialog" class="confirm-dialog" aria-labelledby="dialog-title" @cancel.prevent="answer(false)"><template v-if="confirmation"><h2 id="dialog-title">{{ confirmation.title }}</h2><p>{{ confirmation.text }}</p><div class="dialog-actions"><MiuixButton @click="answer(false)">取消</MiuixButton><MiuixButton type="primary" @click="answer(true)">{{ confirmation.label }}</MiuixButton></div></template></dialog>
     <dialog ref="logDialog" class="logs-dialog" aria-labelledby="logs-title" @cancel.prevent="logsOpen = false"><div class="logs-heading"><h2 id="logs-title">DGCU CLI 日志 <span v-if="demo" class="mode-badge">模拟</span></h2><MiuixButton @click="logsOpen = false">关闭</MiuixButton></div><p class="dialog-caption">{{ demo ? '仅为 Demo 操作生成的模拟事件。' : '当前 GUI 进程与 CLI 共用认证核心的日志，不读取其他 CLI 进程。' }} 不记录账号、密码、URL 或 Cookie。</p><div class="logs-body" role="log" aria-label="客户端日志" aria-live="off"><p v-if="!logEntries.length" class="logs-empty">暂无日志，开启后执行认证操作即可查看。</p><div v-for="entry in logEntries" :key="entry.sequence" class="log-line"><time>{{ logTime(entry.timestamp_ms) }}</time><span class="log-level" :class="entry.level">{{ entry.level.toUpperCase() }}</span><code>{{ entry.code }}</code><span>{{ entry.message }}</span></div></div><div class="logs-footer"><span>{{ logEntries.length }} / 300 条 · 关闭日志开关即清空</span><MiuixButton @click="clearLogs">清空日志</MiuixButton></div></dialog>

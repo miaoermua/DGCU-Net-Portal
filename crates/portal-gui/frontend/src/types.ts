@@ -4,6 +4,7 @@ export interface Settings {
   probe_url: string
   probe_enabled: boolean
   refresh_policy: 'one_minute' | 'disabled'
+  poll_jitter: 'enabled' | 'disabled'
   traffic_enabled: boolean
   credential_store: 'system' | 'file' | 'memory'
   interface_name: string

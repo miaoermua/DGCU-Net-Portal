@@ -1,6 +1,6 @@
 //! Optional shared CLI/GUI diagnostics. Only typed events enter this buffer:
 //! no request bodies, URLs, credentials, session IDs or raw server errors.
-use crate::settings::RefreshPolicy;
+use crate::settings::{PollJitter, RefreshPolicy};
 use serde::Serialize;
 use std::{
     collections::VecDeque,
@@ -46,12 +46,20 @@ pub enum Event {
     DisconnectPending,
     RefreshOneMinute,
     RefreshDisabled,
+    JitterEnabled,
+    JitterDisabled,
 }
 impl Event {
     pub fn refresh_policy(policy: RefreshPolicy) -> Self {
         match policy {
             RefreshPolicy::OneMinute => Self::RefreshOneMinute,
             RefreshPolicy::Disabled => Self::RefreshDisabled,
+        }
+    }
+    pub fn poll_jitter(jitter: PollJitter) -> Self {
+        match jitter {
+            PollJitter::Enabled => Self::JitterEnabled,
+            PollJitter::Disabled => Self::JitterDisabled,
         }
     }
     fn detail(self) -> (&'static str, &'static str, &'static str) {
@@ -136,9 +144,19 @@ impl Event {
             Self::RefreshOneMinute => (
                 "info",
                 "refresh.policy",
-                "后台刷新策略：每 1 分钟 + 0.5-5 秒抖动",
+                "后台刷新策略：每 1 分钟",
             ),
             Self::RefreshDisabled => ("info", "refresh.policy", "后台刷新策略：禁止刷新"),
+            Self::JitterEnabled => (
+                "info",
+                "poll.jitter",
+                "轮询频率抖动：已开启（0.5-5 秒），给程序行为增加时间抖动，可降低风控特征",
+            ),
+            Self::JitterDisabled => (
+                "warn",
+                "poll.jitter",
+                "轮询频率抖动：已关闭，程序行为更规律",
+            ),
         }
     }
 }

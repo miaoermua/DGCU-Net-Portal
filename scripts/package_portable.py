@@ -7,10 +7,13 @@ Build first, for example:
 
 The archive contains the real GUI client, the CLI, the license and a short
 Chinese test guide. No installer, no service registration, no code signing.
+
+打包是幂等的：重复运行会先清掉上一次的同名产物再重新生成。
 """
 import argparse
 import hashlib
 import json
+import shutil
 import tarfile
 import zipfile
 from pathlib import Path
@@ -42,8 +45,10 @@ output = args.output.resolve()
 output.mkdir(parents=True, exist_ok=True)
 name = f'DGCU-Net-Portal-{version}-{args.platform}-{args.arch}'
 folder = output / name
+# 先清掉上一轮的同名产物。CI 用 Swatinem/rust-cache 缓存整个 target/，
+# 上一轮运行留下的空目录会在新 runner 上被还原出来，这里若直接报错就会让流水线失败。
 if folder.exists():
-    raise SystemExit(f'Refusing to overwrite existing package: {folder}')
+    shutil.rmtree(folder)
 folder.mkdir(parents=True)
 
 if args.platform == 'windows':
@@ -104,7 +109,7 @@ guide = f'''# DGCU Portal {version} · {args.platform} {args.arch} 测试版
 
 ## 测试反馈
 
-仓库：https://github.com/miaoermua/dgcu-portal
+仓库：https://github.com/miaoermua/DGCU-Net-Portal
 请反馈失败阶段、错误提示、系统版本，附可见的脱敏日志即可。
 不要附密码、Cookie 或未脱敏 HAR。
 
@@ -124,20 +129,17 @@ for label, path in files.items():
     else:
         target = folder / label
         target.write_bytes(path.read_bytes())
-        target.chmod(0o755 if label.startswith('dgcu-') else 0o644)
+        # LICENSE 保持 0644，portal-gui / portal-cli 必须是可执行的 0755
+        target.chmod(0o644 if label == 'LICENSE' else 0o755)
 
 if args.platform == 'windows':
     archive = output / (name + '.zip')
-    if archive.exists():
-        raise SystemExit(f'Refusing to overwrite existing archive: {archive}')
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as stream:
         for path in sorted(folder.rglob('*')):
             if path.is_file():
                 stream.write(path, Path(name) / path.relative_to(folder))
 else:
     archive = output / (name + '.tar.gz')
-    if archive.exists():
-        raise SystemExit(f'Refusing to overwrite existing archive: {archive}')
     def normalize(info):
         info.uid, info.gid = 0, 0
         info.uname, info.gname = 'root', 'root'

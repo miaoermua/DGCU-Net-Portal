@@ -48,7 +48,14 @@ session_monitor  = on
 traffic_monitor  = off
 ```
 
-GUI 桌面配置可以开启后台流量展示；OpenWrt/无 GUI 运行默认不计算流量。后台刷新按服务端约 1 分钟更新，客户端在 1 分钟基础上增加 0.5-5 秒随机抖动，也可以禁止后台刷新。
+GUI 桌面配置可以开启后台流量展示；OpenWrt/无 GUI 运行默认不计算流量。后台刷新按服务端约 1 分钟更新，可以在认证设置中开启 0.5-5 秒随机抖动，也可以禁止后台刷新。掉线重拨在连续 3 次检测不到所选会话后触发，并使用同一抖动设置延后重试。
+
+轮询抖动也可以通过 CLI 设置：
+
+```bash
+portal-cli config set jitter on
+portal-cli config set jitter off
+```
 
 ## GUI
 

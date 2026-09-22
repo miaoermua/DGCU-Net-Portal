@@ -1,4 +1,4 @@
-# Maintainer: dgcu-portal CI <https://github.com/miaoermua/dgcu-portal>
+# Maintainer: DGCU-Net-Portal CI <https://github.com/miaoermua/DGCU-Net-Portal>
 # 本 PKGBUILD 只负责安装布局：二进制由 .github/workflows/build.yml 的 Linux
 # 构建任务交叉产出后放入 target/arch/，再由 Arch 容器内的 makepkg 打包。
 pkgname=dgcu-net-portal
@@ -6,7 +6,7 @@ pkgver=0.0.0
 pkgrel=1
 pkgdesc='DGCU 校园网 Portal 客户端（GUI + CLI）'
 arch=('x86_64' 'aarch64')
-url='https://github.com/miaoermua/dgcu-portal'
+url='https://github.com/miaoermua/DGCU-Net-Portal'
 license=('GPL-3.0-only')
 depends=('gtk3' 'webkit2gtk-4.1' 'libayatana-appindicator' 'libsecret')
 options=('!strip')

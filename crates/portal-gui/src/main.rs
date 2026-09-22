@@ -197,7 +197,7 @@ fn open_auth_site(url: String) -> Result<(), String> {
 }
 #[tauri::command]
 fn open_repository() -> Result<(), String> {
-    webbrowser::open("https://github.com/miaoermua/dgcu-portal")
+    webbrowser::open("https://github.com/miaoermua/DGCU-Net-Portal")
         .map(|_| ())
         .map_err(|_| "无法打开 GitHub 仓库".into())
 }

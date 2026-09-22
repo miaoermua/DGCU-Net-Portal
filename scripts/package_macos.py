@@ -2,6 +2,8 @@
 
 No installation or service registration is performed. Build first with:
     cargo build --release -p portal-gui -p portal-cli --features portal-gui/custom-protocol --locked
+
+打包是幂等的：重复运行会先清掉上一次的同名产物再重新生成。
 """
 import argparse
 import hashlib
@@ -23,9 +25,15 @@ version = config['version']
 arch = args.arch
 binary_dir = (args.binary_dir or Path('target/release')).resolve()
 name = f'DGCU-Net-Portal-{version}-macos-{arch}'
-folder = args.output.resolve() / name
+output = args.output.resolve()
+folder = output / name
+archive = output / (name + '.zip')
+# 先清掉上一轮的同名产物。CI 用 Swatinem/rust-cache 缓存整个 target/，
+# 上一轮运行留下的空目录会在新 runner 上被还原出来，这里若直接报错就会让流水线失败。
 if folder.exists():
-    raise SystemExit(f'Refusing to overwrite existing package: {folder}')
+    shutil.rmtree(folder)
+archive.unlink(missing_ok=True)
+(output / (name + '.sha256')).unlink(missing_ok=True)
 binary = binary_dir / 'portal-gui'
 cli = binary_dir / 'portal-cli'
 for file in [binary, cli]:
@@ -91,7 +99,7 @@ guide = f'''# DGCU-Net-Portal {version} · macOS {arch} 测试版
 
 ## 测试反馈
 
-仓库：https://github.com/miaoermua/dgcu-portal
+仓库：https://github.com/miaoermua/DGCU-Net-Portal
 请反馈失败阶段、错误提示、macOS 版本，附可见的脱敏日志即可。
 不要附密码、Cookie 或未脱敏 HAR。
 
@@ -104,10 +112,7 @@ macOS/Windows/Linux 代码共享，但本包仅提供 macOS {arch} 构建。
 系统 TUN/VPN 仍影响系统路由，“绕过程序代理”不会修改这些设置。
 '''
 (folder / '测试说明.md').write_text(guide)
-archive = args.output.resolve() / (name + '.zip')
-if archive.exists():
-    raise SystemExit(f'Refusing to overwrite existing archive: {archive}')
 subprocess.run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(folder), str(archive)], check=True)
 digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-(args.output.resolve() / (name + '.sha256')).write_text(f'{digest}  {archive.name}\n')
+(output / (name + '.sha256')).write_text(f'{digest}  {archive.name}\n')
 print(archive)

@@ -50,12 +50,10 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     tokio::spawn(async move {
         loop {
-            let delay = worker_state
-                .lock()
-                .await
-                .settings
+            let settings = worker_state.lock().await.settings.clone();
+            let delay = settings
                 .refresh_policy
-                .next_delay()
+                .next_delay(settings.poll_jitter)
                 .unwrap_or_else(|| std::time::Duration::from_secs(1));
             tokio::time::sleep(delay).await;
             worker_state.lock().await.tick(|_| {}).await;
@@ -186,6 +184,9 @@ async fn handle(
         }
         Request::Reload => {
             let settings = Settings::load();
+            logs.set_enabled(settings.log_enabled);
+            logs.record(crate::logging::Event::refresh_policy(settings.refresh_policy));
+            logs.record(crate::logging::Event::poll_jitter(settings.poll_jitter));
             let mut controller = state.lock().await;
             controller.settings = settings;
             Response {

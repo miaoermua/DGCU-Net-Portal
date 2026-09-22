@@ -55,6 +55,7 @@ impl Controller {
         logs.record(crate::logging::Event::refresh_policy(
             settings.refresh_policy,
         ));
+        logs.record(crate::logging::Event::poll_jitter(settings.poll_jitter));
         Self {
             settings,
             logs,
@@ -373,7 +374,11 @@ impl Controller {
         }
         if self
             .last_attempt
-            .is_some_and(|t| t.elapsed() < Duration::from_secs(30 * (1 << self.attempts)))
+            .is_some_and(|t| {
+                t.elapsed()
+                    < Duration::from_secs(30 * (1 << self.attempts))
+                        + self.settings.poll_jitter.duration()
+            })
         {
             return;
         }

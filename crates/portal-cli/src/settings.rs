@@ -37,6 +37,14 @@ pub enum RefreshPolicy {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum PollJitter {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CredentialStore {
     #[default]
     System,
@@ -44,18 +52,24 @@ pub enum CredentialStore {
     Memory,
 }
 impl RefreshPolicy {
-    pub fn next_delay(self) -> Option<Duration> {
+    pub fn next_delay(self, jitter: PollJitter) -> Option<Duration> {
         match self {
-            Self::OneMinute => {
+            Self::OneMinute => Some(Duration::from_secs(60) + jitter.duration()),
+            Self::Disabled => None,
+        }
+    }
+}
+impl PollJitter {
+    pub fn duration(self) -> Duration {
+        match self {
+            Self::Enabled => {
                 let nanos = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .subsec_nanos();
-                Some(Duration::from_millis(
-                    60_000 + 500 + u64::from(nanos % 4_501),
-                ))
+                Duration::from_millis(500 + u64::from(nanos % 4_501))
             }
-            Self::Disabled => None,
+            Self::Disabled => Duration::ZERO,
         }
     }
 }
@@ -69,6 +83,7 @@ pub struct Settings {
     /// Try public captive-check discovery only after the DGCU template fails.
     pub probe_enabled: bool,
     pub refresh_policy: RefreshPolicy,
+    pub poll_jitter: PollJitter,
     pub traffic_enabled: bool,
     /// Name of the interface whose IPv4/MAC are sent to the Portal gateway.
     /// Empty means automatic selection of the first active non-loopback one.
@@ -91,6 +106,7 @@ impl Default for Settings {
             probe_url: "http://captive.apple.com/hotspot-detect.html".into(),
             probe_enabled: true,
             refresh_policy: RefreshPolicy::OneMinute,
+            poll_jitter: PollJitter::Enabled,
             traffic_enabled: false,
             interface_name: String::new(),
             bypass_proxy: true,
@@ -252,9 +268,10 @@ mod tests {
     }
 
     #[test]
-    fn refresh_policy_has_six_expected_modes() {
-        let delay = RefreshPolicy::OneMinute.next_delay().unwrap();
+    fn refresh_policy_and_jitter_have_expected_delays() {
+        let delay = RefreshPolicy::OneMinute.next_delay(PollJitter::Enabled).unwrap();
         assert!((60_500..=64_999).contains(&delay.as_millis()));
-        assert_eq!(RefreshPolicy::Disabled.next_delay(), None);
+        assert_eq!(RefreshPolicy::OneMinute.next_delay(PollJitter::Disabled).unwrap(), Duration::from_secs(60));
+        assert_eq!(RefreshPolicy::Disabled.next_delay(PollJitter::Enabled), None);
     }
 }

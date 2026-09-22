@@ -3,7 +3,7 @@ use portal_cli::{
     daemon,
     ipc::{self, Request},
     network, service,
-    settings::{RefreshPolicy, Settings},
+    settings::{PollJitter, RefreshPolicy, Settings},
     Credential,
 };
 use std::io::{self, Write};
@@ -96,6 +96,13 @@ fn set_config(mut settings: Settings, key: &str, value: &str) -> Result<(), Stri
         "interface" => settings.interface_name = value.into(),
         "refresh" => {
             settings.refresh_policy = parse_refresh(value).ok_or("刷新策略应为 1m 或 off")?
+        }
+        "jitter" => {
+            settings.poll_jitter = match value {
+                "on" => PollJitter::Enabled,
+                "off" => PollJitter::Disabled,
+                _ => return Err("jitter 应为 on 或 off".into()),
+            }
         }
         "portal-probe" => {
             settings.probe_enabled = match value {
