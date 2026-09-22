@@ -27,7 +27,7 @@ parser.add_argument('--binary-dir', type=Path, default=None,
 args = parser.parse_args()
 
 root = Path(__file__).resolve().parents[1]
-config = json.loads((root / 'crates/portal-gui/tauri.conf.json').read_text())
+config = json.loads((root / 'crates/portal-gui/tauri.conf.json').read_text(encoding='utf-8'))
 version = config['version']
 binary_dir = (args.binary_dir or Path('target/release')).resolve()
 
@@ -122,7 +122,7 @@ macOS/Windows/Linux 代码共享，但本包仅提供 {args.platform} {args.arch
 系统 TUN/VPN 仍影响系统路由，“绕过程序代理”不会修改这些设置。
 '''
 
-(folder / '测试说明.md').write_text(guide)
+(folder / '测试说明.md').write_text(guide, encoding='utf-8')
 for label, path in files.items():
     if args.platform == 'windows':
         (folder / label).write_bytes(path.read_bytes())
@@ -149,5 +149,5 @@ else:
         stream.add(folder, arcname=name, filter=normalize)
 
 digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-(output / (name + '.sha256')).write_text(f'{digest}  {archive.name}\n')
+(output / (name + '.sha256')).write_text(f'{digest}  {archive.name}\n', encoding='utf-8')
 print(archive)

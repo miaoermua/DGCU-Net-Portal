@@ -20,7 +20,7 @@ parser.add_argument('--arch', default=platform.machine(), help='包名中使用�
 parser.add_argument('--binary-dir', type=Path, default=None, help='cargo 产物目录（默认 target/release，交叉编译时传 target/<triple>/release）')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
-config = json.loads((root / 'crates/portal-gui/tauri.conf.json').read_text())
+config = json.loads((root / 'crates/portal-gui/tauri.conf.json').read_text(encoding='utf-8'))
 version = config['version']
 arch = args.arch
 binary_dir = (args.binary_dir or Path('target/release')).resolve()
@@ -62,6 +62,11 @@ with (app / 'Contents/Info.plist').open('wb') as stream:
         'NSHighResolutionCapable': True,
         'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True},
     }, stream)
+# 先给 bundle 内的嵌套可执行文件（portal-cli）做 ad-hoc 签名，再签整个 bundle。
+# codesign 在签 bundle、或签 bundle 的主可执行文件（portal-gui）时都会校验所有嵌套代码；
+# 交叉编译 x86_64 的产物没有链接器附带的 ad-hoc 签名，若不先补签嵌套文件，
+# 就会以 “code object is not signed at all / In subcomponent” 失败。
+subprocess.run(['codesign', '--force', '--sign', '-', str(macos / 'portal-cli')], check=True)
 subprocess.run(['codesign', '--force', '--sign', '-', str(app)], check=True)
 subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
 subprocess.run(['codesign', '--force', '--sign', '-', str(folder / 'portal-cli')], check=True)
@@ -111,8 +116,8 @@ macOS/Windows/Linux 代码共享，但本包仅提供 macOS {arch} 构建。
 没有自动安装系统服务、没有使用任何 HAR 内的账号登录。
 系统 TUN/VPN 仍影响系统路由，“绕过程序代理”不会修改这些设置。
 '''
-(folder / '测试说明.md').write_text(guide)
+(folder / '测试说明.md').write_text(guide, encoding='utf-8')
 subprocess.run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(folder), str(archive)], check=True)
 digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-(output / (name + '.sha256')).write_text(f'{digest}  {archive.name}\n')
+(output / (name + '.sha256')).write_text(f'{digest}  {archive.name}\n', encoding='utf-8')
 print(archive)
