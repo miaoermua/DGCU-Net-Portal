@@ -155,7 +155,7 @@ jobs:
           (cd crates/portal-gui && tauri build --config /tmp/tauri.ci.json)
           src=$(find target/release/bundle/appimage -name '*.AppImage' | head -n 1)
           test -n "$src"
-          name="DGCU-Portal-${version}-linux-x86_64.AppImage"
+          name="DGCU-Net-Portal-${version}-linux-x86_64.AppImage"
           cp "$src" "target/packages/$name"
           (cd target/packages && sha256sum "$name" > "$name.sha256")
       - uses: actions/upload-artifact@v4
@@ -186,9 +186,9 @@ jobs:
         run: |
           version=$(jq -r .version crates/portal-gui/tauri.conf.json)
           mkdir -p target/arch
-          cp target/release/portal-gui target/arch/dgcu-portal
-          cp target/release/portal-cli target/arch/dgcu-cli
-          cp crates/portal-gui/icons/icon.png target/arch/dgcu-portal.png
+          cp target/release/portal-gui target/arch/portal-gui
+          cp target/release/portal-cli target/arch/portal-cli
+          cp crates/portal-gui/icons/icon.png target/arch/portal-gui.png
           cp packaging/arch/dgcu-portal.desktop packaging/arch/PKGBUILD target/arch/
           cp LICENSE target/arch/LICENSE
           sed -i "s/^pkgver=.*/pkgver=${version}/" target/arch/PKGBUILD
@@ -197,7 +197,8 @@ jobs:
         run: |
           docker run --rm -v "$PWD/target/arch:/work" -w /work archlinux:latest bash -c '
             set -euo pipefail
-            pacman -Syu --noconfirm --needed base-devel
+            pacman -Syu --noconfirm --needed \
+              base-devel gtk3 webkit2gtk-4.1 libayatana-appindicator libsecret
             useradd -m builder
             chown -R builder /work
             su builder -c "makepkg -f --noconfirm"
@@ -205,13 +206,13 @@ jobs:
       - name: 生成 SHA-256
         run: |
           cd target/arch
-          pkg=$(ls dgcu-portal-*.pkg.tar.zst)
+          pkg=$(ls dgcu-net-portal-*.pkg.tar.zst)
           sha256sum "$pkg" > "$pkg.sha256"
           cat "$pkg.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: archlinux-x86_64
-          path: target/arch/dgcu-portal-*.pkg.tar.zst*
+          path: target/arch/dgcu-net-portal-*.pkg.tar.zst*
 
   release:
     name: 发布 Release

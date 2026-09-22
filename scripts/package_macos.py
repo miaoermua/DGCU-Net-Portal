@@ -22,7 +22,7 @@ config = json.loads((root / 'crates/portal-gui/tauri.conf.json').read_text())
 version = config['version']
 arch = args.arch
 binary_dir = (args.binary_dir or Path('target/release')).resolve()
-name = f'DGCU-Portal-{version}-macos-{arch}'
+name = f'DGCU-Net-Portal-{version}-macos-{arch}'
 folder = args.output.resolve() / name
 if folder.exists():
     raise SystemExit(f'Refusing to overwrite existing package: {folder}')
@@ -35,14 +35,14 @@ macos = app / 'Contents/MacOS'
 resources = app / 'Contents/Resources'
 macos.mkdir(parents=True)
 resources.mkdir(parents=True)
-shutil.copy2(binary, macos / 'dgcu-portal')
+shutil.copy2(binary, macos / 'portal-gui')
 shutil.copy2(cli, macos / 'portal-cli')
 shutil.copy2(cli, folder / 'portal-cli')
 shutil.copy2(root / 'crates/portal-gui/icons/icon.icns', resources / 'icon.icns')
 shutil.copy2(root / 'LICENSE', folder / 'LICENSE')
 with (app / 'Contents/Info.plist').open('wb') as stream:
     plistlib.dump({
-        'CFBundleExecutable': 'dgcu-portal',
+        'CFBundleExecutable': 'portal-gui',
         'CFBundleIdentifier': config['identifier'],
         'CFBundleName': config['productName'],
         'CFBundleDisplayName': config['productName'],

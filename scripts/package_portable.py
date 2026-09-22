@@ -30,7 +30,7 @@ binary_dir = (args.binary_dir or Path('target/release')).resolve()
 
 exe_suffix = '.exe' if args.platform == 'windows' else ''
 files = {
-    f'dgcu-portal{exe_suffix}': binary_dir / f'portal-gui{exe_suffix}',
+    f'portal-gui{exe_suffix}': binary_dir / f'portal-gui{exe_suffix}',
     f'portal-cli{exe_suffix}': binary_dir / f'portal-cli{exe_suffix}',
     'LICENSE': root / 'LICENSE',
 }
@@ -40,7 +40,7 @@ for label, path in files.items():
 
 output = args.output.resolve()
 output.mkdir(parents=True, exist_ok=True)
-name = f'DGCU-Portal-{version}-{args.platform}-{args.arch}'
+name = f'DGCU-Net-Portal-{version}-{args.platform}-{args.arch}'
 folder = output / name
 if folder.exists():
     raise SystemExit(f'Refusing to overwrite existing package: {folder}')
@@ -55,7 +55,7 @@ if args.platform == 'windows':
 .\\portal-cli.exe down <会话ID>
 ```
 '''
-    extra = '''Windows 版本是免安装的绿色包，直接双击 `dgcu-portal.exe` 即可。
+    extra = '''Windows 版本是免安装的绿色包，直接运行 `portal-gui.exe` 即可。
 系统托盘图标位于任务栏右下角，右键可以快速上线 / 下线。
 “后台服务”在 Windows 上表现为当前用户的登录任务，不会写入系统级服务。
 如果 Windows Defender 或 SmartScreen 提示未知发布者，这是未签名构建的正常提示。'''
@@ -68,7 +68,7 @@ else:
 ./portal-cli down <会话ID>
 ```
 '''
-    extra = '''Linux 版本是免安装的绿色包，直接运行 `./dgcu-portal` 即可。
+    extra = '''Linux 版本是免安装的绿色包，直接运行 `./portal-gui` 即可。
 桌面环境需要提供 WebKitGTK 4.1 与 Ayatana AppIndicator，例如 Debian/Ubuntu：
 ```
 sudo apt install libwebkit2gtk-4.1-0 libayatana-appindicator3-1
