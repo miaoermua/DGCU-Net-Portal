@@ -25,7 +25,7 @@ const demoSessions = (): Session[] => [
 const phaseLabels: Record<string, string> = { discovering: '正在寻找认证页', reading_form: '正在读取认证表单', authenticating: '正在提交认证', waiting_portal: '正在等待 Portal 认证', waiting_dial: '正在等待代拨结果', accepted: 'Portal 已确认成功' }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.3.16')
+  const version = ref('0.4.0')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
@@ -39,6 +39,7 @@ export function createPortalState(bridge?: DesktopBridge) {
   })
   const rate = computed(() => selected.value ? snapshot.value.rates[selected.value.radacctid] : undefined)
   const isOnline = computed(() => ['accepted', 'session_online'].includes(snapshot.value.status))
+  const serviceRunning = computed(() => !!phase.value || snapshot.value.authenticated || ['authenticating', 'accepted', 'session_online', 'backend'].includes(snapshot.value.status))
   const disconnectIntent = computed(() => isOnline.value || !!selected.value || (snapshot.value.status === 'unknown' && snapshot.value.authenticated))
   const primaryLabel = computed(() => busy.value ? '处理中…' : disconnectIntent.value ? '下线' : '上线')
   const title = computed(() => ({ idle: '尚未连接', authenticating: '正在认证', accepted: '认证成功', backend: '已登录后台', session_online: '所选会话在线', offline: '已下线', error: '连接失败', unknown: '下线待确认' })[snapshot.value.status] ?? snapshot.value.status)
@@ -226,6 +227,6 @@ export function createPortalState(bridge?: DesktopBridge) {
     if (open) logTimer = setInterval(() => { void readLogs() }, 1000)
   })
   function dispose() { disposed = true; stopWatch(); stopLogWatch(); if (logTimer) clearInterval(logTimer); if (snapshotTimer) clearInterval(snapshotTimer); logEpoch++; logEntries.value = []; unlisteners.splice(0).forEach(stop => stop()); clearFields(); answer(false) }
-  return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces }
+  return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, serviceRunning, title, phase, notice, confirmation, answer, connect, refresh, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces, hasUnsavedConnectionSettings }
 }
 export function usePortal() { const state = createPortalState(window.__TAURI__); onMounted(state.initialize); onUnmounted(state.dispose); return state }

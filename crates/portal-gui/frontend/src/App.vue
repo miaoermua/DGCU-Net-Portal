@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { MotionConfig } from 'motion-v'
-import { MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixIcon, MiuixIconButton, MiuixProgressIndicator, MiuixSwitchPreference, MiuixTabRow, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
-import { Clear, Close, Forward, Link } from 'miuix-vue/icons'
+import { MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixIcon, MiuixIconButton, MiuixProgressIndicator, MiuixSwitchPreference, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
+import { Clear, Close, File, Forward, Info, Link, Settings as SettingsIcon } from 'miuix-vue/icons'
 import { usePortal, formatBytes, formatRate, formatDuration, mask } from './usePortal'
 import { licenseGroups, licenseNotice } from './licenses'
 import xiaoweiLogo from './assets/xiaowei.png'
 
-const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces, close } = usePortal()
+const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces, close, hasUnsavedConnectionSettings, serviceRunning } = usePortal()
 watch(() => saved.value.theme_mode, value => setThemeMode(value), { immediate: true })
 const styleNonce = document.querySelector<HTMLStyleElement>('#motion-csp')?.nonce || undefined
 const locked = computed(() => busy.value || !ready.value)
@@ -50,6 +50,40 @@ const jitterItems = ['低（±5%）', '中（±10%）', '高（±20%）', '禁�
 const jitterIndex = computed({ get: () => ({ low: 0, medium: 1, high: 2, disabled: 3 }[draft.poll_jitter]), set: (value: number) => { draft.poll_jitter = (['low', 'medium', 'high', 'disabled'] as const)[value] ?? 'low' } })
 const themeItems = ['跟随系统', '浅色', '深色']
 const themeIndex = computed({ get: () => ({ system: 0, light: 1, dark: 2 }[saved.value.theme_mode]), set: (value: number) => { void updatePreferences({ theme_mode: (['system', 'light', 'dark'] as const)[value] ?? 'system' }) } })
+const navIcons = [Link, SettingsIcon, Info]
+const settingsNoticeShown = ref(false)
+let settingsApplyTimer: ReturnType<typeof setTimeout> | undefined
+const watchedSettings = computed(() => [draft.server, draft.auth_url, draft.probe_url, draft.paip, draft.basip, draft.probe_enabled, draft.refresh_policy, draft.poll_jitter, draft.traffic_enabled, draft.credential_store, draft.interface_name, draft.bypass_proxy, draft.reconnect_mode, draft.tray_startup, draft.service_enabled].join('|'))
+const advancedSettingsDirty = computed(() => [draft.server, draft.auth_url, draft.probe_url, draft.paip, draft.basip].some((value, index) => value !== [saved.value.server, saved.value.auth_url, saved.value.probe_url, saved.value.paip, saved.value.basip][index]))
+watch(watchedSettings, () => {
+  if (!ready.value || busy.value || preferencesBusy.value || !hasUnsavedConnectionSettings.value) return
+  if (advancedSettingsDirty.value) {
+    if (!settingsNoticeShown.value) {
+      settingsNoticeShown.value = true
+      notice.value = '高级连接参数已修改，请点击顶部保存设置后应用'
+    }
+    return
+  }
+  if (serviceRunning.value) {
+    if (!settingsNoticeShown.value) {
+      settingsNoticeShown.value = true
+      notice.value = '认证服务正在运行，设置尚未应用；停止服务后会自动保存，或点击顶部保存设置'
+    }
+    return
+  }
+  if (settingsApplyTimer) clearTimeout(settingsApplyTimer)
+  settingsApplyTimer = setTimeout(() => { void save() }, 500)
+})
+watch(serviceRunning, running => {
+  if (!running) {
+    settingsNoticeShown.value = false
+    if (hasUnsavedConnectionSettings.value && !advancedSettingsDirty.value) {
+      if (settingsApplyTimer) clearTimeout(settingsApplyTimer)
+      settingsApplyTimer = setTimeout(() => { void save() }, 500)
+    }
+  }
+})
+onUnmounted(() => { if (settingsApplyTimer) clearTimeout(settingsApplyTimer) })
 const interfaceItems = computed(() => [{ text: '自动选择活动网卡', summary: '使用第一个可用 IPv4/MAC 接口' }, ...networkInterfaces.value.map(item => ({ text: item.name, summary: `${item.ipv4 || '无 IPv4'} · ${item.mac || '无 MAC'}`, disabled: !item.ipv4 || !item.mac }))])
 const interfaceIndex = computed({ get: () => { const index = networkInterfaces.value.findIndex(item => item.name === draft.interface_name); return index < 0 ? 0 : index + 1 }, set: (value: number) => { draft.interface_name = value === 0 ? '' : (networkInterfaces.value[value - 1]?.name ?? '') } })
 const interfaceSummary = computed(() => {
@@ -62,7 +96,8 @@ const interfaceSummary = computed(() => {
 <template>
   <MotionConfig :nonce="styleNonce" reduced-motion="user">
   <div class="portal-app">
-    <nav class="top-navigation" aria-label="主导航"><MiuixTabRow v-model="page" :tabs="['网络', '设置', '关于']" contour /></nav>
+    <nav class="top-navigation gnome-navigation" aria-label="主导航"><button v-for="(label, index) in ['网络', '设置', '关于']" :key="label" type="button" :class="{ active: page === index }" @click="page = index"><MiuixIcon class="m-navigation-bar__icon" :icon="navIcons[index]" :size="20" /><span>{{ label }}</span></button></nav>
+    <div v-if="hasUnsavedConnectionSettings" class="mobile-save-bar"><span>{{ advancedSettingsDirty ? '高级连接参数已修改，请保存后应用' : serviceRunning ? '认证服务正在运行，设置将在下次认证应用' : '设置正在实时保存' }}</span><MiuixButton v-if="advancedSettingsDirty || serviceRunning" type="primary" :disabled="settingsLocked" @click="save">保存设置</MiuixButton></div>
 
     <main>
       <section v-if="page === 0" class="overview" aria-label="网络概览">
@@ -117,15 +152,14 @@ const interfaceSummary = computed(() => {
         </MiuixCard>
         <h3 class="group-heading">高级</h3>
         <details class="advanced-settings"><summary>连接地址和探测参数</summary><MiuixCard class="advanced-fields"><label class="field">HTTP 探测地址<input v-model="draft.probe_url" :disabled="settingsLocked" spellcheck="false"></label><label class="field">认证后台<input v-model="draft.auth_url" :disabled="settingsLocked" spellcheck="false"></label><label class="field">认证服务器<input v-model="draft.server" :disabled="settingsLocked" spellcheck="false"></label><label class="field">Portal URL（可选）<input v-model="portalUrl" :disabled="locked" autocomplete="off" spellcheck="false" placeholder="留空使用 DGCU 模板，或粘贴当前网络的认证网址"></label><label class="field">paip（Portal 参数）<input v-model="draft.paip" :disabled="settingsLocked" spellcheck="false" placeholder="172.18.100.65"></label><label class="field">basip 覆盖值（可选）<input v-model="draft.basip" :disabled="settingsLocked" spellcheck="false" placeholder="留空使用认证页返回值"></label><p class="advanced-note">paip 默认是 172.18.100.65，会写入 Portal URL 查询参数。basip 默认留空，程序会使用认证入口表单返回的隐藏值；只有填写覆盖值时才替换服务器返回值。两者都必须是 IP 地址。</p></MiuixCard></details>
-        <div class="settings-footer"><span>界面与日志设置即时保存；其他设置点击保存生效。</span><div class="row-actions"><MiuixButton :disabled="settingsLocked" @click="save">保存设置</MiuixButton></div></div>
       </section>
 
-      <section v-else class="about-page" aria-label="关于"><MiuixCard class="about-card"><div class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><div><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></div></div><MiuixBasicComponent title="GitHub 仓库" summary="miaoermua/DGCU-Net-Portal" :disabled="locked" clickable @click="openRepository"><template #start><svg class="about-entry-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4M14 3h7v7M21 3 10 14"/></svg></template><template #end><span class="about-entry-arrow" aria-hidden="true">↗</span></template></MiuixBasicComponent><MiuixBasicComponent title="开源软件声明" :summary="`${licenseCount} 个开源项目 · 名称 / 地址 / 许可证`" :disabled="locked" clickable @click="licensesOpen = true"><template #start><svg class="about-entry-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M6 3h8l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v5h5M8.5 13h7M8.5 17h4"/></svg></template><template #end><span class="about-entry-arrow" aria-hidden="true">›</span></template></MiuixBasicComponent></MiuixCard></section>
+      <section v-else class="about-page" aria-label="关于"><MiuixCard class="about-card"><div class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><div><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></div></div><MiuixBasicComponent title="GitHub 仓库" summary="miaoermua/DGCU-Net-Portal" :disabled="locked" clickable @click="openRepository"><template #start><svg class="about-entry-icon github-entry-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2.5a9.5 9.5 0 0 0-3 18.52c.47.09.64-.2.64-.45v-1.6c-2.6.57-3.15-1.1-3.15-1.1-.43-1.1-1.05-1.4-1.05-1.4-.86-.59.07-.58.07-.58.95.07 1.45.98 1.45.98.85 1.45 2.23 1.03 2.78.79.09-.62.33-1.03.6-1.27-2.08-.24-4.27-1.04-4.27-4.63 0-1.02.36-1.85.98-2.5-.1-.24-.42-1.2.09-2.48 0 0 .8-.25 2.62.96a9.1 9.1 0 0 1 4.77 0c1.82-1.21 2.62-.96 2.62-.96.51 1.28.19 2.24.09 2.48.61.65.98 1.48.98 2.5 0 3.6-2.2 4.39-4.28 4.63.34.29.64.84.64 1.7v2.48c0 .25.17.54.65.45A9.5 9.5 0 0 0 12 2.5Z"/></svg></template><template #end><span class="about-entry-arrow" aria-hidden="true">↗</span></template></MiuixBasicComponent><MiuixBasicComponent title="开源软件声明" :summary="`${licenseCount} 个开源项目 · 名称 / 地址 / 许可证`" :disabled="locked" clickable @click="licensesOpen = true"><template #start><MiuixIcon class="about-entry-icon" :icon="File" :size="20" /></template><template #end><span class="about-entry-arrow" aria-hidden="true">›</span></template></MiuixBasicComponent></MiuixCard></section>
     </main>
     <dialog ref="dialog" class="confirm-dialog" aria-labelledby="dialog-title" @cancel.prevent="answer(false)"><template v-if="confirmation"><h2 id="dialog-title">{{ confirmation.title }}</h2><p>{{ confirmation.text }}</p><div class="dialog-actions"><MiuixButton @click="answer(false)">取消</MiuixButton><MiuixButton type="primary" @click="answer(true)">{{ confirmation.label }}</MiuixButton></div></template></dialog>
-    <dialog ref="logDialog" class="logs-dialog" aria-labelledby="logs-title" @cancel.prevent="logsOpen = false"><div class="logs-heading"><h2 id="logs-title">portal-cli 日志 <span v-if="demo" class="mode-badge">模拟</span></h2><MiuixButton @click="logsOpen = false">关闭</MiuixButton></div><p class="dialog-caption">{{ demo ? '仅为 Demo 操作生成的模拟事件。' : '当前 GUI 进程与 CLI 共用认证核心的日志，不读取其他 CLI 进程。' }} 不记录账号、密码、URL 或 Cookie。</p><div class="logs-body" role="log" aria-label="客户端日志" aria-live="off"><p v-if="!logEntries.length" class="logs-empty">暂无日志，开启后执行认证操作即可查看。</p><div v-for="entry in logEntries" :key="entry.sequence" class="log-line"><time>{{ logTime(entry.timestamp_ms) }}</time><span class="log-level" :class="entry.level">{{ entry.level.toUpperCase() }}</span><code>{{ entry.code }}</code><span>{{ entry.message }}</span></div></div><div class="logs-footer"><span>{{ logEntries.length }} / 300 条 · 关闭日志开关即清空</span><MiuixButton @click="clearLogs">清空日志</MiuixButton></div></dialog>
+    <dialog ref="logDialog" class="logs-dialog" aria-labelledby="logs-title" @cancel.prevent="logsOpen = false"><div class="logs-heading"><h2 id="logs-title">portal-cli 日志 <span v-if="demo" class="mode-badge">模拟</span></h2><MiuixIconButton class="dialog-icon-button" aria-label="关闭日志" title="关闭日志" @click="logsOpen = false"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton></div><p class="dialog-caption">{{ demo ? '仅为 Demo 操作生成的模拟事件。' : '当前 GUI 进程与 CLI 共用认证核心的日志，不读取其他 CLI 进程。' }} 不记录账号、密码、URL 或 Cookie。</p><div class="logs-body" role="log" aria-label="客户端日志" aria-live="off"><p v-if="!logEntries.length" class="logs-empty">暂无日志，开启后执行认证操作即可查看。</p><div v-for="entry in logEntries" :key="entry.sequence" class="log-line"><time>{{ logTime(entry.timestamp_ms) }}</time><span class="log-level" :class="entry.level">{{ entry.level.toUpperCase() }}</span><code>{{ entry.code }}</code><span>{{ entry.message }}</span></div></div><div class="logs-footer"><span>{{ logEntries.length }} / 300 条 · 关闭日志开关即清空</span><MiuixIconButton class="dialog-icon-button" aria-label="清空日志" title="清空日志" @click="clearLogs"><MiuixIcon :icon="Clear" :size="18" /></MiuixIconButton></div></dialog>
     <dialog ref="sessionDialog" class="confirm-dialog session-picker" aria-labelledby="picker-title" @cancel.prevent="sessionPickerOpen = false"><h2 id="picker-title">选择要下线的会话</h2><p>无法唯一确定本次连接，请选择目标；不会自动下线其他设备。</p><div class="picker-list"><button v-for="row in snapshot.sessions" :key="row.radacctid" class="picker-session" :disabled="locked" @click="selectForDisconnect(row.radacctid)"><strong>会话 {{ row.radacctid }}</strong><span>{{ row.framedipaddress || 'IP 未上报' }} · {{ mask(row.username) }}</span></button><p v-if="!snapshot.sessions.length">暂无可选会话，请打开认证后台确认远端状态。</p></div><div class="dialog-actions"><MiuixButton @click="sessionPickerOpen = false">取消</MiuixButton><MiuixButton v-if="!snapshot.sessions.length" @click="openSite">认证后台</MiuixButton></div></dialog>
-    <dialog ref="licenseDialog" class="logs-dialog license-dialog" aria-labelledby="licenses-title" @cancel.prevent="licensesOpen = false"><div class="logs-heading"><h2 id="licenses-title">开源软件声明</h2><MiuixButton @click="licensesOpen = false">关闭</MiuixButton></div><p class="dialog-caption">{{ licenseNotice }}</p><div class="license-groups" role="list"><section v-for="group in licenseGroups" :key="group.title" class="license-group"><h3>{{ group.title }}</h3><button v-for="entry in group.entries" :key="entry.name" role="listitem" class="license-row" :disabled="locked" :title="`打开 ${entry.name} 仓库`" @click="openUrl(entry.url)"><span class="license-head"><strong>{{ entry.name }}</strong><span class="license-tag">{{ entry.license }}</span></span><span class="license-summary">{{ entry.summary }}</span></button></section></div></dialog>
+    <dialog ref="licenseDialog" class="logs-dialog license-dialog" aria-labelledby="licenses-title" @cancel.prevent="licensesOpen = false"><div class="logs-heading"><h2 id="licenses-title">开源软件声明</h2><MiuixIconButton class="dialog-icon-button" aria-label="关闭开源软件声明" title="关闭开源软件声明" @click="licensesOpen = false"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton></div><p class="dialog-caption">{{ licenseNotice }}</p><div class="license-groups" role="list"><section v-for="group in licenseGroups" :key="group.title" class="license-group"><h3>{{ group.title }}</h3><button v-for="entry in group.entries" :key="entry.name" role="listitem" class="license-row" :disabled="locked" :title="`打开 ${entry.name} 仓库`" @click="openUrl(entry.url)"><span class="license-head"><strong>{{ entry.name }}</strong><span class="license-tag">{{ entry.license }}</span></span><span class="license-summary">{{ entry.summary }}</span></button></section></div></dialog>
     <MiuixSnackbarHost />
   </div>
   </MotionConfig>

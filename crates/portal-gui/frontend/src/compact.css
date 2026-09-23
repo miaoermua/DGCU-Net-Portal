@@ -40,8 +40,13 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .mode-badge, .privacy-tag, .selected-tag { color: var(--m-color-on-tertiary-container); background: var(--m-color-tertiary-container); border-radius: 6px; font-size: 10px; padding: 3px 6px; white-space: nowrap; }
 .header-actions, .row-actions { gap: 7px; }
 .top-navigation { margin-bottom: 12px; }
-.top-navigation .m-tab-row { height: 36px !important; }
-.top-navigation .m-tab-row__item { font-size: 12px !important; }
+.gnome-navigation { display: flex; align-items: center; gap: 4px; padding: 3px; border-radius: 14px; background: var(--m-color-surface); }
+.gnome-navigation button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; flex: 1; padding: 6px 12px; border: 0; border-radius: 11px; color: var(--m-color-on-surface-variant-summary); background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
+.gnome-navigation button.active { color: var(--m-color-on-background); background: var(--m-color-surface-container); font-weight: 650; }
+.gnome-navigation button:hover:not(.active) { background: var(--m-color-window-dimming); }
+.gnome-navigation .m-icon, .gnome-navigation .m-navigation-bar__icon { width: 18px; height: 18px; margin-top: 0; }
+.mobile-save-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 10px; padding: 8px 10px 8px 13px; border-radius: 12px; color: var(--m-color-on-tertiary-container); background: var(--m-color-tertiary-container); font-size: 11px; }
+.mobile-save-bar .m-button { min-height: 28px; padding: 7px 10px; font-size: 11px; }
 .portal-app .m-button { min-height: 32px; padding: 9px 13px; border-radius: 10px; font-weight: 600; }
 .portal-app .m-card { --m-card-color: var(--m-color-background); }
 .overview { display: grid; gap: 12px; }
@@ -64,11 +69,11 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .about-logo { width: 42px; height: 42px; border-radius: 10px; background: #fff; object-fit: contain; }
 .preference-action { width: 100%; display: flex; align-items: center; justify-content: space-between; border: 0; border-top: 1px solid var(--m-color-surface); padding: 11px 14px; text-align: left; background: transparent; color: var(--m-color-on-background); cursor: pointer; }
 .preference-action > span:first-child { display: flex; flex-direction: column; gap: 4px; }.preference-action strong { font-size: 13px; font-weight: 500; }.preference-action small { font-size: 12px; color: var(--m-color-on-surface-variant-summary); }.preference-action > span:last-child { font-size: 22px; color: var(--m-color-on-surface-variant-actions); }
-.logs-dialog { width: min(660px, calc(100% - 28px)); max-height: calc(100dvh - 40px); border: 0; border-radius: 18px; padding: 18px; background: var(--m-color-background); color: var(--m-color-on-background); }
+.logs-dialog { width: min(660px, calc(100% - 28px)); height: min(590px, calc(100dvh - 40px)); max-height: calc(100dvh - 40px); border: 0; border-radius: 18px; padding: 18px; background: var(--m-color-background); color: var(--m-color-on-background); }
 .logs-dialog::backdrop { background: var(--m-color-window-dimming); }
+.dialog-icon-button { --m-icon-button-min-width: 30px; --m-icon-button-min-height: 30px; --m-icon-button-radius: 9px; --m-icon-button-bg: transparent; }
 .logs-heading, .logs-footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; }.logs-heading h2 { font-size: 16px; }.logs-footer { margin-top: 12px; }.logs-footer > span { font-size: 11px; color: var(--m-color-on-surface-variant-summary); }
-.dialog-caption { font-size: 11px; line-height: 1.6; margin: 12px 0; color: var(--m-color-on-surface-variant-summary); }.logs-body { height: min(310px, 46dvh); overflow: auto; border-radius: 10px; padding: 10px; background: var(--m-color-surface); }
-.license-groups { height: min(400px, 56dvh); overflow: auto; border-radius: 10px; padding: 10px; background: var(--m-color-surface); }
+.dialog-caption { font-size: 11px; line-height: 1.6; margin: 12px 0; color: var(--m-color-on-surface-variant-summary); }.logs-body, .license-groups { height: min(400px, 56dvh); overflow: auto; border-radius: 10px; padding: 10px; background: var(--m-color-surface); }
 .license-group h3 { margin: 10px 0 4px; font-size: 12px; font-weight: 600; color: var(--m-color-on-surface-variant-summary); }
 .license-group:first-child h3 { margin-top: 0; }
 .license-row { display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 9px 10px; border: 0; border-radius: 9px; color: inherit; background: transparent; cursor: pointer; text-align: left; }
@@ -84,8 +89,8 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .traffic-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
 .metric > .m-card { display: flex; flex-direction: column; padding: 14px 12px 12px; gap: 7px; width: 100%; }
 .metric-label { font-size: 11px; color: var(--m-color-on-surface-variant-summary); }
-.metric strong { font-size: 20px; font-weight: 650; letter-spacing: -.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.metric strong.waiting { font-size: 15px; line-height: 24px; color: var(--m-color-on-surface-variant-summary); font-weight: 500; letter-spacing: 0; }
+.metric strong { display: flex; align-items: center; min-height: 25px; font-size: 20px; line-height: 25px; font-weight: 650; letter-spacing: -.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.metric strong.waiting { color: var(--m-color-on-surface-variant-summary); font-weight: 650; letter-spacing: -.5px; }
 .metric-note { color: var(--m-color-on-surface-variant-actions); font-size: 10px; line-height: 1.4; }
 .section-heading { justify-content: space-between; gap: 10px; padding: 0 3px; }
 .section-heading h3 { font-size: 13px; font-weight: 600; }
