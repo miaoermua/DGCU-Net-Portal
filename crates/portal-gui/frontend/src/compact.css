@@ -55,10 +55,11 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .status-line h2 { font-size: 17px; line-height: 1.4; }
 .status-message { font-size: 11px; color: var(--m-color-on-surface-variant-summary); line-height: 1.6; margin-top: 3px; overflow-wrap: anywhere; }
 .connection-actions { display: flex; gap: 7px; flex-shrink: 0; }
-.shutdown-icon { --m-icon-button-min-width: 32px; --m-icon-button-min-height: 32px; --m-icon-button-radius: 10px; --m-icon-button-bg: var(--m-color-secondary-container); color: var(--m-color-error); }
-.shutdown-icon.m-icon-button--disabled { color: var(--m-color-disabled-on-secondary-variant); }
+.shutdown-icon { --m-icon-button-min-width: 32px; --m-icon-button-min-height: 32px; --m-icon-button-radius: 10px; --m-icon-button-bg: var(--m-color-secondary-container); }
 .auth-site-icon.m-button { padding: 8px; min-width: 32px; width: 32px; }
-.auth-site-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.auth-site-icon .m-icon { width: 18px; height: 18px; }
+.clear-session-button { gap: 6px; }
+.clear-session-button .m-icon { width: 16px; height: 16px; }
 .about-logo { width: 42px; height: 42px; border-radius: 10px; background: #fff; object-fit: contain; }
 .preference-action { width: 100%; display: flex; align-items: center; justify-content: space-between; border: 0; border-top: 1px solid var(--m-color-surface); padding: 11px 14px; text-align: left; background: transparent; color: var(--m-color-on-background); cursor: pointer; }
 .preference-action > span:first-child { display: flex; flex-direction: column; gap: 4px; }.preference-action strong { font-size: 13px; font-weight: 500; }.preference-action small { font-size: 12px; color: var(--m-color-on-surface-variant-summary); }.preference-action > span:last-child { font-size: 22px; color: var(--m-color-on-surface-variant-actions); }

@@ -2,7 +2,7 @@
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { MotionConfig } from 'motion-v'
 import { MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixIcon, MiuixIconButton, MiuixSwitchPreference, MiuixTabRow, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
-import { Close } from 'miuix-vue/icons'
+import { Clear, Close, Forward } from 'miuix-vue/icons'
 import { usePortal, formatBytes, formatRate, formatDuration, mask } from './usePortal'
 import { licenseGroups, licenseNotice } from './licenses'
 import xiaoweiLogo from './assets/xiaowei.png'
@@ -68,7 +68,7 @@ const interfaceSummary = computed(() => {
       <section v-if="page === 0" class="overview" aria-label="网络概览">
         <MiuixCard class="connection-card">
           <div class="connection-main"><div class="status-icon" :class="{ online: isOnline }" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 8.5a15 15 0 0 1 18 0M6 12a10 10 0 0 1 12 0m-9 3.5a5 5 0 0 1 6 0"/><circle cx="12" cy="19" r="1"/></svg></div><div class="connection-copy"><div class="status-line"><h2>{{ phase || title }}</h2><span v-if="saved.credential_store === 'memory'" class="privacy-tag">仅一次会话</span></div><p class="status-message" role="status">{{ phase ? '请稍候，等待认证系统返回结果' : snapshot.message }}</p></div></div>
-          <div class="connection-actions"><MiuixButton type="primary" :disabled="locked" @click="primaryAction">{{ primaryLabel }}</MiuixButton><MiuixIconButton class="shutdown-icon" :disabled="locked" aria-label="退出并停止后台服务" title="退出并停止后台服务" @click="close"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton><MiuixButton class="auth-site-icon" :disabled="locked" aria-label="打开认证后台" title="打开认证后台" @click="openSite"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M10 5H5a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-5"/></svg></MiuixButton></div>
+          <div class="connection-actions"><MiuixButton type="primary" :disabled="locked" @click="primaryAction">{{ primaryLabel }}</MiuixButton><MiuixIconButton class="shutdown-icon" :disabled="locked" aria-label="退出并停止后台服务" title="退出并停止后台服务" @click="close"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton><MiuixButton class="auth-site-icon" :disabled="locked" aria-label="打开认证后台" title="打开认证后台" @click="openSite"><MiuixIcon :icon="Forward" :size="18" /></MiuixButton></div>
         </MiuixCard>
         <div class="traffic-grid" aria-label="后台计费流量">
           <MiuixCard class="metric"><span class="metric-label">↓ 累计下载</span><strong>{{ saved.traffic_enabled && selected ? formatBytes(selected.acctoutputoctets) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '所选后台会话' : '设置中开启后台流量统计' }}</span></MiuixCard>
@@ -81,7 +81,7 @@ const interfaceSummary = computed(() => {
           <div v-if="!snapshot.sessions.length" class="empty-state"><strong>暂无在线会话</strong><span>上线或登录后台后，即可查看和管理连接。</span><MiuixButton :disabled="locked" @click="page = 1">填写登录信息</MiuixButton></div>
           <label v-for="row in snapshot.sessions" v-else :key="row.radacctid" class="session-row" :class="{ selected: row.radacctid === snapshot.selected_id }"><input type="radio" name="session" :checked="row.radacctid === snapshot.selected_id" :disabled="locked" :aria-label="`选择会话 ${row.radacctid}`" @change="select(row.radacctid)"><div class="session-identity"><strong>{{ mask(row.username) }} <span v-if="row.radacctid === snapshot.selected_id" class="selected-tag">已选择</span></strong><span>{{ row.framedipaddress || 'IP 未上报' }} · #{{ row.radacctid }}</span></div><span class="session-duration">{{ formatDuration(row.acctsessiontime) }}</span></label>
         </MiuixCard>
-        <div class="overview-footer"><span>{{ demo ? '模拟数据 · 不连接校园网' : '后台计费数据 · 仅读取所选网卡 IP / MAC，不采集网卡流量' }}</span><div class="row-actions"><MiuixButton v-if="demo" :disabled="locked || !snapshot.sessions.length" @click="simulateUpdate">模拟流量更新</MiuixButton><MiuixButton v-if="saved.show_sessions" :disabled="locked" @click="forget">清除本地会话</MiuixButton><MiuixButton v-if="!snapshot.authenticated" :disabled="locked" @click="page = 1">登录设置</MiuixButton></div></div>
+        <div class="overview-footer"><span>{{ demo ? '模拟数据 · 不连接校园网' : '后台计费数据 · 仅读取所选网卡 IP / MAC，不采集网卡流量' }}</span><div class="row-actions"><MiuixButton v-if="demo" :disabled="locked || !snapshot.sessions.length" @click="simulateUpdate">模拟流量更新</MiuixButton><MiuixButton v-if="saved.show_sessions" class="clear-session-button" :disabled="locked" aria-label="清除本地会话" title="清除本地会话" @click="forget"><MiuixIcon :icon="Clear" :size="16" /><span>清除本地会话</span></MiuixButton><MiuixButton v-if="!snapshot.authenticated" :disabled="locked" @click="page = 1">登录设置</MiuixButton></div></div>
       </section>
 
       <section v-else-if="page === 1" class="settings-page" aria-label="偏好设置">
