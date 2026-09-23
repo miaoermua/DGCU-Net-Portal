@@ -39,6 +39,7 @@ pub struct Controller {
     attempts: u32,
     last_attempt: Option<Instant>,
     awaiting_session: Option<HashSet<String>>,
+    reconnecting: bool,
 }
 impl Default for Controller {
     fn default() -> Self {
@@ -72,6 +73,7 @@ impl Controller {
             attempts: 0,
             last_attempt: None,
             awaiting_session: None,
+            reconnecting: false,
         }
     }
     pub fn clear(&mut self) {
@@ -120,7 +122,12 @@ impl Controller {
         backend_only: bool,
         progress: F,
     ) -> Result<Snapshot, AppError> {
-        self.clear();
+        // A manual connection starts a fresh local session. Automatic redial is
+        // transactional: keep the current API/Cookie and session rows until the
+        // replacement connection has completed successfully.
+        if !self.reconnecting {
+            self.clear();
+        }
         let network = if backend_only {
             None
         } else {
@@ -433,19 +440,53 @@ impl Controller {
         let Some(credential) = self.credential.take() else {
             return;
         };
+        let retry_credential =
+            Credential::new(credential.username.clone(), credential.password.clone());
+        let old_status = self.status.clone();
+        let old_message = self.message.clone();
         self.last_attempt = Some(Instant::now());
         self.logs.record(crate::logging::Event::AutoRetry);
         self.attempts += 1;
         let attempts = self.attempts;
         let last = self.last_attempt;
+        self.reconnecting = true;
         let result = self.connect(credential, "", false, progress).await;
+        self.reconnecting = false;
         self.attempts = attempts;
         self.last_attempt = last;
-        if result.is_err() || self.selected.is_none() {
-            self.logs.record(crate::logging::Event::RetryPaused);
-            self.paused = true;
-            self.message = "自动重拨未完成或无法绑定新会话，已暂停；请手动检查".into();
+        match result {
+            Ok(_) if self.selected.is_some() => {}
+            Ok(_) => {
+                self.logs.record(crate::logging::Event::RetryPaused);
+                self.paused = true;
+                self.message = "自动重拨未完成或无法绑定新会话，已暂停；请手动检查".into();
+            }
+            Err(error) if Self::transient_reconnect_error(&error) => {
+                self.credential = Some(retry_credential);
+                self.attempts = 0;
+                self.status = old_status;
+                self.message = format!(
+                    "{}；网络暂时不可用，保留当前会话并等待下一次掉线检测",
+                    old_message
+                );
+            }
+            Err(_) => {
+                self.logs.record(crate::logging::Event::RetryPaused);
+                self.paused = true;
+                self.message = "自动重拨被认证系统拒绝，已暂停；请手动检查".into();
+            }
         }
+    }
+
+    fn transient_reconnect_error(error: &AppError) -> bool {
+        matches!(
+            error,
+            AppError::Network
+                | AppError::Timeout(_)
+                | AppError::DiscoveryTimeout
+                | AppError::DiscoveryNotFound
+                | AppError::Http(408 | 425 | 429 | 500..=599)
+        )
     }
 }
 

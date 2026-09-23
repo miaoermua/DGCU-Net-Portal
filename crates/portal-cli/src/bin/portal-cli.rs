@@ -9,7 +9,7 @@ use portal_cli::{
 use std::io::{self, Write};
 
 #[derive(Parser)]
-#[command(name = "portal-cli", version, about = "DGCU Portal 命令行客户端")]
+#[command(name = "portal-cli", version, about = "DGCU Net Portal 命令行客户端")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
