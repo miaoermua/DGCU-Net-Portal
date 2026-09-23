@@ -55,6 +55,15 @@ pub enum CredentialStore {
     File,
     Memory,
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconnectMode {
+    #[default]
+    Disabled,
+    NewSession,
+    TerminateAndReconnect,
+}
 impl RefreshPolicy {
     pub fn next_delay(self, jitter: PollJitter) -> Option<Duration> {
         match self {
@@ -108,7 +117,7 @@ pub struct Settings {
     pub interface_name: String,
     pub bypass_proxy: bool,
     pub credential_store: CredentialStore,
-    pub auto_redial: bool,
+    pub reconnect_mode: ReconnectMode,
     pub tray_startup: bool,
     pub service_enabled: bool,
     pub username: String,
@@ -131,7 +140,7 @@ impl Default for Settings {
             interface_name: String::new(),
             bypass_proxy: true,
             credential_store: CredentialStore::System,
-            auto_redial: false,
+            reconnect_mode: ReconnectMode::Disabled,
             tray_startup: false,
             service_enabled: false,
             username: String::new(),
@@ -176,7 +185,7 @@ impl Settings {
                 .map_err(|_| "basip 覆盖值必须是有效的 IP 地址".to_string())?;
         }
         if self.credential_store == CredentialStore::Memory {
-            self.auto_redial = false;
+            self.reconnect_mode = ReconnectMode::Disabled;
             self.service_enabled = false;
             self.username.clear();
         }

@@ -9,7 +9,7 @@ pub struct Rate {
     pub download_bps: Option<f64>,
     pub sample_seconds: Option<u64>,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct AccountingRates {
     previous: HashMap<String, (u64, u64, u64)>,
 }

@@ -11,7 +11,7 @@ export interface Settings {
   credential_store: 'system' | 'file' | 'memory'
   interface_name: string
   bypass_proxy: boolean
-  auto_redial: boolean
+  reconnect_mode: 'disabled' | 'new_session' | 'terminate_and_reconnect'
   tray_startup: boolean
   service_enabled: boolean
   username: string

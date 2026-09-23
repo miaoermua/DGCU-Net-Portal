@@ -6,12 +6,6 @@ node_modules/
 /.cargo-home/
 **/.DS_Store
 
-# Local campus-network authentication analysis documents
-/docs/campus-network-auth-todo.md
-/docs/campus-network-auth-har-analysis.md
-/docs/campus-network-auth-implementation.md
-/docs/portal-dial-har-analysis.md
-/docs/implementation-status.md
 /crates/portal-gui/gen/
 *.har
 

@@ -42,6 +42,8 @@ const logTime = (value: number) => new Date(value).toLocaleTimeString('zh-CN', {
 const selectedInterface = computed(() => networkInterfaces.value.find(item => item.name === draft.interface_name) || networkInterfaces.value.find(item => !item.internal && item.ipv4 && item.mac))
 const credentialStoreItems = ['系统凭证（推荐）', '配置文件（明文，仅测试）', '仅一次会话']
 const credentialStoreIndex = computed({ get: () => ({ system: 0, file: 1, memory: 2 }[draft.credential_store]), set: (value: number) => { draft.credential_store = (['system', 'file', 'memory'] as const)[value] ?? 'system' } })
+const reconnectItems = ['禁用', '新建后上线', '终止后重上']
+const reconnectIndex = computed({ get: () => ({ disabled: 0, new_session: 1, terminate_and_reconnect: 2 }[draft.reconnect_mode]), set: (value: number) => { draft.reconnect_mode = (['disabled', 'new_session', 'terminate_and_reconnect'] as const)[value] ?? 'disabled' } })
 const refreshEnabled = computed({ get: () => draft.refresh_policy !== 'disabled', set: (value: boolean) => { draft.refresh_policy = value ? 'one_minute' : 'disabled'; void updatePreferences({ refresh_policy: draft.refresh_policy }) } })
 const jitterItems = ['低（±5%）', '中（±10%）', '高（±20%）', '禁用（0%）']
 const jitterIndex = computed({ get: () => ({ low: 0, medium: 1, high: 2, disabled: 3 }[draft.poll_jitter]), set: (value: number) => { draft.poll_jitter = (['low', 'medium', 'high', 'disabled'] as const)[value] ?? 'low' } })
@@ -95,7 +97,7 @@ const interfaceSummary = computed(() => {
           <div class="interface-picker"><div class="interface-picker-heading"><span>使用所选网卡的 IPv4 和 MAC 生成 Portal 参数</span><MiuixButton :disabled="!ready || preferencesBusy || demo" @click="refreshInterfaces">刷新</MiuixButton></div><MiuixDropdownPreference v-model="interfaceIndex" title="认证网卡" :summary="interfaceSummary" :items="interfaceItems" :disabled="settingsLocked" /></div>
           <MiuixSwitchPreference v-model="draft.bypass_proxy" title="绕过程序代理" summary="直连认证服务器；TUN / VPN 路由仍由系统决定" :disabled="settingsLocked" />
           <MiuixSwitchPreference v-model="draft.probe_enabled" title="认证失败后自动探测" summary="默认先按 DGCU-Net-Portal 模板提交，模板失败后再探测公共 HTTP 地址" :disabled="settingsLocked" />
-          <MiuixSwitchPreference v-model="draft.auto_redial" title="掉线重拨" summary="每 5 秒检测一次；连续 3 次检测不到会话后重拨" :disabled="settingsLocked || draft.credential_store === 'memory'" />
+          <MiuixDropdownPreference v-model="reconnectIndex" title="掉线重拨" summary="每 5 秒检测一次；连续 3 次检测不到会话后按所选模式重连" :items="reconnectItems" :disabled="settingsLocked || draft.credential_store === 'memory'" />
           <MiuixDropdownPreference v-model="jitterIndex" title="轮询频率抖动" summary="分别给 5 秒掉线检测和 1 分钟后台刷新增加时间抖动，可降低风控特征" :items="jitterItems" :disabled="settingsLocked" />
         </MiuixCard>
         <h3 class="group-heading">系统</h3>

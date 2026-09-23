@@ -3,7 +3,7 @@ use portal_cli::{
     daemon,
     ipc::{self, Request},
     network, service,
-    settings::{PollJitter, RefreshPolicy, Settings},
+    settings::{PollJitter, ReconnectMode, RefreshPolicy, Settings},
     Credential,
 };
 use std::io::{self, Write};
@@ -129,10 +129,11 @@ fn set_config(mut settings: Settings, key: &str, value: &str) -> Result<(), Stri
             }
         }
         "auto-redial" => {
-            settings.auto_redial = match value {
-                "on" => true,
-                "off" => false,
-                _ => return Err("auto-redial 应为 on 或 off".into()),
+            settings.reconnect_mode = match value {
+                "off" => ReconnectMode::Disabled,
+                "new" => ReconnectMode::NewSession,
+                "terminate" => ReconnectMode::TerminateAndReconnect,
+                _ => return Err("auto-redial 应为 off、new 或 terminate".into()),
             }
         }
         "traffic" => {

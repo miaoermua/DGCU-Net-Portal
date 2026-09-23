@@ -1,7 +1,7 @@
 use crate::{
     cmcc::Phase,
     network,
-    settings::{CredentialStore, Settings},
+    settings::{CredentialStore, ReconnectMode, Settings},
     traffic::{AccountingRates, Rate},
     AppError, CmccContext, Credential, OnlineSession, PortalClient, PortalLoginOutcome,
 };
@@ -129,7 +129,9 @@ impl Controller {
             self.clear();
         }
         let network = if backend_only {
-            None
+            network::resolve(&self.settings.interface_name)
+                .ok()
+                .flatten()
         } else {
             Some(
                 network::resolve(&self.settings.interface_name)
@@ -182,6 +184,27 @@ impl Controller {
                 None
             }
         };
+        if !backend_only {
+            if let Some(rows) = baseline.as_ref() {
+                if let Some(id) = Self::unique_local_session(rows, network.as_ref()) {
+                    self.api = Some(api);
+                    self.rows = rows.clone();
+                    self.selected = Some(id);
+                    self.awaiting_session = None;
+                    self.missing = 0;
+                    self.status = "session_online".into();
+                    self.message = "已恢复本机对应的在线会话".into();
+                    self.paused = self.settings.credential_store == CredentialStore::Memory
+                        || self.settings.reconnect_mode == ReconnectMode::Disabled;
+                    if self.settings.credential_store != CredentialStore::Memory
+                        && self.settings.reconnect_mode != ReconnectMode::Disabled
+                    {
+                        self.credential = Some(credential);
+                    }
+                    return Ok(self.snapshot());
+                }
+            }
+        }
         let outcome = if backend_only {
             None
         } else {
@@ -261,13 +284,21 @@ impl Controller {
                 Vec::new()
             }
         };
+        let restored_local = Self::unique_local_session(&self.rows, network.as_ref());
+        if let Some(id) = restored_local {
+            self.selected = Some(id);
+            self.awaiting_session = None;
+            self.missing = 0;
+        }
         // Retain the pre-login baseline until accounting reports the new session.
         if outcome.is_some() {
             self.awaiting_session =
                 baseline.map(|rows| rows.iter().map(|row| row.radacctid.clone()).collect());
             self.bind_new_session();
         }
-        self.status = if outcome.is_some() {
+        self.status = if self.selected.is_some() && outcome.is_none() {
+            "session_online"
+        } else if outcome.is_some() {
             "accepted"
         } else {
             "backend"
@@ -276,6 +307,7 @@ impl Controller {
         self.message = match outcome {
             Some(PortalLoginOutcome::Dialed) => "Portal 与代拨均已确认成功",
             Some(_) => "Portal 已确认成功",
+            None if self.selected.is_some() => "已登录后台并恢复本机对应的在线会话",
             None => "已登录用户后台；请选择要管理的会话",
         }
         .into();
@@ -284,9 +316,11 @@ impl Controller {
                 .push_str("；后台会话查询暂不可用，稍后自动重试");
         }
         self.paused = self.settings.credential_store == CredentialStore::Memory
-            || !self.settings.auto_redial
+            || self.settings.reconnect_mode == ReconnectMode::Disabled
             || outcome.is_none();
-        if self.settings.credential_store != CredentialStore::Memory && self.settings.auto_redial {
+        if self.settings.credential_store != CredentialStore::Memory
+            && self.settings.reconnect_mode != ReconnectMode::Disabled
+        {
             self.credential = Some(credential);
         }
         // Otherwise credential drops here, before the online session ends.
@@ -297,7 +331,7 @@ impl Controller {
         self.rows = api.sessions().await?;
         self.bind_new_session();
         self.update_rates();
-        if !self.settings.auto_redial {
+        if self.settings.reconnect_mode == ReconnectMode::Disabled {
             self.update_session_status();
         }
         Ok(self.snapshot())
@@ -355,6 +389,19 @@ impl Controller {
             _ => {}
         }
     }
+    fn unique_local_session(
+        rows: &[OnlineSession],
+        network: Option<&network::NetworkContext>,
+    ) -> Option<String> {
+        let ip = network?.ipv4.parse::<IpAddr>().ok()?;
+        let mut matches = rows.iter().filter(|row| row.framedipaddress == Some(ip));
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            None
+        } else {
+            Some(first.radacctid.clone())
+        }
+    }
     pub async fn disconnect(&mut self, id: &str) -> Result<Snapshot, AppError> {
         self.paused = true;
         let result = match &self.api {
@@ -399,7 +446,7 @@ impl Controller {
     pub async fn redial_tick<F: Fn(Phase)>(&mut self, progress: F) {
         if self.api.is_none()
             || self.settings.credential_store == CredentialStore::Memory
-            || !self.settings.auto_redial
+            || self.settings.reconnect_mode == ReconnectMode::Disabled
             || self.paused
         {
             return;
@@ -422,7 +469,7 @@ impl Controller {
         }
         if self.paused
             || self.settings.credential_store == CredentialStore::Memory
-            || !self.settings.auto_redial
+            || self.settings.reconnect_mode == ReconnectMode::Disabled
             || self.missing < 3
             || self.attempts >= 3
         {
@@ -442,14 +489,25 @@ impl Controller {
         };
         let retry_credential =
             Credential::new(credential.username.clone(), credential.password.clone());
+        let terminate_first = self.settings.reconnect_mode == ReconnectMode::TerminateAndReconnect;
         let old_status = self.status.clone();
         let old_message = self.message.clone();
+        let old_api = self.api.clone();
+        let old_rows = self.rows.clone();
+        let old_selected = self.selected.clone();
+        let old_accounting = self.accounting.clone();
+        let old_rates = self.latest_rates.clone();
+        let old_paused = self.paused;
+        let old_missing = self.missing;
+        if terminate_first {
+            self.clear();
+        }
         self.last_attempt = Some(Instant::now());
         self.logs.record(crate::logging::Event::AutoRetry);
         self.attempts += 1;
         let attempts = self.attempts;
         let last = self.last_attempt;
-        self.reconnecting = true;
+        self.reconnecting = !terminate_first;
         let result = self.connect(credential, "", false, progress).await;
         self.reconnecting = false;
         self.attempts = attempts;
@@ -464,6 +522,15 @@ impl Controller {
             Err(error) if Self::transient_reconnect_error(&error) => {
                 self.credential = Some(retry_credential);
                 self.attempts = 0;
+                if terminate_first {
+                    self.api = old_api;
+                    self.rows = old_rows;
+                    self.selected = old_selected;
+                    self.accounting = old_accounting;
+                    self.latest_rates = old_rates;
+                    self.paused = old_paused;
+                    self.missing = old_missing;
+                }
                 self.status = old_status;
                 self.message = format!(
                     "{}；网络暂时不可用，保留当前会话并等待下一次掉线检测",

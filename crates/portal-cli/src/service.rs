@@ -1,8 +1,5 @@
 //! Current-user background startup only. Never installs a root/system-wide service.
-use std::{
-    path::Path,
-    process::Command,
-};
+use std::{path::Path, process::Command};
 
 // fs / PathBuf 只被 macOS 的 LaunchAgent 与 Linux 的 systemd 分支使用，
 // Windows（schtasks）分支不需要，无条件导入会在 Windows 上产生 unused 警告。

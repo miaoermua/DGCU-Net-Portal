@@ -315,7 +315,7 @@ fn refuses_ambiguous_or_old_session() {
 fn transient_settings_cannot_persist_account_or_background_mode() {
     let mut s = settings::Settings {
         username: "test-user".into(),
-        auto_redial: true,
+        reconnect_mode: settings::ReconnectMode::NewSession,
         service_enabled: true,
         credential_store: settings::CredentialStore::Memory,
         ..Default::default()
@@ -323,7 +323,8 @@ fn transient_settings_cannot_persist_account_or_background_mode() {
     s.normalize().unwrap();
     assert!(s.username.is_empty());
     assert_eq!(s.credential_store, settings::CredentialStore::Memory);
-    assert!(!s.auto_redial && !s.service_enabled);
+    assert_eq!(s.reconnect_mode, settings::ReconnectMode::Disabled);
+    assert!(!s.service_enabled);
 }
 #[test]
 fn unicode_redaction_does_not_panic() {
