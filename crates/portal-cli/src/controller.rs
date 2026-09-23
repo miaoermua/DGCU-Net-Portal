@@ -184,25 +184,23 @@ impl Controller {
                 None
             }
         };
-        if !backend_only {
-            if let Some(rows) = baseline.as_ref() {
-                if let Some(id) = Self::unique_local_session(rows, network.as_ref()) {
-                    self.api = Some(api);
-                    self.rows = rows.clone();
-                    self.selected = Some(id);
-                    self.awaiting_session = None;
-                    self.missing = 0;
-                    self.status = "session_online".into();
-                    self.message = "已恢复本机对应的在线会话".into();
-                    self.paused = self.settings.credential_store == CredentialStore::Memory
-                        || self.settings.reconnect_mode == ReconnectMode::Disabled;
-                    if self.settings.credential_store != CredentialStore::Memory
-                        && self.settings.reconnect_mode != ReconnectMode::Disabled
-                    {
-                        self.credential = Some(credential);
-                    }
-                    return Ok(self.snapshot());
+        if let Some(rows) = baseline.as_ref() {
+            if let Some(id) = Self::unique_local_session(rows, network.as_ref()) {
+                self.api = Some(api);
+                self.rows = rows.clone();
+                self.selected = Some(id);
+                self.awaiting_session = None;
+                self.missing = 0;
+                self.status = "session_online".into();
+                self.message = "已恢复本机对应的在线会话".into();
+                self.paused = self.settings.credential_store == CredentialStore::Memory
+                    || self.settings.reconnect_mode == ReconnectMode::Disabled;
+                if self.settings.credential_store != CredentialStore::Memory
+                    && self.settings.reconnect_mode != ReconnectMode::Disabled
+                {
+                    self.credential = Some(credential);
                 }
+                return Ok(self.snapshot());
             }
         }
         let outcome = if backend_only {

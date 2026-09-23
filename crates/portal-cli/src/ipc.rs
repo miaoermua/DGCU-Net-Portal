@@ -11,6 +11,7 @@ pub const SOCKET_NAME: &str = "portal-cli.sock";
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum Request {
     Status,
+    Shutdown,
     Up {
         username: String,
         password: String,

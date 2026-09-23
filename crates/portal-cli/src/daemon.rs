@@ -100,11 +100,18 @@ async fn handle(
             return Ok(());
         }
     };
+    let should_shutdown = matches!(&request, Request::Shutdown);
     let response = match request {
         Request::Status => Response {
             ok: true,
             message: "daemon 正在运行".into(),
             snapshot: Some(state.lock().await.snapshot()),
+            logs: None,
+        },
+        Request::Shutdown => Response {
+            ok: true,
+            message: "daemon 即将退出".into(),
+            snapshot: None,
             logs: None,
         },
         Request::Logs => Response {
@@ -213,5 +220,11 @@ async fn handle(
     let encoded = serde_json::to_string(&response)?;
     writer.write_all(encoded.as_bytes()).await?;
     writer.write_all(b"\n").await?;
+    if should_shutdown {
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            std::process::exit(0);
+        });
+    }
     Ok(())
 }

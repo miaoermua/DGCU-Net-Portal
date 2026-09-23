@@ -55,6 +55,8 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .status-line h2 { font-size: 17px; line-height: 1.4; }
 .status-message { font-size: 11px; color: var(--m-color-on-surface-variant-summary); line-height: 1.6; margin-top: 3px; overflow-wrap: anywhere; }
 .connection-actions { display: flex; gap: 7px; flex-shrink: 0; }
+.shutdown-icon { --m-icon-button-min-width: 32px; --m-icon-button-min-height: 32px; --m-icon-button-radius: 10px; --m-icon-button-bg: var(--m-color-secondary-container); color: var(--m-color-error); }
+.shutdown-icon.m-icon-button--disabled { color: var(--m-color-disabled-on-secondary-variant); }
 .auth-site-icon.m-button { padding: 8px; min-width: 32px; width: 32px; }
 .auth-site-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .about-logo { width: 42px; height: 42px; border-radius: 10px; background: #fff; object-fit: contain; }

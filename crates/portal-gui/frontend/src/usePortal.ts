@@ -25,7 +25,7 @@ const demoSessions = (): Session[] => [
 const phaseLabels: Record<string, string> = { discovering: '正在寻找认证页', reading_form: '正在读取认证表单', authenticating: '正在提交认证', waiting_portal: '正在等待 Portal 认证', waiting_dial: '正在等待代拨结果', accepted: 'Portal 已确认成功' }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.3.13')
+  const version = ref('0.3.16')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
@@ -187,7 +187,7 @@ export function createPortalState(bridge?: DesktopBridge) {
     try { receive(await bridge.core.invoke<Snapshot>('snapshot')) } catch { /* daemon may be starting or stopped */ }
   }
   async function close() {
-    if (!await ask('退出客户端', saved.value.credential_store === 'memory' ? '若已选择会话，将尝试下线后清除本地信息；未选择会话时仅清除本地信息。' : '退出并释放本地内存，远端会话可能继续在线。', '退出')) return
+    if (!await ask('退出并停止后台服务', saved.value.credential_store === 'memory' ? '将退出 GUI、停止后台服务，并清除本地临时凭据；远端会话可能继续在线。' : '将退出 GUI 并停止后台认证服务；远端会话不会自动下线。', '退出并停止')) return
     await run(async () => { clearFields(); if (bridge) await bridge.core.invoke('exit_app') })
   }
   function simulateUpdate() {
@@ -209,7 +209,7 @@ export function createPortalState(bridge?: DesktopBridge) {
         for (const [name, handler] of [
           ['auth-phase', (payload: string) => { phase.value = phaseLabels[payload] ?? '正在连接' }],
           ['snapshot', (payload: Snapshot) => { if (!busy.value && !demo.value) receive(payload) }],
-          ['close-request', () => { void close() }],
+          ['quit-request', () => { void close() }],
         ] as const) {
           const unlisten = await bridge.event.listen(name, ({ payload }) => (handler as (value: unknown) => void)(payload))
           if (disposed) unlisten(); else unlisteners.push(unlisten)

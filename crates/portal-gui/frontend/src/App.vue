@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { MotionConfig } from 'motion-v'
-import { MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixSwitchPreference, MiuixTabRow, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
+import { MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixIcon, MiuixIconButton, MiuixSwitchPreference, MiuixTabRow, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
+import { Close } from 'miuix-vue/icons'
 import { usePortal, formatBytes, formatRate, formatDuration, mask } from './usePortal'
 import { licenseGroups, licenseNotice } from './licenses'
 import xiaoweiLogo from './assets/xiaowei.png'
 
-const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces } = usePortal()
+const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces, close } = usePortal()
 watch(() => saved.value.theme_mode, value => setThemeMode(value), { immediate: true })
 const styleNonce = document.querySelector<HTMLStyleElement>('#motion-csp')?.nonce || undefined
 const locked = computed(() => busy.value || !ready.value)
@@ -67,7 +68,7 @@ const interfaceSummary = computed(() => {
       <section v-if="page === 0" class="overview" aria-label="网络概览">
         <MiuixCard class="connection-card">
           <div class="connection-main"><div class="status-icon" :class="{ online: isOnline }" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 8.5a15 15 0 0 1 18 0M6 12a10 10 0 0 1 12 0m-9 3.5a5 5 0 0 1 6 0"/><circle cx="12" cy="19" r="1"/></svg></div><div class="connection-copy"><div class="status-line"><h2>{{ phase || title }}</h2><span v-if="saved.credential_store === 'memory'" class="privacy-tag">仅一次会话</span></div><p class="status-message" role="status">{{ phase ? '请稍候，等待认证系统返回结果' : snapshot.message }}</p></div></div>
-          <div class="connection-actions"><MiuixButton type="primary" :disabled="locked" @click="primaryAction">{{ primaryLabel }}</MiuixButton><MiuixButton class="auth-site-icon" :disabled="locked" aria-label="打开认证后台" title="打开认证后台" @click="openSite"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M10 5H5a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-5"/></svg></MiuixButton></div>
+          <div class="connection-actions"><MiuixButton type="primary" :disabled="locked" @click="primaryAction">{{ primaryLabel }}</MiuixButton><MiuixIconButton class="shutdown-icon" :disabled="locked" aria-label="退出并停止后台服务" title="退出并停止后台服务" @click="close"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton><MiuixButton class="auth-site-icon" :disabled="locked" aria-label="打开认证后台" title="打开认证后台" @click="openSite"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M10 5H5a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-5"/></svg></MiuixButton></div>
         </MiuixCard>
         <div class="traffic-grid" aria-label="后台计费流量">
           <MiuixCard class="metric"><span class="metric-label">↓ 累计下载</span><strong>{{ saved.traffic_enabled && selected ? formatBytes(selected.acctoutputoctets) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '所选后台会话' : '设置中开启后台流量统计' }}</span></MiuixCard>

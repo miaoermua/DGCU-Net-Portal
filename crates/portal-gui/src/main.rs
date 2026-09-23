@@ -210,6 +210,10 @@ fn open_external(url: String) -> Result<(), String> {
 }
 #[tauri::command]
 async fn exit_app(app: AppHandle, _state: State<'_, AppState>) -> Result<(), String> {
+    let _ = ipc::request(Request::Shutdown).await;
+    if Settings::load().service_enabled {
+        let _ = portal_cli::service::stop();
+    }
     app.exit(0);
     Ok(())
 }
@@ -251,9 +255,10 @@ fn main() {
                 .tooltip("DGCU-Net-Portal")
                 .menu(&menu)
                 .on_menu_event(|app, event| {
-                    show(app);
                     if event.id().as_ref() == "quit" {
-                        let _ = app.emit("close-request", ());
+                        let _ = app.emit("quit-request", ());
+                    } else {
+                        show(app);
                     }
                 })
                 .build(app)?;
@@ -268,7 +273,7 @@ fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.emit("close-request", ());
+                let _ = window.hide();
             }
         })
         .invoke_handler(tauri::generate_handler![
