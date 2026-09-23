@@ -50,7 +50,8 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .connection-copy { min-width: 0; }
 .status-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 14px; background: var(--m-color-secondary-container); color: var(--m-color-on-surface-variant-summary); flex-shrink: 0; }
 .status-icon.online { color: var(--m-color-primary); background: var(--m-color-tertiary-container); }
-.status-icon svg { width: 25px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.status-icon.authenticating { color: var(--m-color-primary); background: var(--m-color-tertiary-container); }
+.status-icon .m-icon, .status-icon .m-progress { width: 25px; height: 25px; }
 .status-line { flex-wrap: wrap; gap: 8px; }
 .status-line h2 { font-size: 17px; line-height: 1.4; }
 .status-message { font-size: 11px; color: var(--m-color-on-surface-variant-summary); line-height: 1.6; margin-top: 3px; overflow-wrap: anywhere; }

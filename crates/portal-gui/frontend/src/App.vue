@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { MotionConfig } from 'motion-v'
-import { MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixIcon, MiuixIconButton, MiuixSwitchPreference, MiuixTabRow, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
-import { Clear, Close, Forward } from 'miuix-vue/icons'
+import { MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixIcon, MiuixIconButton, MiuixProgressIndicator, MiuixSwitchPreference, MiuixTabRow, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
+import { Clear, Close, Forward, Link } from 'miuix-vue/icons'
 import { usePortal, formatBytes, formatRate, formatDuration, mask } from './usePortal'
 import { licenseGroups, licenseNotice } from './licenses'
 import xiaoweiLogo from './assets/xiaowei.png'
@@ -67,7 +67,7 @@ const interfaceSummary = computed(() => {
     <main>
       <section v-if="page === 0" class="overview" aria-label="网络概览">
         <MiuixCard class="connection-card">
-          <div class="connection-main"><div class="status-icon" :class="{ online: isOnline }" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 8.5a15 15 0 0 1 18 0M6 12a10 10 0 0 1 12 0m-9 3.5a5 5 0 0 1 6 0"/><circle cx="12" cy="19" r="1"/></svg></div><div class="connection-copy"><div class="status-line"><h2>{{ phase || title }}</h2><span v-if="saved.credential_store === 'memory'" class="privacy-tag">仅一次会话</span></div><p class="status-message" role="status">{{ phase ? '请稍候，等待认证系统返回结果' : snapshot.message }}</p></div></div>
+          <div class="connection-main"><div class="status-icon" :class="{ online: isOnline, authenticating: !!phase }" aria-hidden="true"><MiuixProgressIndicator v-if="phase" type="infinite" :size="25" color="currentColor" /><MiuixIcon v-else :icon="Link" weight="demibold" :size="25" /></div><div class="connection-copy"><div class="status-line"><h2>{{ phase || title }}</h2><span v-if="saved.credential_store === 'memory'" class="privacy-tag">仅一次会话</span></div><p class="status-message" role="status">{{ phase ? '请稍候，等待认证系统返回结果' : snapshot.message }}</p></div></div>
           <div class="connection-actions"><MiuixButton type="primary" :disabled="locked" @click="primaryAction">{{ primaryLabel }}</MiuixButton><MiuixIconButton class="shutdown-icon" :disabled="locked" aria-label="退出并停止后台服务" title="退出并停止后台服务" @click="close"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton><MiuixButton class="auth-site-icon" :disabled="locked" aria-label="打开认证后台" title="打开认证后台" @click="openSite"><MiuixIcon :icon="Forward" :size="18" /></MiuixButton></div>
         </MiuixCard>
         <div class="traffic-grid" aria-label="后台计费流量">
