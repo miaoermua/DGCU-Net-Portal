@@ -10,6 +10,7 @@
 
 - [校园网认证协议与实现](./docs/campus-network-auth.md)：协议解析与代码实现。
 - [开发者文档](./docs/developer-guide.md)：运行、配置与构建说明。
+- [![DeepWiki](https://shields.io)](https://deepwiki.com/miaoermua/DGCU-Net-Portal)
 
 ## 目录
 
