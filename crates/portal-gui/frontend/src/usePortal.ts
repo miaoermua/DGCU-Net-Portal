@@ -124,6 +124,7 @@ export function createPortalState(bridge?: DesktopBridge) {
       if ((!username.value || !password.value) && saved.value.credential_store === 'memory') { page.value = 1; notify('请填写账号和密码'); return }
       let user = username.value, secret = password.value, entry = portalUrl.value
       password.value = ''
+      phase.value = '正在认证'
       try {
         receive(await bridge!.core.invoke<Snapshot>('connect', { username: user, password: secret, portalUrl: entry, backendOnly }))
         page.value = 0

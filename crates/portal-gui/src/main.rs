@@ -14,28 +14,41 @@ struct AppState {
 }
 fn daemon_binary() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|_| "无法获取 GUI 路径")?;
+    // Windows 的产物是 portal-cli.exe，直接拼 "portal-cli" 永远匹配不到。
+    let name = format!("portal-cli{}", std::env::consts::EXE_SUFFIX);
     for parent in exe.ancestors().skip(1) {
-        let candidate = parent.join("portal-cli");
+        let candidate = parent.join(&name);
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
-    Err("找不到同包内的 portal-cli daemon".into())
+    Err(format!("找不到同包内的 {name} daemon"))
 }
 async fn daemon_request(request: Request) -> Result<portal_cli::ipc::Response, String> {
     match ipc::request(request.clone()).await {
         Ok(response) => Ok(response),
         Err(_) => {
             let binary = daemon_binary()?;
-            std::process::Command::new(binary)
-                .arg("run")
-                .arg("--daemon")
-                .spawn()
-                .map_err(|_| "无法启动 portal-cli daemon")?;
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-            ipc::request(request)
-                .await
-                .map_err(|error| error.to_string())
+            let mut command = std::process::Command::new(binary);
+            command.arg("run").arg("--daemon");
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                // 不加这个标志，GUI 拉起 daemon 时会闪一个控制台黑框。
+                command.creation_flags(0x0800_0000);
+            }
+            command.spawn().map_err(|_| "无法启动 portal-cli daemon")?;
+            // daemon 首次启动要创建 IPC 端点，Windows 上明显比 Unix 慢，
+            // 单次 150ms 等待经常还没就绪就连过去。
+            let mut last = "无法连接 portal-cli daemon".to_string();
+            for _ in 0..10 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                match ipc::request(request.clone()).await {
+                    Ok(response) => return Ok(response),
+                    Err(error) => last = error.to_string(),
+                }
+            }
+            Err(last)
         }
     }
 }
