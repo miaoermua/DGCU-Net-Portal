@@ -3,14 +3,14 @@
 [![Stars](https://m3-markdown-badges.vercel.app/stars/3/3/miaoermua/DGCU-Net-Portal)](https://github.com/miaoermua/DGCU-Net-Portal)
 [![Issues](https://m3-markdown-badges.vercel.app/issues/1/2/miaoermua/DGCU-Net-Portal)](https://github.com/miaoermua/DGCU-Net-Portal/issues)
 [![Support](https://ziadoua.github.io/m3-Markdown-Badges/badges/Sponsor/sponsor1.svg)](https://www.miaoer.net/sponsor)
-[![COPYING](https://ziadoua.github.io/m3-Markdown-Badges/badges/LicenceGPLv2/licencegplv23.svg)](https://github.com/miaoermua/DGCU-Net-Portal/blob/main/LICENSE)
+[![COPYING](https://ziadoua.github.io/m3-Markdown-Badges/badges/LicenceGPLv3/licencegplv31.svg)](https://github.com/miaoermua/DGCU-Net-Portal/blob/main/LICENSE)
 
 
 ![Rust](https://ziadoua.github.io/m3-Markdown-Badges/badges/Rust/rust1.svg)
 ![ViteJS](https://ziadoua.github.io/m3-Markdown-Badges/badges/ViteJS/vitejs1.svg)
 ![TypeScript](https://ziadoua.github.io/m3-Markdown-Badges/badges/TypeScript/typescript1.svg)
 
-DGCU-Net-Portal 是用于东莞城市学院的校园网登录助手客户端，可用于在 lfradius portal 下完成自动化登录解放双手。
+DGCU-Net-Portal 是适用于东莞城市学院的校园网登录助手客户端，在 lfradius portal 下完成自动化登录解放双手。
 
 ## 特色功能
 
