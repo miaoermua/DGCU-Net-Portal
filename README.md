@@ -12,7 +12,10 @@
 
 DGCU-Net-Portal 是适用于东莞城市学院的校园网登录助手客户端，在 lfradius portal 下完成自动化登录解放双手。
 
-## 特色功能
+## 功能
+
+<img width="1744" height="1464" alt="portal" src="https://github.com/user-attachments/assets/3c4f84cf-e71d-4326-a035-c7f3740b4b81" />
+
 
 - **轻量**：Rust + Tauri，体积小、运行占用低，主界面紧凑友好；不打开 GUI 时只运行轻量的 `portal-cli daemon`。
 - **跨平台**：支持 Windows、macOS、Linux，以及无桌面环境的 OpenWrt；桌面平台使用 `portal-gui`，服务和 OpenWrt 使用 `portal-cli`。
