@@ -14,7 +14,6 @@ struct AppState {
 }
 fn daemon_binary() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|_| "无法获取 GUI 路径")?;
-    // Windows 的产物是 portal-cli.exe，直接拼 "portal-cli" 永远匹配不到。
     let name = format!("portal-cli{}", std::env::consts::EXE_SUFFIX);
     for parent in exe.ancestors().skip(1) {
         let candidate = parent.join(&name);
@@ -260,7 +259,13 @@ fn main() {
                 32,
                 32,
             );
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
+            let tray_icon = tauri::image::Image::new_owned(
+                include_bytes!("../icons/tray-win.rgba").to_vec(),
+                32,
+                32,
+            );
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let tray_icon = app.default_window_icon().unwrap().clone();
             TrayIconBuilder::new()
                 .icon(tray_icon)
