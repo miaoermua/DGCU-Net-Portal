@@ -120,20 +120,63 @@ fn stop_platform() -> Result<(), String> {
     }
     run(Command::new("systemctl").args(["--user", "stop", "dgcu-portal.service"]))
 }
+/// ONLOGON 触发器写在系统任务库里，普通权限调用 schtasks 一定被拒，
+/// 因此只有创建任务这一步需要 UAC 提权，start/stop/delete 不弹窗。
+#[cfg(target_os = "windows")]
+fn create_args(executable: &str) -> Vec<String> {
+    vec![
+        "/Create".into(),
+        "/F".into(),
+        "/SC".into(),
+        "ONLOGON".into(),
+        "/TN".into(),
+        "DGCU-Portal".into(),
+        "/TR".into(),
+        format!("\"{executable}\" run --daemon"),
+        "/RL".into(),
+        "LIMITED".into(),
+    ]
+}
+/// 用户在 UAC 弹窗点“否”时 Start-Process 抛异常，用 ERROR_CANCELLED 原样回传。
+#[cfg(target_os = "windows")]
+const USER_CANCELLED: i32 = 1223;
+/// 包进 PowerShell 单引号字符串，撇号按 PowerShell 规则写两遍。
+#[cfg(target_os = "windows")]
+fn quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
 #[cfg(target_os = "windows")]
 fn enable_platform(executable: &str) -> Result<(), String> {
-    run(Command::new("schtasks").args([
-        "/Create",
-        "/F",
-        "/SC",
-        "ONLOGON",
-        "/TN",
-        "DGCU-Portal",
-        "/TR",
-        &format!("\"{executable}\" run --daemon"),
-        "/RL",
-        "LIMITED",
-    ]))
+    let args = create_args(executable);
+    // 已经以管理员身份运行时直接创建成功，不额外弹窗。
+    let mut direct = Command::new("schtasks");
+    direct.args(&args);
+    if run(&mut direct).is_ok() {
+        return Ok(());
+    }
+    let list = args
+        .iter()
+        .map(|value| quote(value))
+        .collect::<Vec<_>>()
+        .join(",");
+    let script = format!(
+        "$ErrorActionPreference='Stop';try{{$p=Start-Process -FilePath 'schtasks.exe' -ArgumentList @({list}) -Verb RunAs -Wait -PassThru -WindowStyle Hidden;exit $p.ExitCode}}catch{{exit {USER_CANCELLED}}}"
+    );
+    let mut elevate = Command::new("powershell");
+    elevate.args(["-NoProfile", "-Command", &script]);
+    {
+        use std::os::windows::process::CommandExt;
+        // 隐藏 powershell 自己的控制台，提权确认框由系统弹出。
+        elevate.creation_flags(0x0800_0000);
+    }
+    let status = elevate.status().map_err(|_| "无法发起管理员提权")?;
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(USER_CANCELLED) => {
+            Err("未获得管理员授权，登录启动任务未创建（请在 UAC 弹窗中选择“是”）".into())
+        }
+        _ => Err("创建登录启动任务失败，请在 UAC 弹窗中选择“是”后重试".into()),
+    }
 }
 #[cfg(target_os = "windows")]
 pub fn disable() -> Result<(), String> {

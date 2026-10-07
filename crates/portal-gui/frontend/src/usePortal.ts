@@ -151,7 +151,7 @@ export function createPortalState(bridge?: DesktopBridge) {
   }
   async function save() {
     if (draft.service_enabled !== saved.value.service_enabled && !demo.value) {
-      if (!await ask('更改后台启动', draft.service_enabled ? '将为当前用户写入登录时启动任务。只有保存设置后才会执行。' : '将停用当前用户的登录启动任务。', '保存更改')) return
+      if (!await ask('更改后台启动', draft.service_enabled ? '将为当前用户写入登录时启动任务，Windows 会请求一次管理员授权。只有保存设置后才会执行。' : '将停用当前用户的登录启动任务。', '保存更改')) return
     }
     await run(async () => {
       let secret = password.value
