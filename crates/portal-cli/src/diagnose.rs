@@ -1,8 +1,14 @@
 //! 一次性的连通性检测：分别探测认证服务器与外部探测站点。
 //!
-//! 只在用户手动触发时执行，永不读取或发送任何凭据。探测所用的地址、
+//! 只在用户手动触发时执行，永不读取或发送任何凭据。认证探测的地址、
 //! 代理绕过与网卡绑定都沿用认证会话的同一套设置，否则“检测通过但认证
 //! 失败”会变成常见的误判。
+//!
+//! 外网探测则同时跑两路，因为只绑定网卡会误报：本机开着 TUN 模式代理
+//! （Clash、Surge 之类）时，DNS 会被接管成假地址（198.18.0.0/15），该地址
+//! 只在那张虚拟网卡内可路由。此时把源地址钉在物理网卡上，数据包必然
+//! 打不通，可用户的上网恰恰是正常的——这是代理接管，不是校园网故障。
+//! 因此绑定路径无响应时，再按系统实际路由测一次才下结论。
 use crate::{network, settings::Settings, validate_url, AppError};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -28,6 +34,9 @@ pub enum Reachability {
 pub struct Diagnostic {
     pub auth: Reachability,
     pub auth_latency_ms: Option<u64>,
+    /// 绑定所选网卡（与认证同一条路径）的探测结果，代表“校园网直连”。
+    pub internet_direct: Reachability,
+    /// 外网结论：直连通了以直连为准；直连无响应但系统路径通了仍算可达。
     pub internet: Reachability,
     pub internet_latency_ms: Option<u64>,
 }
@@ -96,7 +105,26 @@ async fn probe_internet(client: &Client, url: &Url) -> (Reachability, Option<u64
     }
 }
 
-/// 两项探测并行执行，总耗时取决于较慢的一项而不是两者相加。
+/// 汇总直连与系统两路外网探测。
+///
+/// 直连有响应时以它为准（这条路径和认证同源，能证明校园网侧正常）；直连
+/// 完全没有响应而系统路径通了，说明本机绕过了物理网卡上网（代理/VPN），
+/// 此时仍算外网可达，只是把直连那一档如实上报给界面提示。
+fn combine_internet(
+    direct: (Reachability, Option<u64>),
+    system: (Reachability, Option<u64>),
+) -> (Reachability, Option<u64>) {
+    match (direct.0, system.0) {
+        (Reachability::Reachable, _) => (Reachability::Reachable, direct.1),
+        (_, Reachability::Reachable) => (Reachability::Reachable, system.1),
+        (Reachability::Captive, _) | (_, Reachability::Captive) => {
+            (Reachability::Captive, direct.1.or(system.1))
+        }
+        _ => (Reachability::Unreachable, None),
+    }
+}
+
+/// 三项探测并行执行，总耗时取决于较慢的一项而不是三者相加。
 pub async fn run(settings: &Settings) -> Result<Diagnostic, AppError> {
     let local = network::resolve(&settings.interface_name)
         .ok()
@@ -105,22 +133,42 @@ pub async fn run(settings: &Settings) -> Result<Diagnostic, AppError> {
     let auth_url = validate_url(&settings.server)?;
     let probe_url = validate_url(&settings.probe_url)?;
     let auth_client = build_client(settings, local, AUTH_TIMEOUT)?;
-    let probe_client = build_client(settings, local, INTERNET_TIMEOUT)?;
-    let (auth, internet) = tokio::join!(
-        probe_auth(&auth_client, &auth_url),
-        probe_internet(&probe_client, &probe_url),
-    );
+    let direct_client = build_client(settings, local, INTERNET_TIMEOUT)?;
+    // 没有选定网卡时两路完全等价，省掉重复请求；未绑定的那一份代表系统路由。
+    let system_client = match local {
+        Some(_) => Some(build_client(settings, None, INTERNET_TIMEOUT)?),
+        None => None,
+    };
+    let (auth, direct, system) = match &system_client {
+        Some(client) => {
+            let (auth, direct, system) = tokio::join!(
+                probe_auth(&auth_client, &auth_url),
+                probe_internet(&direct_client, &probe_url),
+                probe_internet(client, &probe_url),
+            );
+            (auth, direct, Some(system))
+        }
+        None => {
+            let (auth, direct) = tokio::join!(
+                probe_auth(&auth_client, &auth_url),
+                probe_internet(&direct_client, &probe_url),
+            );
+            (auth, direct, None)
+        }
+    };
+    let (internet, internet_latency_ms) = combine_internet(direct, system.unwrap_or(direct));
     Ok(Diagnostic {
         auth: auth.0,
         auth_latency_ms: auth.1,
-        internet: internet.0,
-        internet_latency_ms: internet.1,
+        internet_direct: direct.0,
+        internet,
+        internet_latency_ms,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_probe, Reachability};
+    use super::{classify_probe, combine_internet, Reachability};
 
     #[test]
     fn successful_probe_page_is_reachable() {
@@ -141,5 +189,46 @@ mod tests {
     fn empty_or_unexpected_body_is_unreachable() {
         assert_eq!(classify_probe(false, ""), Reachability::Unreachable);
         assert_eq!(classify_probe(false, "blocked"), Reachability::Unreachable);
+    }
+
+    #[test]
+    fn direct_probe_wins_when_it_answers() {
+        let result = combine_internet(
+            (Reachability::Reachable, Some(30)),
+            (Reachability::Reachable, Some(70)),
+        );
+        assert_eq!(result, (Reachability::Reachable, Some(30)));
+    }
+
+    #[test]
+    fn a_system_route_keeps_the_internet_reachable_when_direct_is_dead() {
+        // 本机 TUN 代理把物理网卡的直连探测全挡住，但系统路由能上网：
+        // 这是代理接管，不是校园网故障，不能报不可达。
+        assert_eq!(
+            combine_internet(
+                (Reachability::Unreachable, None),
+                (Reachability::Reachable, Some(46))
+            ),
+            (Reachability::Reachable, Some(46))
+        );
+        assert_eq!(
+            combine_internet(
+                (Reachability::Unreachable, None),
+                (Reachability::Unreachable, None)
+            ),
+            (Reachability::Unreachable, None)
+        );
+    }
+
+    #[test]
+    fn an_intercepted_system_route_is_still_captive() {
+        assert_eq!(
+            combine_internet(
+                (Reachability::Unreachable, None),
+                (Reachability::Captive, Some(9))
+            )
+            .0,
+            Reachability::Captive
+        );
     }
 }

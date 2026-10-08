@@ -1,5 +1,5 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import type { AccountInfo, DesktopBridge, Diagnostic, InterfaceInfo, LogEntry, Session, Settings, Snapshot, UiPreferences, Unlisten } from './types'
+import type { AccountInfo, DesktopBridge, Diagnostic, InterfaceInfo, LogEntry, Rate, Session, Settings, Snapshot, UiPreferences, Unlisten } from './types'
 
 export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/lfradius/', auth_url: 'http://172.18.100.65/lfradius/web/admin/login', probe_url: 'http://captive.apple.com/hotspot-detect.html', paip: '172.18.100.65', basip: '', probe_enabled: true, refresh_policy: 'one_minute', poll_jitter: 'low', traffic_enabled: false, credential_store: 'system', interface_name: '', bypass_proxy: true, username: '', reconnect_mode: 'disabled', run_mode: 'lightweight', service_enabled: false, show_sessions: false, log_enabled: false, theme_mode: 'system' })
 export const emptySnapshot = (): Snapshot => ({ sessions: [], rates: {}, selected_id: null, authenticated: false, one_session: true, background_paused: true, status: 'idle', message: '填写账号后连接校园网', account: null })
@@ -16,6 +16,8 @@ export function formatBytes(value: number | undefined | null): string {
   return `${value.toFixed(1)} ${units[unit]}`
 }
 export const formatRate = (value: number | null | undefined): string => value == null ? '等待更新' : `${formatBytes(value)}/s`
+// 后台计费未更新时返回的是空速率（None）而不是 0：只有真正算出区间时才认为有结果。
+const isRateReady = (rate: Rate | undefined): rate is Rate => !!rate && (rate.upload_bps != null || rate.download_bps != null || rate.sample_seconds != null)
 export function formatDuration(value: number): string { return [Math.floor(value / 3600), Math.floor(value % 3600 / 60), value % 60].map(v => String(v).padStart(2, '0')).join(':') }
 export function mask(value: string): string { const chars = [...value]; return chars.length > 4 ? `${chars.slice(0, 2).join('')}***${chars.slice(-2).join('')}` : '****' }
 const demoSessions = (): Session[] => [
@@ -24,16 +26,19 @@ const demoSessions = (): Session[] => [
 ]
 const phaseLabels: Record<string, string> = { discovering: '正在寻找认证页', reading_form: '正在读取认证表单', authenticating: '正在提交认证', waiting_portal: '正在等待 Portal 认证', waiting_dial: '正在等待代拨结果', accepted: 'Portal 已确认成功' }
 const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps', expires_on: '2027-10-01' }
-const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet: 'reachable', internet_latency_ms: 38 }
+const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet_direct: 'reachable', internet: 'reachable', internet_latency_ms: 38 }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.4.12')
+  const version = ref('0.4.15')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
   const preferencesBusy = ref(false), logEntries = ref<LogEntry[]>([]), logsOpen = ref(false), sessionPickerOpen = ref(false)
   const diagnostic = ref<Diagnostic | null>(null), diagnosing = ref(false)
   let logEpoch = 0, demoSequence = 0, logTimer: ReturnType<typeof setInterval> | undefined, snapshotTimer: ReturnType<typeof setInterval> | undefined
+  // 上一次真正算出来的区间速率。后台计费未更新时接口会返回空速率，
+  // 此时继续展示这份结果，屏幕上的数值不会退回“等待更新”。
+  let lastRate: { id: string; rate: Rate } | null = null
   const selected = computed(() => snapshot.value.sessions.find(row => row.radacctid === snapshot.value.selected_id))
   const hasUnsavedConnectionSettings = computed(() => {
     const keys: (keyof Settings)[] = ['server', 'auth_url', 'probe_url', 'paip', 'basip', 'probe_enabled', 'refresh_policy', 'poll_jitter', 'traffic_enabled', 'credential_store', 'interface_name', 'bypass_proxy', 'reconnect_mode', 'run_mode', 'service_enabled']
@@ -94,9 +99,23 @@ export function createPortalState(bridge?: DesktopBridge) {
     await disconnect()
   }
   function clearFields() { username.value = ''; password.value = ''; portalUrl.value = '' }
-  function receive(value: Snapshot) {
+  // 换会话、下线、清除时丢弃旧基线，避免新会话沿用上一次的数值（首次连接必然没有“上一个结果”）。
+  function resetRate() { lastRate = null }
+  // 后台这次没算出新区间时，把上次的结果填回去继续展示，并返回 true 供调用方决定要不要提示。
+  function receive(value: Snapshot): boolean {
+    const id = value.selected_id
+    const ready = id ? value.rates[id] : undefined
+    let unchanged = false
+    // 关掉后台流量统计时接口不再计算速率：直接丢弃基线，免得开关来回切时复活旧数值。
+    if (!saved.value.traffic_enabled) lastRate = null
+    else if (id && isRateReady(ready)) lastRate = { id, rate: ready }
+    else if (id && lastRate?.id === id && value.sessions.some(row => row.radacctid === id)) {
+      value = { ...value, rates: { ...value.rates, [id]: lastRate.rate } }
+      unchanged = true
+    }
     snapshot.value = value
     if (!value.authenticated && value.one_session && ['offline', 'unknown', 'error'].includes(value.status)) clearFields()
+    return unchanged
   }
   async function run(action: () => Promise<void>) {
     if (busy.value || !ready.value) return
@@ -115,6 +134,7 @@ export function createPortalState(bridge?: DesktopBridge) {
   async function connect(backendOnly = false) {
     if (hasUnsavedConnectionSettings.value) {page.value=1;notify('连接设置已更改，请先保存设置再上线');return;}
     await run(async () => {
+      resetRate()
       if (demo.value) {
         clearFields()
         for (const status of backendOnly ? ['登录后台'] : ['提交认证', '等待代拨结果']) {
@@ -134,7 +154,14 @@ export function createPortalState(bridge?: DesktopBridge) {
       } finally { user = ''; secret = ''; entry = ''; if (saved.value.credential_store === 'memory') clearFields() }
     })
   }
-  async function refresh() { await run(async () => { demoLog('sessions.read', '读取后台会话列表'); receive(demo.value ? { ...snapshot.value, rates: {}, message: '后台计费尚未更新（模拟）' } : await bridge!.core.invoke<Snapshot>('refresh')) }) }
+  async function refresh() {
+    await run(async () => {
+      demoLog('sessions.read', '读取后台会话列表')
+      const next = demo.value ? { ...snapshot.value, rates: {}, message: '后台计费尚未更新（模拟）' } : await bridge!.core.invoke<Snapshot>('refresh')
+      // 只有手动刷新才提示“与上次一致”；后台轮询走同一个 receive，但不会打扰用户。
+      if (receive(next)) notify('刷新成功，后台返回一致流量')
+    })
+  }
   // 点击检测卡片时跑一次：失败原因用 snackbar 提示，卡片里只保留外网延迟。
   async function diagnose() {
     if (busy.value || !ready.value || diagnosing.value) return
@@ -148,11 +175,12 @@ export function createPortalState(bridge?: DesktopBridge) {
       else if (result.internet !== 'reachable') notice.value = '运营商外网不可达，校园网可能存在故障'
     } catch (error) { notify(error) } finally { busy.value = false; diagnosing.value = false }
   }
-  async function select(id: string) { await run(async () => receive(demo.value ? { ...snapshot.value, selected_id: id } : await bridge!.core.invoke<Snapshot>('select_session', { id }))) }
+  async function select(id: string) { await run(async () => { receive(demo.value ? { ...snapshot.value, selected_id: id } : await bridge!.core.invoke<Snapshot>('select_session', { id })) }) }
   async function disconnect() {
     const id = selected.value?.radacctid
     if (!id || !await ask('下线所选会话', `仅下线会话 ${id}，手动下线会暂停自动重拨。`, '确认下线')) return
     await run(async () => {
+      resetRate()
       try {
         demoLog('session.disconnect', '请求指定会话下线')
         if (demo.value) receive({ ...snapshot.value, status: 'offline', message: '所选会话已确认下线（模拟）', authenticated: saved.value.credential_store !== 'memory', sessions: saved.value.credential_store === 'memory' ? [] : snapshot.value.sessions.filter(s => s.radacctid !== id), selected_id: null, rates: {} })
@@ -165,6 +193,7 @@ export function createPortalState(bridge?: DesktopBridge) {
   // “远端可能仍在线上”这层提醒改由状态行承担（后端返回同样的说明）。
   async function forget() {
     await run(async () => {
+      resetRate()
       receive(demo.value ? { ...emptySnapshot(), message: '本地会话已清除；这不代表远端已经下线（模拟）' } : await bridge!.core.invoke<Snapshot>('forget'))
       clearFields()
     })

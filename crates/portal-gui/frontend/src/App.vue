@@ -58,9 +58,9 @@ const deviceNote = computed(() => {
 // 检测成功时卡片里只放外网延迟，其他结论交给 snackbar 提示。
 const diagnoseStatus = computed(() => {
   if (!diagnostic.value) return { value: '未检测', note: '点击卡片检测一次连通性', waiting: true }
-  const { auth, internet, internet_latency_ms } = diagnostic.value
+  const { auth, internet, internet_direct, internet_latency_ms } = diagnostic.value
   if (auth !== 'reachable') return { value: '不通', note: '认证服务器不可达，点击重新检测', waiting: true }
-  if (internet === 'reachable') return { value: internet_latency_ms == null ? '已连通' : `${internet_latency_ms} ms`, note: '认证服务器与外网均正常', waiting: false }
+  if (internet === 'reachable') return { value: internet_latency_ms == null ? '已连通' : `${internet_latency_ms} ms`, note: internet_direct === 'reachable' ? '认证服务器与外网均正常' : '直连探测未通过，当前经代理或 VPN 上网', waiting: false }
   if (internet === 'captive') return { value: '受限', note: '被认证页拦截，点击重新检测', waiting: true }
   return { value: '不通', note: '外网不可达，点击重新检测', waiting: true }
 })

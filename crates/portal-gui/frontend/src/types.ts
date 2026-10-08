@@ -51,6 +51,8 @@ export type Reachability = 'reachable' | 'captive' | 'unreachable'
 export interface Diagnostic {
   auth: Reachability
   auth_latency_ms: number | null
+  // 绑定所选网卡（与认证同一条路径）的探测结果，区分“直连正常”和“本机走了代理”。
+  internet_direct: Reachability
   internet: Reachability
   internet_latency_ms: number | null
 }

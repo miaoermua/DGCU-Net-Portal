@@ -164,10 +164,54 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     expect(formatRate(0)).toBe('0.0 B/s')
     expect(formatRate(1048576)).toBe('1.0 MiB/s')
   })
+  it('keeps the last rate and says so only when a manual refresh returns identical accounting', async () => {
+    const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
+    state.saved.value.traffic_enabled = true
+    const online = { ...emptySnapshot(), status: 'accepted', authenticated: true, sessions: [row('A')], selected_id: 'A' }
+    mock.invoke.mockResolvedValueOnce({ ...online, rates: { A: { upload_bps: 2048, download_bps: 40960, sample_seconds: 60 } } } as never)
+    await state.refresh()
+    expect(state.rate.value?.download_bps).toBe(40960)
+    expect(state.notice.value).toBe('')
+    // 后台计费尚未更新：接口返回空速率，界面沿用上一次算出的结果而不是回到“等待更新”。
+    const pendingRate = { upload_bps: null, download_bps: null, sample_seconds: null }
+    mock.invoke.mockResolvedValueOnce({ ...online, rates: { A: pendingRate } } as never)
+    await state.refresh()
+    expect(state.rate.value?.download_bps).toBe(40960)
+    expect(state.notice.value).toBe('刷新成功，后台返回一致流量')
+    // 后台真的更新后立刻换成新值，且不产生新的提示。
+    state.notice.value = ''
+    mock.invoke.mockResolvedValueOnce({ ...online, rates: { A: { upload_bps: 4096, download_bps: 81920, sample_seconds: 60 } } } as never)
+    await state.refresh()
+    expect(state.rate.value?.download_bps).toBe(81920)
+    expect(state.notice.value).toBe('')
+    state.dispose()
+  })
+  it('never announces identical accounting on the first result or while polling in the background', async () => {
+    vi.useFakeTimers()
+    const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
+    state.saved.value.traffic_enabled = true
+    const online = { ...emptySnapshot(), status: 'accepted', authenticated: true, sessions: [row('A')], selected_id: 'A' }
+    const pendingRate = { upload_bps: null, download_bps: null, sample_seconds: null }
+    // 首次连接后还没有“上一个结果”，此时一致也必须保持安静。
+    mock.invoke.mockResolvedValueOnce({ ...online, rates: { A: pendingRate } } as never)
+    await state.refresh()
+    expect(state.notice.value).toBe('')
+    expect(formatRate(state.rate.value?.download_bps)).toBe('等待更新')
+    mock.invoke.mockResolvedValueOnce({ ...online, rates: { A: { upload_bps: 2048, download_bps: 40960, sample_seconds: 60 } } } as never)
+    await state.refresh()
+    expect(state.rate.value?.download_bps).toBe(40960)
+    state.notice.value = ''
+    // 后台轮询同样沿用旧值，但不弹提示。
+    mock.invoke.mockImplementation(async (command: string) => command === 'snapshot' ? { ...online, rates: { A: pendingRate } } : emptySnapshot())
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(state.rate.value?.download_bps).toBe(40960)
+    expect(state.notice.value).toBe('')
+    state.dispose()
+  })
   it('diagnose sends no credentials and keeps the latency on the card while staying silent', async () => {
     const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
     state.password.value = 'never-send-this'
-    mock.invoke.mockResolvedValueOnce({ auth: 'reachable', auth_latency_ms: 3, internet: 'reachable', internet_latency_ms: 38 } as never)
+    mock.invoke.mockResolvedValueOnce({ auth: 'reachable', auth_latency_ms: 3, internet_direct: 'reachable', internet: 'reachable', internet_latency_ms: 38 } as never)
     await state.diagnose()
     expect(mock.invoke).toHaveBeenLastCalledWith('diagnose')
     expect(state.diagnostic.value?.internet_latency_ms).toBe(38)
@@ -178,15 +222,27 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
   })
   it('diagnose distinguishes an unreachable auth server from an unreachable internet', async () => {
     const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
-    mock.invoke.mockResolvedValueOnce({ auth: 'unreachable', auth_latency_ms: null, internet: 'unreachable', internet_latency_ms: null } as never)
+    mock.invoke.mockResolvedValueOnce({ auth: 'unreachable', auth_latency_ms: null, internet_direct: 'unreachable', internet: 'unreachable', internet_latency_ms: null } as never)
     await state.diagnose()
     expect(state.notice.value).toContain('无法访问到认证服务器')
-    mock.invoke.mockResolvedValueOnce({ auth: 'reachable', auth_latency_ms: 5, internet: 'unreachable', internet_latency_ms: null } as never)
+    mock.invoke.mockResolvedValueOnce({ auth: 'reachable', auth_latency_ms: 5, internet_direct: 'unreachable', internet: 'unreachable', internet_latency_ms: null } as never)
     await state.diagnose()
     expect(state.notice.value).toContain('运营商外网不可达')
-    mock.invoke.mockResolvedValueOnce({ auth: 'reachable', auth_latency_ms: 5, internet: 'captive', internet_latency_ms: 9 } as never)
+    mock.invoke.mockResolvedValueOnce({ auth: 'reachable', auth_latency_ms: 5, internet_direct: 'unreachable', internet: 'captive', internet_latency_ms: 9 } as never)
     await state.diagnose()
     expect(state.notice.value).toContain('认证页')
+    state.dispose()
+  })
+  it('a proxied path keeps the internet reachable and raises no campus failure notice', async () => {
+    const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
+    // 本机 TUN 代理挡住了物理网卡的直连探测，系统路由仍能上网：
+    // 只把直连那一档记为未通过，绝不弹“校园网可能存在故障”。
+    mock.invoke.mockResolvedValueOnce({ auth: 'reachable', auth_latency_ms: 3, internet_direct: 'unreachable', internet: 'reachable', internet_latency_ms: 46 } as never)
+    await state.diagnose()
+    expect(state.notice.value).toBe('')
+    expect(state.diagnostic.value?.internet).toBe('reachable')
+    expect(state.diagnostic.value?.internet_direct).toBe('unreachable')
+    expect(state.diagnostic.value?.internet_latency_ms).toBe(46)
     state.dispose()
   })
   it('clearing the local session goes straight to the daemon without asking first', async () => {
