@@ -7,7 +7,7 @@ import { usePortal, formatBytes, formatRate, formatDuration, mask } from './useP
 import { licenseGroups, licenseNotice } from './licenses'
 import xiaoweiLogo from './assets/xiaowei.png'
 
-const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces, close, hasUnsavedConnectionSettings, serviceRunning } = usePortal()
+const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces, close, hasUnsavedConnectionSettings, serviceRunning } = usePortal()
 watch(() => saved.value.theme_mode, value => setThemeMode(value), { immediate: true })
 const styleNonce = document.querySelector<HTMLStyleElement>('#motion-csp')?.nonce || undefined
 const locked = computed(() => busy.value || !ready.value)
@@ -49,6 +49,15 @@ const deviceCount = computed(() => snapshot.value.authenticated ? String(snapsho
 const deviceNote = computed(() => {
   if (!snapshot.value.authenticated) return '登录后台后读取'
   return snapshot.value.sessions.length ? '同一账号的在线设备' : '当前没有在线设备'
+})
+// 检测成功时卡片里只放外网延迟，其他结论交给 snackbar 提示。
+const diagnoseStatus = computed(() => {
+  if (!diagnostic.value) return { value: '未检测', note: '点击卡片检测一次连通性', waiting: true }
+  const { auth, internet, internet_latency_ms } = diagnostic.value
+  if (auth !== 'reachable') return { value: '不通', note: '认证服务器不可达，点击重新检测', waiting: true }
+  if (internet === 'reachable') return { value: internet_latency_ms == null ? '已连通' : `${internet_latency_ms} ms`, note: '认证服务器与外网均正常', waiting: false }
+  if (internet === 'captive') return { value: '受限', note: '被认证页拦截，点击重新检测', waiting: true }
+  return { value: '不通', note: '外网不可达，点击重新检测', waiting: true }
 })
 const selectedInterface = computed(() => networkInterfaces.value.find(item => item.name === draft.interface_name) || networkInterfaces.value.find(item => !item.internal && item.ipv4 && item.mac))
 const credentialStoreItems = ['系统凭证（推荐）', '配置文件（明文，仅测试）', '仅一次会话']
@@ -124,10 +133,11 @@ const interfaceSummary = computed(() => {
           <MiuixCard class="metric"><span class="metric-label">↓ 区间下载速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.download_bps == null }">{{ saved.traffic_enabled ? formatRate(rate?.download_bps) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? (rate?.sample_seconds ? `最近 ${rate.sample_seconds} 秒平均` : '等待后台计费更新') : '设置中开启后台流量统计' }}</span></MiuixCard>
           <MiuixCard class="metric"><span class="metric-label">↑ 区间上传速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.upload_bps == null }">{{ saved.traffic_enabled ? formatRate(rate?.upload_bps) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '按后台计费时间计算' : '设置中开启后台流量统计' }}</span></MiuixCard>
         </div>
-        <div class="account-grid" aria-label="账号与设备信息">
+        <div class="account-grid" aria-label="账号、设备与网络检测">
           <MiuixCard class="metric"><span class="metric-label">套餐</span><strong :class="{ waiting: !account?.bandwidth }">{{ accountPlan }}</strong><span class="metric-note">{{ accountPlanNote }}</span></MiuixCard>
           <MiuixCard class="metric"><span class="metric-label">过期时间</span><strong :class="{ waiting: !account?.expires_on }">{{ account?.expires_on || '—' }}</strong><span class="metric-note">{{ accountExpiryNote }}</span></MiuixCard>
           <MiuixCard class="metric"><span class="metric-label">设备数量</span><strong :class="{ waiting: !snapshot.authenticated }">{{ deviceCount }}</strong><span class="metric-note">{{ deviceNote }}</span></MiuixCard>
+          <MiuixCard class="metric clickable" role="button" tabindex="0" :aria-busy="diagnosing" :aria-label="`外网延迟：${diagnosing ? '正在检测' : diagnoseStatus.value}，点击检测一次连通性`" @click="diagnose" @keydown.enter.prevent="diagnose" @keydown.space.prevent="diagnose"><span class="metric-label">外网延迟</span><strong :class="{ waiting: diagnoseStatus.waiting }">{{ diagnosing ? '检测中' : diagnoseStatus.value }}</strong><span class="metric-note">{{ diagnosing ? '正在检测认证服务器与外网' : diagnoseStatus.note }}</span></MiuixCard>
         </div>
         <div v-if="saved.show_sessions" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixButton :disabled="locked" @click="connect(true)">仅登录后台</MiuixButton><MiuixIconButton class="refresh-icon" :disabled="locked || !snapshot.authenticated" aria-label="刷新会话" title="刷新会话" @click="refresh"><MiuixIcon :icon="Refresh" :size="18" /></MiuixIconButton></div></div>
         <MiuixCard v-if="saved.show_sessions" class="session-list">

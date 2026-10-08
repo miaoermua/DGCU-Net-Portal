@@ -2,6 +2,7 @@
 pub mod cmcc;
 pub mod controller;
 pub mod daemon;
+pub mod diagnose;
 mod discovery;
 pub mod ipc;
 pub mod logging;

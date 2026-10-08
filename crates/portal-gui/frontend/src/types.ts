@@ -47,6 +47,13 @@ export interface AccountInfo {
   bandwidth: string | null
   expires_on: string | null
 }
+export type Reachability = 'reachable' | 'captive' | 'unreachable'
+export interface Diagnostic {
+  auth: Reachability
+  auth_latency_ms: number | null
+  internet: Reachability
+  internet_latency_ms: number | null
+}
 export interface Snapshot {
   status: string
   message: string

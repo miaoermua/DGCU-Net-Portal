@@ -25,18 +25,21 @@ pub enum Request {
         session_id: String,
     },
     Sessions,
+    Diagnose,
     Logs,
     Reload,
     ClearLogs,
     Forget,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Response {
     pub ok: bool,
     pub message: String,
     pub snapshot: Option<crate::controller::Snapshot>,
     pub logs: Option<Vec<crate::logging::LogEntry>>,
+    /// 仅在 `Request::Diagnose` 时填充，其余命令为 None。
+    pub diagnostic: Option<crate::diagnose::Diagnostic>,
 }
 
 impl Response {
@@ -44,8 +47,7 @@ impl Response {
         Self {
             ok: false,
             message: message.into(),
-            snapshot: None,
-            logs: None,
+            ..Self::default()
         }
     }
 }

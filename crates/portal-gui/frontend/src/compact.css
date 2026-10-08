@@ -89,8 +89,12 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .picker-list { display: grid; gap: 8px; margin-bottom: 16px; max-height: 240px; overflow: auto; }.picker-session { display: flex; flex-direction: column; gap: 5px; text-align: left; border: 0; border-radius: 10px; background: var(--m-color-secondary-container); color: var(--m-color-on-background); padding: 12px; cursor: pointer; }.picker-session strong { font-size: 13px; }.picker-session span { font-size: 11px; color: var(--m-color-on-surface-variant-summary); }
 .disconnect-button:not(:disabled) { color: var(--m-color-error); }
 .traffic-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
-/* 套餐 / 过期时间 / 设备数量，跟随流量卡片的样式但排成三列。 */
-.account-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+/* 套餐 / 过期时间 / 设备数量 / 网络检测，与流量卡片四列等宽同高。 */
+.account-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+.metric.clickable { cursor: pointer; }
+.metric.clickable > .m-card { transition: background-color .15s ease; }
+.metric.clickable:hover > .m-card { --m-card-color: var(--m-color-window-dimming); }
+.metric.clickable:focus-visible { outline: 2px solid var(--m-color-primary); outline-offset: 3px; border-radius: 12px; }
 .metric > .m-card { display: flex; flex-direction: column; padding: 14px 12px 12px; gap: 7px; width: 100%; }
 .metric-label { font-size: 11px; color: var(--m-color-on-surface-variant-summary); }
 .metric strong { display: flex; align-items: center; min-height: 25px; font-size: 20px; line-height: 25px; font-weight: 650; letter-spacing: -.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }

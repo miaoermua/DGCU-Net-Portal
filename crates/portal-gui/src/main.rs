@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use portal_cli::{
     controller::Snapshot,
+    diagnose::Diagnostic,
     ipc::{self, Request},
     logging::LogEntry,
     settings::{self, CredentialStore, RunMode, Settings, UiPreferences},
@@ -118,6 +119,11 @@ async fn refresh(_state: State<'_, AppState>) -> Result<Snapshot, String> {
 async fn snapshot(_state: State<'_, AppState>) -> Result<Snapshot, String> {
     let response = daemon_request(Request::Status).await?;
     response.snapshot.ok_or(response.message)
+}
+#[tauri::command]
+async fn diagnose(_state: State<'_, AppState>) -> Result<Diagnostic, String> {
+    let response = daemon_request(Request::Diagnose).await?;
+    response.diagnostic.ok_or(response.message)
 }
 #[tauri::command]
 async fn select_session(_state: State<'_, AppState>, id: String) -> Result<Snapshot, String> {
@@ -317,6 +323,7 @@ fn main() {
             connect,
             refresh,
             snapshot,
+            diagnose,
             select_session,
             disconnect,
             forget,

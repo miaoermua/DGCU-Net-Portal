@@ -1,5 +1,5 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import type { AccountInfo, DesktopBridge, InterfaceInfo, LogEntry, Session, Settings, Snapshot, UiPreferences, Unlisten } from './types'
+import type { AccountInfo, DesktopBridge, Diagnostic, InterfaceInfo, LogEntry, Session, Settings, Snapshot, UiPreferences, Unlisten } from './types'
 
 export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/lfradius/', auth_url: 'http://172.18.100.65/lfradius/web/admin/login', probe_url: 'http://captive.apple.com/hotspot-detect.html', paip: '172.18.100.65', basip: '', probe_enabled: true, refresh_policy: 'one_minute', poll_jitter: 'low', traffic_enabled: false, credential_store: 'system', interface_name: '', bypass_proxy: true, username: '', reconnect_mode: 'disabled', run_mode: 'lightweight', service_enabled: false, show_sessions: false, log_enabled: false, theme_mode: 'system' })
 export const emptySnapshot = (): Snapshot => ({ sessions: [], rates: {}, selected_id: null, authenticated: false, one_session: true, background_paused: true, status: 'idle', message: '填写账号后连接校园网', account: null })
@@ -24,13 +24,15 @@ const demoSessions = (): Session[] => [
 ]
 const phaseLabels: Record<string, string> = { discovering: '正在寻找认证页', reading_form: '正在读取认证表单', authenticating: '正在提交认证', waiting_portal: '正在等待 Portal 认证', waiting_dial: '正在等待代拨结果', accepted: 'Portal 已确认成功' }
 const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps', expires_on: '2027-10-01' }
+const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet: 'reachable', internet_latency_ms: 38 }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.4.10')
+  const version = ref('0.4.11')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
   const preferencesBusy = ref(false), logEntries = ref<LogEntry[]>([]), logsOpen = ref(false), sessionPickerOpen = ref(false)
+  const diagnostic = ref<Diagnostic | null>(null), diagnosing = ref(false)
   let logEpoch = 0, demoSequence = 0, logTimer: ReturnType<typeof setInterval> | undefined, snapshotTimer: ReturnType<typeof setInterval> | undefined
   const selected = computed(() => snapshot.value.sessions.find(row => row.radacctid === snapshot.value.selected_id))
   const hasUnsavedConnectionSettings = computed(() => {
@@ -133,6 +135,19 @@ export function createPortalState(bridge?: DesktopBridge) {
     })
   }
   async function refresh() { await run(async () => { demoLog('sessions.read', '读取后台会话列表'); receive(demo.value ? { ...snapshot.value, rates: {}, message: '后台计费尚未更新（模拟）' } : await bridge!.core.invoke<Snapshot>('refresh')) }) }
+  // 点击检测卡片时跑一次：失败原因用 snackbar 提示，卡片里只保留外网延迟。
+  async function diagnose() {
+    if (busy.value || !ready.value || diagnosing.value) return
+    busy.value = true; diagnosing.value = true
+    demoLog('network.diagnose', '检测认证服务器与外网连通性')
+    try {
+      diagnostic.value = demo.value ? demoDiagnostic : await bridge!.core.invoke<Diagnostic>('diagnose')
+      const result = diagnostic.value
+      if (result.auth !== 'reachable') notice.value = '无法访问到认证服务器，请检查设备是否处于校园网'
+      else if (result.internet === 'captive') notice.value = '当前被认证页拦截，请先完成校园网认证'
+      else if (result.internet !== 'reachable') notice.value = '运营商外网不可达，校园网可能存在故障'
+    } catch (error) { notify(error) } finally { busy.value = false; diagnosing.value = false }
+  }
   async function select(id: string) { await run(async () => receive(demo.value ? { ...snapshot.value, selected_id: id } : await bridge!.core.invoke<Snapshot>('select_session', { id }))) }
   async function disconnect() {
     const id = selected.value?.radacctid
@@ -229,6 +244,6 @@ export function createPortalState(bridge?: DesktopBridge) {
     if (open) logTimer = setInterval(() => { void readLogs() }, 1000)
   })
   function dispose() { disposed = true; stopWatch(); stopLogWatch(); if (logTimer) clearInterval(logTimer); if (snapshotTimer) clearInterval(snapshotTimer); logEpoch++; logEntries.value = []; unlisteners.splice(0).forEach(stop => stop()); clearFields(); answer(false) }
-  return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, serviceRunning, title, phase, notice, confirmation, answer, connect, refresh, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces, hasUnsavedConnectionSettings }
+  return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, serviceRunning, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces, hasUnsavedConnectionSettings }
 }
 export function usePortal() { const state = createPortalState(window.__TAURI__); onMounted(state.initialize); onUnmounted(state.dispose); return state }

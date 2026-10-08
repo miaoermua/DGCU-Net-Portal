@@ -106,19 +106,20 @@ async fn handle(
             ok: true,
             message: "daemon 正在运行".into(),
             snapshot: Some(state.lock().await.snapshot()),
-            logs: None,
+            ..Default::default()
         },
         Request::Shutdown => Response {
             ok: true,
             message: "daemon 即将退出".into(),
             snapshot: None,
-            logs: None,
+            ..Default::default()
         },
         Request::Logs => Response {
             ok: true,
             message: "日志读取成功".into(),
             snapshot: None,
             logs: Some(logs.entries()),
+            ..Default::default()
         },
         Request::Sessions => {
             let mut controller = state.lock().await;
@@ -127,7 +128,21 @@ async fn handle(
                     ok: true,
                     message: "会话刷新成功".into(),
                     snapshot: Some(snapshot),
-                    logs: None,
+                    ..Default::default()
+                },
+                Err(error) => Response::error(error.to_string()),
+            }
+        }
+        Request::Diagnose => {
+            // 只取一份设置副本，检测期间不持有控制器锁：否则数秒的探测会
+            // 把界面每 2 秒一次的 Status 轮询全部堵在锁上。
+            let settings = state.lock().await.settings.clone();
+            match crate::diagnose::run(&settings).await {
+                Ok(diagnostic) => Response {
+                    ok: true,
+                    message: "连通性检测完成".into(),
+                    diagnostic: Some(diagnostic),
+                    ..Default::default()
                 },
                 Err(error) => Response::error(error.to_string()),
             }
@@ -152,7 +167,7 @@ async fn handle(
                     ok: true,
                     message: snapshot.message.clone(),
                     snapshot: Some(snapshot),
-                    logs: None,
+                    ..Default::default()
                 },
                 Err(error) => Response::error(error.to_string()),
             }
@@ -164,7 +179,7 @@ async fn handle(
                     ok: true,
                     message: snapshot.message.clone(),
                     snapshot: Some(snapshot),
-                    logs: None,
+                    ..Default::default()
                 },
                 Err(error) => Response::error(error.to_string()),
             }
@@ -176,7 +191,7 @@ async fn handle(
                     ok: true,
                     message: "会话已选择".into(),
                     snapshot: Some(snapshot),
-                    logs: None,
+                    ..Default::default()
                 },
                 Err(error) => Response::error(error.to_string()),
             }
@@ -187,7 +202,7 @@ async fn handle(
                 ok: true,
                 message: "日志已清空".into(),
                 snapshot: None,
-                logs: None,
+                ..Default::default()
             }
         }
         Request::Forget => {
@@ -197,7 +212,7 @@ async fn handle(
                 ok: true,
                 message: "本地会话已清除".into(),
                 snapshot: Some(controller.snapshot()),
-                logs: None,
+                ..Default::default()
             }
         }
         Request::Reload => {
@@ -213,7 +228,7 @@ async fn handle(
                 ok: true,
                 message: "配置已重新加载".into(),
                 snapshot: Some(controller.snapshot()),
-                logs: None,
+                ..Default::default()
             }
         }
     };

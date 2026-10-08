@@ -164,6 +164,31 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     expect(formatRate(0)).toBe('0.0 B/s')
     expect(formatRate(1048576)).toBe('1.0 MiB/s')
   })
+  it('diagnose sends no credentials and keeps the latency on the card while staying silent', async () => {
+    const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
+    state.password.value = 'never-send-this'
+    mock.invoke.mockResolvedValueOnce({ auth: 'reachable', auth_latency_ms: 3, internet: 'reachable', internet_latency_ms: 38 } as never)
+    await state.diagnose()
+    expect(mock.invoke).toHaveBeenLastCalledWith('diagnose')
+    expect(state.diagnostic.value?.internet_latency_ms).toBe(38)
+    expect(state.diagnosing.value).toBe(false)
+    expect(state.busy.value).toBe(false)
+    expect(state.password.value).toBe('never-send-this')
+    state.dispose()
+  })
+  it('diagnose distinguishes an unreachable auth server from an unreachable internet', async () => {
+    const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
+    mock.invoke.mockResolvedValueOnce({ auth: 'unreachable', auth_latency_ms: null, internet: 'unreachable', internet_latency_ms: null } as never)
+    await state.diagnose()
+    expect(state.notice.value).toContain('无法访问到认证服务器')
+    mock.invoke.mockResolvedValueOnce({ auth: 'reachable', auth_latency_ms: 5, internet: 'unreachable', internet_latency_ms: null } as never)
+    await state.diagnose()
+    expect(state.notice.value).toContain('运营商外网不可达')
+    mock.invoke.mockResolvedValueOnce({ auth: 'reachable', auth_latency_ms: 5, internet: 'captive', internet_latency_ms: 9 } as never)
+    await state.diagnose()
+    expect(state.notice.value).toContain('认证页')
+    state.dispose()
+  })
   it('canceling a confirmation never sends disconnect', async () => {
     const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
     state.snapshot.value = { ...emptySnapshot(), authenticated: true, sessions: [row('A')], selected_id: 'A' }
