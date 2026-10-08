@@ -27,7 +27,7 @@ const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps
 const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet: 'reachable', internet_latency_ms: 38 }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.4.11')
+  const version = ref('0.4.12')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
@@ -161,9 +161,13 @@ export function createPortalState(bridge?: DesktopBridge) {
       } finally { if (saved.value.credential_store === 'memory') clearFields() }
     })
   }
+  // 直接清除，不做二次确认：只释放本地凭据与 Cookie，不向校园网发送下线请求。
+  // “远端可能仍在线上”这层提醒改由状态行承担（后端返回同样的说明）。
   async function forget() {
-    if (!await ask('清除本地会话', '释放客户端凭据与 Cookie，不向校园网发送下线请求。远端会话可能仍然在线。', '清除本地信息')) return
-    await run(async () => { receive(demo.value ? emptySnapshot() : await bridge!.core.invoke<Snapshot>('forget')); clearFields() })
+    await run(async () => {
+      receive(demo.value ? { ...emptySnapshot(), message: '本地会话已清除；这不代表远端已经下线（模拟）' } : await bridge!.core.invoke<Snapshot>('forget'))
+      clearFields()
+    })
   }
   async function save() {
     if (draft.service_enabled !== saved.value.service_enabled && !demo.value) {

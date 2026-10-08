@@ -40,6 +40,8 @@ pub struct Response {
     pub logs: Option<Vec<crate::logging::LogEntry>>,
     /// 仅在 `Request::Diagnose` 时填充，其余命令为 None。
     pub diagnostic: Option<crate::diagnose::Diagnostic>,
+    /// daemon 自身的版本。字段缺失说明对端是加版本号之前的老进程。
+    pub version: Option<String>,
 }
 
 impl Response {

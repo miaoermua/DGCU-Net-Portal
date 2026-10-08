@@ -189,6 +189,20 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     expect(state.notice.value).toContain('认证页')
     state.dispose()
   })
+  it('clearing the local session goes straight to the daemon without asking first', async () => {
+    const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
+    state.username.value = 'alice'; state.password.value = 'secret'; state.portalUrl.value = 'http://portal.example/'
+    mock.invoke.mockResolvedValueOnce({ ...emptySnapshot(), message: '本地会话已清除' } as never)
+    await state.forget()
+    expect(mock.invoke).toHaveBeenLastCalledWith('forget')
+    expect(state.confirmation.value).toBeNull()
+    expect(state.notice.value).toBe('')
+    expect(state.username.value).toBe('')
+    expect(state.password.value).toBe('')
+    expect(state.portalUrl.value).toBe('')
+    expect(state.busy.value).toBe(false)
+    state.dispose()
+  })
   it('canceling a confirmation never sends disconnect', async () => {
     const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
     state.snapshot.value = { ...emptySnapshot(), authenticated: true, sessions: [row('A')], selected_id: 'A' }

@@ -144,17 +144,18 @@ const interfaceSummary = computed(() => {
           <MiuixCard class="metric"><span class="metric-label">设备数量</span><strong :class="{ waiting: !snapshot.authenticated }">{{ deviceCount }}</strong><span class="metric-note">{{ deviceNote }}</span></MiuixCard>
           <MiuixCard class="metric clickable" role="button" tabindex="0" :aria-busy="diagnosing" :aria-label="`外网延迟：${diagnosing ? '正在检测' : diagnoseStatus.value}，点击检测一次连通性`" @click="diagnose" @keydown.enter.prevent="diagnose" @keydown.space.prevent="diagnose"><span class="metric-label">外网延迟</span><strong :class="{ waiting: diagnoseStatus.waiting }">{{ diagnosing ? '检测中' : diagnoseStatus.value }}</strong><span class="metric-note">{{ diagnosing ? '正在检测认证服务器与外网' : diagnoseStatus.note }}</span></MiuixCard>
         </div>
-        <div v-if="saved.show_sessions" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixButton :disabled="locked" @click="connect(true)">仅登录后台</MiuixButton><MiuixIconButton class="refresh-icon" :disabled="locked || !snapshot.authenticated" aria-label="刷新会话" title="刷新会话" @click="refresh"><MiuixIcon :icon="Refresh" :size="18" /></MiuixIconButton></div></div>
+        <!-- 清除本地会话挪到刷新旁边，只留图标：鼠标驻留由 title 给出说明，点击即清除（无二次确认）。 -->
+        <div v-if="saved.show_sessions" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixButton :disabled="locked" @click="connect(true)">仅登录后台</MiuixButton><MiuixIconButton class="clear-session-icon" :disabled="locked" aria-label="清除本地会话" title="清除本地会话" @click="forget"><MiuixIcon :icon="Clear" :size="18" /></MiuixIconButton><MiuixIconButton class="refresh-icon" :disabled="locked || !snapshot.authenticated" aria-label="刷新会话" title="刷新会话" @click="refresh"><MiuixIcon :icon="Refresh" :size="18" /></MiuixIconButton></div></div>
         <MiuixCard v-if="saved.show_sessions" class="session-list">
           <div v-if="!snapshot.sessions.length" class="empty-state"><strong>暂无在线会话</strong><span>上线或登录后台后，即可查看和管理连接。</span><MiuixButton :disabled="locked" @click="page = 1">填写登录信息</MiuixButton></div>
           <!-- 会话卡片：一行两张，只有一张时占满整行（见 compact.css 的 :only-child 规则）。
                选中态由 miuix 主题色填充表达，取代了原来的 radio 圆点和“已选择”角标；
-               若觉得圆点更直观，可换回 label.session-row + input[type=radio]（旧结构见 0.4.10）。 -->
+               若觉得圆点更直观，可换回 label.session-row + input[type=radio]（旧结构见 0.4.11）。 -->
           <div v-else class="session-grid">
             <MiuixCard v-for="row in snapshot.sessions" :key="row.radacctid" class="session-card" :class="{ selected: row.radacctid === snapshot.selected_id }" press-feedback="sink" show-indication role="button" tabindex="0" :aria-pressed="row.radacctid === snapshot.selected_id" :aria-label="`选择会话 ${row.radacctid}`" @click="pickSession(row.radacctid)" @keydown.enter.prevent="pickSession(row.radacctid)" @keydown.space.prevent="pickSession(row.radacctid)"><div class="session-identity"><strong>{{ mask(row.username) }}</strong><span>{{ row.framedipaddress || 'IP 未上报' }} · #{{ row.radacctid }}</span></div><span class="session-duration">{{ formatDuration(row.acctsessiontime) }}</span></MiuixCard>
           </div>
         </MiuixCard>
-        <div class="overview-footer"><span>{{ demo ? '模拟数据 · 不连接校园网' : '后台计费数据 · 仅读取所选网卡 IP' }}</span><div class="row-actions"><MiuixButton v-if="demo" :disabled="locked || !snapshot.sessions.length" @click="simulateUpdate">模拟流量更新</MiuixButton><MiuixButton v-if="saved.show_sessions" class="clear-session-button" :disabled="locked" aria-label="清除本地会话" title="清除本地会话" @click="forget"><MiuixIcon :icon="Clear" :size="16" /><span>清除本地会话</span></MiuixButton><MiuixButton v-if="!snapshot.authenticated" :disabled="locked" @click="page = 1">登录设置</MiuixButton></div></div>
+        <div class="overview-footer"><span>{{ demo ? '模拟数据 · 不连接校园网' : '后台计费数据 · 仅读取所选网卡 IP' }}</span><div class="row-actions"><MiuixButton v-if="demo" :disabled="locked || !snapshot.sessions.length" @click="simulateUpdate">模拟流量更新</MiuixButton><MiuixButton v-if="!snapshot.authenticated" :disabled="locked" @click="page = 1">登录设置</MiuixButton></div></div>
       </section>
 
       <section v-else-if="page === 1" class="settings-page" aria-label="偏好设置">

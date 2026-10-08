@@ -24,33 +24,58 @@ fn daemon_binary() -> Result<std::path::PathBuf, String> {
     }
     Err(format!("找不到同包内的 {name} daemon"))
 }
+/// 版本已经核对过的 daemon 不需要每次请求都再握手一次。
+static DAEMON_VERIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 核对 IPC 端点上的 daemon 版本；不一致就请它退出，让调用方拉起新进程。
+///
+/// 升级后旧的常驻 daemon 仍占着端点，直接连过去会出现两种坏结果：
+/// 新界面发出的命令（例如 diagnose）对它是未知命令名，以及它返回的快照
+/// 缺少新加的字段（例如 account），界面只能显示成“—”。
+async fn verify_or_replace_daemon() {
+    let Ok(status) = ipc::request(Request::Status).await else {
+        return;
+    };
+    if status.version.as_deref() == Some(env!("CARGO_PKG_VERSION")) {
+        DAEMON_VERIFIED.store(true, std::sync::atomic::Ordering::Relaxed);
+        return;
+    }
+    let _ = ipc::request(Request::Shutdown).await;
+    // 旧 daemon 收到退出后约 80ms 结束进程，这里留出端点释放的时间。
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+}
 async fn daemon_request(request: Request) -> Result<portal_cli::ipc::Response, String> {
-    match ipc::request(request.clone()).await {
-        Ok(response) => Ok(response),
-        Err(_) => {
-            let binary = daemon_binary()?;
-            let mut command = std::process::Command::new(binary);
-            command.arg("run").arg("--daemon");
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                // 不加这个标志，GUI 拉起 daemon 时会闪一个控制台黑框。
-                command.creation_flags(0x0800_0000);
+    if !DAEMON_VERIFIED.load(std::sync::atomic::Ordering::Relaxed) {
+        verify_or_replace_daemon().await;
+    }
+    if let Ok(response) = ipc::request(request.clone()).await {
+        DAEMON_VERIFIED.store(true, std::sync::atomic::Ordering::Relaxed);
+        return Ok(response);
+    }
+    let binary = daemon_binary()?;
+    let mut command = std::process::Command::new(binary);
+    command.arg("run").arg("--daemon");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // 不加这个标志，GUI 拉起 daemon 时会闪一个控制台黑框。
+        command.creation_flags(0x0800_0000);
+    }
+    command.spawn().map_err(|_| "无法启动 portal-cli daemon")?;
+    // daemon 首次启动要创建 IPC 端点，Windows 上明显比 Unix 慢，
+    // 单次 150ms 等待经常还没就绪就连过去。
+    let mut last = "无法连接 portal-cli daemon".to_string();
+    for _ in 0..10 {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        match ipc::request(request.clone()).await {
+            Ok(response) => {
+                DAEMON_VERIFIED.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Ok(response);
             }
-            command.spawn().map_err(|_| "无法启动 portal-cli daemon")?;
-            // daemon 首次启动要创建 IPC 端点，Windows 上明显比 Unix 慢，
-            // 单次 150ms 等待经常还没就绪就连过去。
-            let mut last = "无法连接 portal-cli daemon".to_string();
-            for _ in 0..10 {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                match ipc::request(request.clone()).await {
-                    Ok(response) => return Ok(response),
-                    Err(error) => last = error.to_string(),
-                }
-            }
-            Err(last)
+            Err(error) => last = error.to_string(),
         }
     }
+    Err(last)
 }
 #[tauri::command]
 async fn initial(state: State<'_, AppState>) -> Result<serde_json::Value, String> {

@@ -101,7 +101,7 @@ async fn handle(
         }
     };
     let should_shutdown = matches!(&request, Request::Shutdown);
-    let response = match request {
+    let mut response = match request {
         Request::Status => Response {
             ok: true,
             message: "daemon 正在运行".into(),
@@ -232,6 +232,8 @@ async fn handle(
             }
         }
     };
+    // 统一在这里打上版本号：GUI 升级后据此识别并替换仍在驻留的旧 daemon。
+    response.version = Some(env!("CARGO_PKG_VERSION").to_string());
     let encoded = serde_json::to_string(&response)?;
     writer.write_all(encoded.as_bytes()).await?;
     writer.write_all(b"\n").await?;
