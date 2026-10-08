@@ -233,13 +233,13 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     expect(state.notice.value).toContain('认证页')
     state.dispose()
   })
-  it('a proxied path keeps the internet reachable and raises no campus failure notice', async () => {
+  it('a proxied path keeps the internet reachable and explains it in a notice', async () => {
     const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
     // 本机 TUN 代理挡住了物理网卡的直连探测，系统路由仍能上网：
-    // 只把直连那一档记为未通过，绝不弹“校园网可能存在故障”。
+    // 只把直连那一档记为未通过并给一条说明提示，绝不弹“校园网可能存在故障”。
     mock.invoke.mockResolvedValueOnce({ auth: 'reachable', auth_latency_ms: 3, internet_direct: 'unreachable', internet: 'reachable', internet_latency_ms: 46 } as never)
     await state.diagnose()
-    expect(state.notice.value).toBe('')
+    expect(state.notice.value).toBe('直连探测未通过，当前经代理或 VPN 上网')
     expect(state.diagnostic.value?.internet).toBe('reachable')
     expect(state.diagnostic.value?.internet_direct).toBe('unreachable')
     expect(state.diagnostic.value?.internet_latency_ms).toBe(46)

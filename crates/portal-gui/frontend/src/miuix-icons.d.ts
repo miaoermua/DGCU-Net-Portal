@@ -7,4 +7,5 @@ declare module 'miuix-vue/icons' {
   export const Settings: any
   export const File: any
   export const Refresh: any
+  export const SearchDevice: any
 }

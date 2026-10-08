@@ -2,7 +2,7 @@
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { MotionConfig } from 'motion-v'
 import { MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixIcon, MiuixIconButton, MiuixProgressIndicator, MiuixSwitchPreference, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
-import { Clear, Close, File, Forward, Info, Link, Refresh, Settings as SettingsIcon } from 'miuix-vue/icons'
+import { Clear, Close, File, Forward, Info, Link, Refresh, SearchDevice, Settings as SettingsIcon } from 'miuix-vue/icons'
 import { usePortal, formatBytes, formatRate, formatDuration, mask } from './usePortal'
 import { licenseGroups, licenseNotice } from './licenses'
 import xiaoweiLogo from './assets/xiaowei.png'
@@ -58,9 +58,11 @@ const deviceNote = computed(() => {
 // 检测成功时卡片里只放外网延迟，其他结论交给 snackbar 提示。
 const diagnoseStatus = computed(() => {
   if (!diagnostic.value) return { value: '未检测', note: '点击卡片检测一次连通性', waiting: true }
-  const { auth, internet, internet_direct, internet_latency_ms } = diagnostic.value
+  const { auth, internet, internet_latency_ms } = diagnostic.value
   if (auth !== 'reachable') return { value: '不通', note: '认证服务器不可达，点击重新检测', waiting: true }
-  if (internet === 'reachable') return { value: internet_latency_ms == null ? '已连通' : `${internet_latency_ms} ms`, note: internet_direct === 'reachable' ? '认证服务器与外网均正常' : '直连探测未通过，当前经代理或 VPN 上网', waiting: false }
+  // 代理/VPN 让直连探测失败时，解释文案会撑破卡片，改由 diagnose() 弹一次提示；
+  // 卡片只要能测到延迟就回到默认结论。
+  if (internet === 'reachable') return { value: internet_latency_ms == null ? '已连通' : `${internet_latency_ms} ms`, note: '认证服务器与外网均正常', waiting: false }
   if (internet === 'captive') return { value: '受限', note: '被认证页拦截，点击重新检测', waiting: true }
   return { value: '不通', note: '外网不可达，点击重新检测', waiting: true }
 })
@@ -145,7 +147,7 @@ const interfaceSummary = computed(() => {
           <MiuixCard class="metric clickable" role="button" tabindex="0" :aria-busy="diagnosing" :aria-label="`外网延迟：${diagnosing ? '正在检测' : diagnoseStatus.value}，点击检测一次连通性`" @click="diagnose" @keydown.enter.prevent="diagnose" @keydown.space.prevent="diagnose"><span class="metric-label">外网延迟</span><strong :class="{ waiting: diagnoseStatus.waiting }">{{ diagnosing ? '检测中' : diagnoseStatus.value }}</strong><span class="metric-note">{{ diagnosing ? '正在检测认证服务器与外网' : diagnoseStatus.note }}</span></MiuixCard>
         </div>
         <!-- 清除本地会话挪到刷新旁边，只留图标：鼠标驻留由 title 给出说明，点击即清除（无二次确认）。 -->
-        <div v-if="saved.show_sessions" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixButton :disabled="locked" @click="connect(true)">仅登录后台</MiuixButton><MiuixIconButton class="clear-session-icon" :disabled="locked" aria-label="清除本地会话" title="清除本地会话" @click="forget"><MiuixIcon :icon="Clear" :size="18" /></MiuixIconButton><MiuixIconButton class="refresh-icon" :disabled="locked || !snapshot.authenticated" aria-label="刷新会话" title="刷新会话" @click="refresh"><MiuixIcon :icon="Refresh" :size="18" /></MiuixIconButton></div></div>
+        <div v-if="saved.show_sessions" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixIconButton class="backend-login-icon" :disabled="locked" aria-label="仅登录后台" title="仅登录后台" @click="connect(true)"><MiuixIcon :icon="SearchDevice" :size="18" /></MiuixIconButton><MiuixIconButton class="clear-session-icon" :disabled="locked" aria-label="清除本地会话" title="清除本地会话" @click="forget"><MiuixIcon :icon="Clear" :size="18" /></MiuixIconButton><MiuixIconButton class="refresh-icon" :disabled="locked || !snapshot.authenticated" aria-label="刷新会话" title="刷新会话" @click="refresh"><MiuixIcon :icon="Refresh" :size="18" /></MiuixIconButton></div></div>
         <MiuixCard v-if="saved.show_sessions" class="session-list">
           <div v-if="!snapshot.sessions.length" class="empty-state"><strong>暂无在线会话</strong><span>上线或登录后台后，即可查看和管理连接。</span><MiuixButton :disabled="locked" @click="page = 1">填写登录信息</MiuixButton></div>
           <!-- 会话卡片：一行两张，只有一张时占满整行（见 compact.css 的 :only-child 规则）。
@@ -155,7 +157,7 @@ const interfaceSummary = computed(() => {
             <MiuixCard v-for="row in snapshot.sessions" :key="row.radacctid" class="session-card" :class="{ selected: row.radacctid === snapshot.selected_id }" press-feedback="sink" show-indication role="button" tabindex="0" :aria-pressed="row.radacctid === snapshot.selected_id" :aria-label="`选择会话 ${row.radacctid}`" @click="pickSession(row.radacctid)" @keydown.enter.prevent="pickSession(row.radacctid)" @keydown.space.prevent="pickSession(row.radacctid)"><div class="session-identity"><strong>{{ mask(row.username) }}</strong><span>{{ row.framedipaddress || 'IP 未上报' }} · #{{ row.radacctid }}</span></div><span class="session-duration">{{ formatDuration(row.acctsessiontime) }}</span></MiuixCard>
           </div>
         </MiuixCard>
-        <div class="overview-footer"><span>{{ demo ? '模拟数据 · 不连接校园网' : '后台计费数据 · 仅读取所选网卡 IP' }}</span><div class="row-actions"><MiuixButton v-if="demo" :disabled="locked || !snapshot.sessions.length" @click="simulateUpdate">模拟流量更新</MiuixButton><MiuixButton v-if="!snapshot.authenticated" :disabled="locked" @click="page = 1">登录设置</MiuixButton></div></div>
+        <div class="overview-footer"><span v-if="demo">模拟数据 · 不连接校园网</span><div class="row-actions"><MiuixButton v-if="demo" :disabled="locked || !snapshot.sessions.length" @click="simulateUpdate">模拟流量更新</MiuixButton><MiuixButton v-if="!snapshot.authenticated" :disabled="locked" @click="page = 1">登录设置</MiuixButton></div></div>
       </section>
 
       <section v-else-if="page === 1" class="settings-page" aria-label="偏好设置">

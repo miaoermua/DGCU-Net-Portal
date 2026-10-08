@@ -61,7 +61,7 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .status-line h2 { font-size: 17px; line-height: 1.4; }
 .status-message { font-size: 11px; color: var(--m-color-on-surface-variant-summary); line-height: 1.6; margin-top: 3px; overflow-wrap: anywhere; }
 .connection-actions { display: flex; gap: 7px; flex-shrink: 0; }
-.shutdown-icon, .refresh-icon, .clear-session-icon { --m-icon-button-min-width: 32px; --m-icon-button-min-height: 32px; --m-icon-button-radius: 10px; --m-icon-button-bg: var(--m-color-secondary-container); }
+.shutdown-icon, .refresh-icon, .clear-session-icon, .backend-login-icon { --m-icon-button-min-width: 32px; --m-icon-button-min-height: 32px; --m-icon-button-radius: 10px; --m-icon-button-bg: var(--m-color-secondary-container); }
 .auth-site-icon.m-button { padding: 8px; min-width: 32px; width: 32px; }
 .auth-site-icon .m-icon { width: 18px; height: 18px; }
 .about-logo { width: 42px; height: 42px; border-radius: 10px; background: #fff; object-fit: contain; }
@@ -121,6 +121,8 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .empty-state .m-button { margin-top: 3px; }
 .overview-footer, .settings-footer { justify-content: space-between; gap: 8px; font-size: 10px; color: var(--m-color-on-surface-variant-summary); }
 .overview-footer .m-button { background: transparent; padding: 7px 9px; font-size: 11px; }
+/* 页脚说明只在演示模式出现，缺了左侧文字时把操作按钮留在右侧。 */
+.overview-footer .row-actions { margin-left: auto; }
 .group-heading { font-size: 12px; font-weight: 500; color: var(--m-color-on-surface-variant-summary); padding: 0 4px; margin: 13px 0 7px; }
 .group-heading:first-child { margin-top: 0; }
 .credential-fields, .advanced-fields > .m-card { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 13px 14px; }

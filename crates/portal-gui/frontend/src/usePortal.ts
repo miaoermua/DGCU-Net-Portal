@@ -29,7 +29,7 @@ const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps
 const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet_direct: 'reachable', internet: 'reachable', internet_latency_ms: 38 }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.4.15')
+  const version = ref('0.5.0')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
@@ -173,6 +173,8 @@ export function createPortalState(bridge?: DesktopBridge) {
       if (result.auth !== 'reachable') notice.value = '无法访问到认证服务器，请检查设备是否处于校园网'
       else if (result.internet === 'captive') notice.value = '当前被认证页拦截，请先完成校园网认证'
       else if (result.internet !== 'reachable') notice.value = '运营商外网不可达，校园网可能存在故障'
+      // 外网通但直连那路不通：多半是代理/VPN 接管了 DNS 与路由，只用提示解释差异。
+      else if (result.internet_direct !== 'reachable') notice.value = '直连探测未通过，当前经代理或 VPN 上网'
     } catch (error) { notify(error) } finally { busy.value = false; diagnosing.value = false }
   }
   async function select(id: string) { await run(async () => { receive(demo.value ? { ...snapshot.value, selected_id: id } : await bridge!.core.invoke<Snapshot>('select_session', { id })) }) }
