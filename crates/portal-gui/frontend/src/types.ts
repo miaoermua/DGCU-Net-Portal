@@ -1,3 +1,4 @@
+export type RunMode = 'standard' | 'tray_startup' | 'lightweight'
 export interface Settings {
   server: string
   auth_url: string
@@ -12,7 +13,7 @@ export interface Settings {
   interface_name: string
   bypass_proxy: boolean
   reconnect_mode: 'disabled' | 'new_session' | 'terminate_and_reconnect'
-  tray_startup: boolean
+  run_mode: RunMode
   service_enabled: boolean
   username: string
   show_sessions: boolean

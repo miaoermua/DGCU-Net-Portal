@@ -64,6 +64,19 @@ pub enum ReconnectMode {
     NewSession,
     TerminateAndReconnect,
 }
+
+/// 界面进程的启动与关闭方式，取代 0.4.7 及以前那个只管"启动时隐藏"的 tray_startup 开关。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunMode {
+    /// 启动显示窗口；关闭后收进托盘常驻。
+    Standard,
+    /// 启动时隐藏窗口；关闭后收进托盘常驻。
+    TrayStartup,
+    /// 启动显示窗口；关闭即释放界面与托盘，只留独立的后台服务。
+    #[default]
+    Lightweight,
+}
 impl RefreshPolicy {
     pub fn next_delay(self, jitter: PollJitter) -> Option<Duration> {
         match self {
@@ -118,7 +131,7 @@ pub struct Settings {
     pub bypass_proxy: bool,
     pub credential_store: CredentialStore,
     pub reconnect_mode: ReconnectMode,
-    pub tray_startup: bool,
+    pub run_mode: RunMode,
     pub service_enabled: bool,
     pub username: String,
     pub show_sessions: bool,
@@ -141,7 +154,7 @@ impl Default for Settings {
             bypass_proxy: true,
             credential_store: CredentialStore::System,
             reconnect_mode: ReconnectMode::Disabled,
-            tray_startup: false,
+            run_mode: RunMode::Lightweight,
             service_enabled: false,
             username: String::new(),
             show_sessions: false,
@@ -195,8 +208,23 @@ impl Settings {
         config_path()
             .ok()
             .and_then(|p| fs::read(p).ok())
-            .and_then(|b| serde_json::from_slice(&b).ok())
+            .map(|bytes| Self::from_bytes(&bytes))
             .unwrap_or_default()
+    }
+    fn from_bytes(bytes: &[u8]) -> Self {
+        let Ok(mut value) = serde_json::from_slice::<Self>(bytes) else {
+            return Self::default();
+        };
+        // 0.4.7 及以前只有 tray_startup 布尔、没有 run_mode；缺字段时按旧值升级，
+        // 免得老配置被默认值悄悄换成另一种退出行为。
+        if let Ok(raw) = serde_json::from_slice::<serde_json::Value>(bytes) {
+            if raw.get("run_mode").is_none()
+                && raw.get("tray_startup").and_then(serde_json::Value::as_bool) == Some(true)
+            {
+                value.run_mode = RunMode::TrayStartup;
+            }
+        }
+        value
     }
     pub fn save(&self) -> Result<(), String> {
         let mut value = self.clone();
@@ -282,6 +310,24 @@ mod tests {
         assert!(!settings.show_sessions);
         assert!(!settings.log_enabled);
         assert!(matches!(settings.theme_mode, ThemeMode::System));
+    }
+    #[test]
+    fn legacy_tray_startup_migrates_to_run_mode() {
+        // 旧配置里 tray_startup=true 对应"启动隐藏、关闭后常驻托盘"。
+        let on = Settings::from_bytes(br#"{"tray_startup":true}"#);
+        assert_eq!(on.run_mode, RunMode::TrayStartup);
+        // 旧配置里 false 对应"启动显示、关闭即退"，也就是现在的轻量模式。
+        let off = Settings::from_bytes(br#"{"tray_startup":false}"#);
+        assert_eq!(off.run_mode, RunMode::Lightweight);
+    }
+    #[test]
+    fn explicit_run_mode_wins_over_legacy_flag() {
+        let settings = Settings::from_bytes(br#"{"run_mode":"standard","tray_startup":true}"#);
+        assert_eq!(settings.run_mode, RunMode::Standard);
+    }
+    #[test]
+    fn fresh_settings_default_to_lightweight() {
+        assert_eq!(Settings::default().run_mode, RunMode::Lightweight);
     }
     #[test]
     fn changing_display_preferences_does_not_change_authentication_options() {

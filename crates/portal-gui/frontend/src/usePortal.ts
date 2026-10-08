@@ -1,7 +1,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { DesktopBridge, InterfaceInfo, LogEntry, Session, Settings, Snapshot, UiPreferences, Unlisten } from './types'
 
-export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/lfradius/', auth_url: 'http://172.18.100.65/lfradius/web/admin/login', probe_url: 'http://captive.apple.com/hotspot-detect.html', paip: '172.18.100.65', basip: '', probe_enabled: true, refresh_policy: 'one_minute', poll_jitter: 'low', traffic_enabled: false, credential_store: 'system', interface_name: '', bypass_proxy: true, username: '', reconnect_mode: 'disabled', tray_startup: false, service_enabled: false, show_sessions: false, log_enabled: false, theme_mode: 'system' })
+export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/lfradius/', auth_url: 'http://172.18.100.65/lfradius/web/admin/login', probe_url: 'http://captive.apple.com/hotspot-detect.html', paip: '172.18.100.65', basip: '', probe_enabled: true, refresh_policy: 'one_minute', poll_jitter: 'low', traffic_enabled: false, credential_store: 'system', interface_name: '', bypass_proxy: true, username: '', reconnect_mode: 'disabled', run_mode: 'lightweight', service_enabled: false, show_sessions: false, log_enabled: false, theme_mode: 'system' })
 export const emptySnapshot = (): Snapshot => ({ sessions: [], rates: {}, selected_id: null, authenticated: false, one_session: true, background_paused: true, status: 'idle', message: '填写账号后连接校园网' })
 export function normalizeSettings(value: Settings): Settings {
   const next = { ...value }
@@ -25,7 +25,7 @@ const demoSessions = (): Session[] => [
 const phaseLabels: Record<string, string> = { discovering: '正在寻找认证页', reading_form: '正在读取认证表单', authenticating: '正在提交认证', waiting_portal: '正在等待 Portal 认证', waiting_dial: '正在等待代拨结果', accepted: 'Portal 已确认成功' }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.4.6')
+  const version = ref('0.4.8')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
@@ -33,7 +33,7 @@ export function createPortalState(bridge?: DesktopBridge) {
   let logEpoch = 0, demoSequence = 0, logTimer: ReturnType<typeof setInterval> | undefined, snapshotTimer: ReturnType<typeof setInterval> | undefined
   const selected = computed(() => snapshot.value.sessions.find(row => row.radacctid === snapshot.value.selected_id))
   const hasUnsavedConnectionSettings = computed(() => {
-    const keys: (keyof Settings)[] = ['server', 'auth_url', 'probe_url', 'paip', 'basip', 'probe_enabled', 'refresh_policy', 'poll_jitter', 'traffic_enabled', 'credential_store', 'interface_name', 'bypass_proxy', 'reconnect_mode', 'tray_startup', 'service_enabled']
+    const keys: (keyof Settings)[] = ['server', 'auth_url', 'probe_url', 'paip', 'basip', 'probe_enabled', 'refresh_policy', 'poll_jitter', 'traffic_enabled', 'credential_store', 'interface_name', 'bypass_proxy', 'reconnect_mode', 'run_mode', 'service_enabled']
     const value=normalizeSettings(draft)
     return keys.some(key=>value[key]!==saved.value[key])
   })
@@ -151,7 +151,7 @@ export function createPortalState(bridge?: DesktopBridge) {
   }
   async function save() {
     if (draft.service_enabled !== saved.value.service_enabled && !demo.value) {
-      if (!await ask('更改后台启动', draft.service_enabled ? '将为当前用户写入登录时启动任务，Windows 会请求一次管理员授权。只有保存设置后才会执行。' : '将停用当前用户的登录启动任务。', '保存更改')) return
+      if (!await ask('更改后台启动', draft.service_enabled ? '将为当前用户写入登录时启动任务，Windows 会请求一次管理员授权。只有保存设置后才会执行。' : '将停用当前用户的登录启动任务，Windows 会请求一次管理员授权。只有保存设置后才会执行。', '保存更改')) return
     }
     await run(async () => {
       let secret = password.value

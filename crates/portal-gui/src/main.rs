@@ -3,7 +3,7 @@ use portal_cli::{
     controller::Snapshot,
     ipc::{self, Request},
     logging::LogEntry,
-    settings::{self, CredentialStore, Settings, UiPreferences},
+    settings::{self, CredentialStore, RunMode, Settings, UiPreferences},
     validate_url, Credential,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -220,6 +220,7 @@ fn open_external(url: String) -> Result<(), String> {
         .map(|_| ())
         .map_err(|_| "无法打开系统浏览器".into())
 }
+/// 彻底退出：停下 daemon，必要时结束登录启动任务。只退界面走托盘菜单，不经过这里。
 #[tauri::command]
 async fn exit_app(app: AppHandle, _state: State<'_, AppState>) -> Result<(), String> {
     let _ = ipc::request(Request::Shutdown).await;
@@ -241,7 +242,6 @@ fn main() {
             .ok()
             .and_then(|p| p.file_name().map(|v| v == "dgcu-portal-demo"))
             .unwrap_or(false);
-    let background = std::env::args().any(|v| v == "--background");
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
         .manage(AppState { demo })
@@ -250,9 +250,18 @@ fn main() {
                 menu::{Menu, MenuItem},
                 tray::TrayIconBuilder,
             };
+            let cfg = Settings::load();
             let show_item = MenuItem::with_id(app, "show", "打开主窗口", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let exit_item =
+                MenuItem::with_id(app, "exit", "退出界面（保留后台）", true, None::<&str>)?;
+            let stop_item =
+                MenuItem::with_id(app, "stop", "退出并停止后台服务", true, None::<&str>)?;
+            // 轻量模式下关窗口就是退界面，"退出界面"这一项与它重复，去掉一个易混的出口。
+            let menu = if cfg.run_mode == RunMode::Lightweight {
+                Menu::with_items(app, &[&show_item, &stop_item])?
+            } else {
+                Menu::with_items(app, &[&show_item, &exit_item, &stop_item])?
+            };
             #[cfg(target_os = "macos")]
             let tray_icon = tauri::image::Image::new_owned(
                 include_bytes!("../icons/tray-template.rgba").to_vec(),
@@ -272,26 +281,34 @@ fn main() {
                 .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("DGCU-Net-Portal")
                 .menu(&menu)
-                .on_menu_event(|app, event| {
-                    if event.id().as_ref() == "quit" {
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    // 只退界面，daemon 照旧在跑。
+                    "exit" => app.exit(0),
+                    // 停服务会断掉认证，交给前端确认后再退。
+                    "stop" => {
                         let _ = app.emit("quit-request", ());
-                    } else {
-                        show(app);
                     }
+                    _ => show(app),
                 })
                 .build(app)?;
-            let cfg = Settings::load();
-            if !demo && (background || cfg.tray_startup) {
+            // 轻量模式不留托盘，隐藏启动没有意义；只有"托盘启动"才静默起窗口。
+            if !demo && cfg.run_mode == RunMode::TrayStartup {
                 if let Some(w) = app.get_webview_window("main") {
                     w.hide()?;
                 }
             }
             Ok(())
         })
+        // 关窗口的含义由运行方式决定：轻量模式退出界面（daemon 是独立进程，认证不受影响），
+        // 其余模式收进托盘常驻。每次都重读设置，保存后即时生效、无需重启。
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if Settings::load().run_mode == RunMode::Lightweight {
+                    window.app_handle().exit(0);
+                } else {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![

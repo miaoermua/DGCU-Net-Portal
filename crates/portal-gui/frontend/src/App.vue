@@ -2,7 +2,7 @@
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { MotionConfig } from 'motion-v'
 import { MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixIcon, MiuixIconButton, MiuixProgressIndicator, MiuixSwitchPreference, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
-import { Clear, Close, File, Forward, Info, Link, Settings as SettingsIcon } from 'miuix-vue/icons'
+import { Clear, Close, File, Forward, Info, Link, Refresh, Settings as SettingsIcon } from 'miuix-vue/icons'
 import { usePortal, formatBytes, formatRate, formatDuration, mask } from './usePortal'
 import { licenseGroups, licenseNotice } from './licenses'
 import xiaoweiLogo from './assets/xiaowei.png'
@@ -45,6 +45,9 @@ const credentialStoreItems = ['系统凭证（推荐）', '配置文件（明文
 const credentialStoreIndex = computed({ get: () => ({ system: 0, file: 1, memory: 2 }[draft.credential_store]), set: (value: number) => { draft.credential_store = (['system', 'file', 'memory'] as const)[value] ?? 'system' } })
 const reconnectItems = ['禁用', '新建后上线', '终止后重上']
 const reconnectIndex = computed({ get: () => ({ disabled: 0, new_session: 1, terminate_and_reconnect: 2 }[draft.reconnect_mode]), set: (value: number) => { draft.reconnect_mode = (['disabled', 'new_session', 'terminate_and_reconnect'] as const)[value] ?? 'disabled' } })
+const runModeItems = ['常规', '托盘启动', '轻量模式']
+const runModeIndex = computed({ get: () => ({ standard: 0, tray_startup: 1, lightweight: 2 }[draft.run_mode]), set: (value: number) => { draft.run_mode = (['standard', 'tray_startup', 'lightweight'] as const)[value] ?? 'lightweight' } })
+const runModeSummary = computed(() => ({ standard: '启动显示窗口；关闭后收进托盘常驻', tray_startup: '启动时隐藏窗口；关闭后收进托盘常驻', lightweight: '启动显示窗口；关闭即释放界面与托盘，仅保留独立的后台服务' }[draft.run_mode]))
 const refreshEnabled = computed({ get: () => draft.refresh_policy !== 'disabled', set: (value: boolean) => { draft.refresh_policy = value ? 'one_minute' : 'disabled'; void updatePreferences({ refresh_policy: draft.refresh_policy }) } })
 const jitterItems = ['低（±5%）', '中（±10%）', '高（±20%）', '禁用（0%）']
 const jitterIndex = computed({ get: () => ({ low: 0, medium: 1, high: 2, disabled: 3 }[draft.poll_jitter]), set: (value: number) => { draft.poll_jitter = (['low', 'medium', 'high', 'disabled'] as const)[value] ?? 'low' } })
@@ -53,7 +56,7 @@ const themeIndex = computed({ get: () => ({ system: 0, light: 1, dark: 2 }[saved
 const navIcons = [Link, SettingsIcon, Info]
 const settingsNoticeShown = ref(false)
 let settingsApplyTimer: ReturnType<typeof setTimeout> | undefined
-const watchedSettings = computed(() => [draft.server, draft.auth_url, draft.probe_url, draft.paip, draft.basip, draft.probe_enabled, draft.refresh_policy, draft.poll_jitter, draft.traffic_enabled, draft.credential_store, draft.interface_name, draft.bypass_proxy, draft.reconnect_mode, draft.tray_startup, draft.service_enabled].join('|'))
+const watchedSettings = computed(() => [draft.server, draft.auth_url, draft.probe_url, draft.paip, draft.basip, draft.probe_enabled, draft.refresh_policy, draft.poll_jitter, draft.traffic_enabled, draft.credential_store, draft.interface_name, draft.bypass_proxy, draft.reconnect_mode, draft.run_mode, draft.service_enabled].join('|'))
 const advancedSettingsDirty = computed(() => [draft.server, draft.auth_url, draft.probe_url, draft.paip, draft.basip].some((value, index) => value !== [saved.value.server, saved.value.auth_url, saved.value.probe_url, saved.value.paip, saved.value.basip][index]))
 watch(watchedSettings, () => {
   if (!ready.value || busy.value || preferencesBusy.value || !hasUnsavedConnectionSettings.value) return
@@ -111,7 +114,7 @@ const interfaceSummary = computed(() => {
           <MiuixCard class="metric"><span class="metric-label">↓ 区间下载速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.download_bps == null }">{{ saved.traffic_enabled ? formatRate(rate?.download_bps) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? (rate?.sample_seconds ? `最近 ${rate.sample_seconds} 秒平均` : '等待后台计费更新') : '设置中开启后台流量统计' }}</span></MiuixCard>
           <MiuixCard class="metric"><span class="metric-label">↑ 区间上传速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.upload_bps == null }">{{ saved.traffic_enabled ? formatRate(rate?.upload_bps) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '按后台计费时间计算' : '设置中开启后台流量统计' }}</span></MiuixCard>
         </div>
-        <div v-if="saved.show_sessions" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixButton :disabled="locked" @click="connect(true)">仅登录后台</MiuixButton><MiuixButton :disabled="locked || !snapshot.authenticated" @click="refresh">刷新</MiuixButton></div></div>
+        <div v-if="saved.show_sessions" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixButton :disabled="locked" @click="connect(true)">仅登录后台</MiuixButton><MiuixIconButton class="refresh-icon" :disabled="locked || !snapshot.authenticated" aria-label="刷新会话" title="刷新会话" @click="refresh"><MiuixIcon :icon="Refresh" :size="18" /></MiuixIconButton></div></div>
         <MiuixCard v-if="saved.show_sessions" class="session-list">
           <div v-if="!snapshot.sessions.length" class="empty-state"><strong>暂无在线会话</strong><span>上线或登录后台后，即可查看和管理连接。</span><MiuixButton :disabled="locked" @click="page = 1">填写登录信息</MiuixButton></div>
           <label v-for="row in snapshot.sessions" v-else :key="row.radacctid" class="session-row" :class="{ selected: row.radacctid === snapshot.selected_id }"><input type="radio" name="session" :checked="row.radacctid === snapshot.selected_id" :disabled="locked" :aria-label="`选择会话 ${row.radacctid}`" @change="select(row.radacctid)"><div class="session-identity"><strong>{{ mask(row.username) }} <span v-if="row.radacctid === snapshot.selected_id" class="selected-tag">已选择</span></strong><span>{{ row.framedipaddress || 'IP 未上报' }} · #{{ row.radacctid }}</span></div><span class="session-duration">{{ formatDuration(row.acctsessiontime) }}</span></label>
@@ -138,7 +141,7 @@ const interfaceSummary = computed(() => {
         </MiuixCard>
         <h3 class="group-heading">系统</h3>
         <MiuixCard>
-          <MiuixSwitchPreference v-model="draft.tray_startup" title="托盘启动" summary="下次启动隐藏窗口，可从托盘打开" :disabled="settingsLocked" />
+          <MiuixDropdownPreference v-model="runModeIndex" title="运行方式" :summary="runModeSummary" :items="runModeItems" :disabled="settingsLocked" />
           <MiuixSwitchPreference v-model="draft.service_enabled" title="写入用户后台服务" summary="当前用户登录系统时启动 portal-cli daemon" :disabled="settingsLocked || draft.credential_store === 'memory'" />
         </MiuixCard>
         <h3 class="group-heading">界面</h3>

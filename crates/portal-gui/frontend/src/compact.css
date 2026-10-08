@@ -61,7 +61,7 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .status-line h2 { font-size: 17px; line-height: 1.4; }
 .status-message { font-size: 11px; color: var(--m-color-on-surface-variant-summary); line-height: 1.6; margin-top: 3px; overflow-wrap: anywhere; }
 .connection-actions { display: flex; gap: 7px; flex-shrink: 0; }
-.shutdown-icon { --m-icon-button-min-width: 32px; --m-icon-button-min-height: 32px; --m-icon-button-radius: 10px; --m-icon-button-bg: var(--m-color-secondary-container); }
+.shutdown-icon, .refresh-icon { --m-icon-button-min-width: 32px; --m-icon-button-min-height: 32px; --m-icon-button-radius: 10px; --m-icon-button-bg: var(--m-color-secondary-container); }
 .auth-site-icon.m-button { padding: 8px; min-width: 32px; width: 32px; }
 .auth-site-icon .m-icon { width: 18px; height: 18px; }
 .clear-session-button { gap: 6px; }
@@ -71,9 +71,11 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .preference-action > span:first-child { display: flex; flex-direction: column; gap: 4px; }.preference-action strong { font-size: 13px; font-weight: 500; }.preference-action small { font-size: 12px; color: var(--m-color-on-surface-variant-summary); }.preference-action > span:last-child { font-size: 22px; color: var(--m-color-on-surface-variant-actions); }
 .logs-dialog { width: min(660px, calc(100% - 28px)); height: min(590px, calc(100dvh - 40px)); max-height: calc(100dvh - 40px); border: 0; border-radius: 18px; padding: 18px; background: var(--m-color-background); color: var(--m-color-on-background); }
 .logs-dialog::backdrop { background: var(--m-color-window-dimming); }
+/* 弹窗高度写死了，正文若也跟着写死高度，底部就会空出一片背景色；改成纵向弹性布局让正文撑满。 */
+.logs-dialog[open] { display: flex; flex-direction: column; }
 .dialog-icon-button { --m-icon-button-min-width: 30px; --m-icon-button-min-height: 30px; --m-icon-button-radius: 9px; --m-icon-button-bg: transparent; }
-.logs-heading, .logs-footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; }.logs-heading h2 { font-size: 16px; }.logs-footer { margin-top: 12px; }.logs-footer > span { font-size: 11px; color: var(--m-color-on-surface-variant-summary); }
-.dialog-caption { font-size: 11px; line-height: 1.6; margin: 12px 0; color: var(--m-color-on-surface-variant-summary); }.logs-body, .license-groups { height: min(400px, 56dvh); overflow: auto; border-radius: 10px; padding: 10px; background: var(--m-color-surface); }
+.logs-heading, .logs-footer { flex: none; display: flex; justify-content: space-between; align-items: center; gap: 10px; }.logs-heading h2 { font-size: 16px; }.logs-footer { margin-top: 12px; }.logs-footer > span { font-size: 11px; color: var(--m-color-on-surface-variant-summary); }
+.dialog-caption { flex: none; font-size: 11px; line-height: 1.6; margin: 12px 0; color: var(--m-color-on-surface-variant-summary); }.logs-body, .license-groups { flex: 1 1 auto; min-height: 0; overflow: auto; border-radius: 10px; padding: 10px; background: var(--m-color-surface); }
 .license-group h3 { margin: 10px 0 4px; font-size: 12px; font-weight: 600; color: var(--m-color-on-surface-variant-summary); }
 .license-group:first-child h3 { margin-top: 0; }
 .license-row { display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 9px 10px; border: 0; border-radius: 9px; color: inherit; background: transparent; cursor: pointer; text-align: left; }
