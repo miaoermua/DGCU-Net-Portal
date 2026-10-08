@@ -103,10 +103,17 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .section-heading { justify-content: space-between; gap: 10px; padding: 0 3px; }
 .section-heading h3 { font-size: 13px; font-weight: 600; }
 .count { font-size: 11px; font-weight: 400; margin-left: 5px; color: var(--m-color-on-surface-variant-summary); }
-.session-row { display: flex; align-items: center; gap: 10px; min-height: 58px; padding: 10px 14px; cursor: pointer; border-top: 1px solid var(--m-color-surface); }
-.session-row:first-child { border-top: 0; }
-.session-row.selected { background: color-mix(in srgb, var(--m-color-tertiary-container) 60%, var(--m-color-background)); }
-.session-row input { width: 16px; height: 16px; accent-color: var(--m-color-primary); margin: 0; flex-shrink: 0; }
+/* 管理会话：一行两张按压卡片（pressFeedback=sink）；只有一张时占满整行，
+   两张各占半行，第三张起换行且仍是半卡，不会拉满整行。 */
+.session-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; padding: 10px; }
+.session-grid > :only-child { grid-column: 1 / -1; }
+.session-card > .m-card { --m-card-color: var(--m-color-secondary-container); height: 100%; min-height: 62px; padding: 11px 13px; gap: 6px; }
+/* 选中态改用 miuix 主题色填充（primary-container 是纯蓝），文字同步换成白色前景。 */
+.session-card.selected > .m-card { --m-card-color: var(--m-color-primary-container); --m-card-content-color: var(--m-color-on-primary-container); }
+.session-card.selected .session-identity strong, .session-card.selected .session-identity > span, .session-card.selected .session-duration { color: var(--m-color-on-primary-container); }
+.session-card:focus-visible { outline: 2px solid var(--m-color-primary); outline-offset: 2px; border-radius: var(--m-radius-md); }
+/* 旧版单选圆点样式，按需回退时恢复：.session-row 行布局 + input[type=radio] 圆点 +
+   .session-row.selected 的 tertiary 底色 + .selected-tag 角标（模板里已同步注释说明）。 */
 .session-identity { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
 .session-identity strong { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; }
 .session-identity > span, .session-duration { color: var(--m-color-on-surface-variant-summary); font-size: 11px; font-variant-numeric: tabular-nums; }

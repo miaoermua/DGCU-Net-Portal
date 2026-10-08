@@ -32,6 +32,11 @@ watch(sessionPickerOpen, async open => {
   if (open) { sessionFocus = document.activeElement as HTMLElement; await nextTick(); sessionDialog.value?.showModal() }
   else { sessionDialog.value?.close(); sessionFocus?.focus() }
 })
+// 会话卡片点击/回车选中；重复点同一张卡不再发起多余的后台往返。
+function pickSession(id: string) {
+  if (locked.value || id === snapshot.value.selected_id) return
+  void select(id)
+}
 const licensesOpen = ref(false)
 const licenseCount = computed(() => licenseGroups.reduce((total, group) => total + group.entries.length, 0))
 watch(licensesOpen, async open => {
@@ -142,7 +147,12 @@ const interfaceSummary = computed(() => {
         <div v-if="saved.show_sessions" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixButton :disabled="locked" @click="connect(true)">仅登录后台</MiuixButton><MiuixIconButton class="refresh-icon" :disabled="locked || !snapshot.authenticated" aria-label="刷新会话" title="刷新会话" @click="refresh"><MiuixIcon :icon="Refresh" :size="18" /></MiuixIconButton></div></div>
         <MiuixCard v-if="saved.show_sessions" class="session-list">
           <div v-if="!snapshot.sessions.length" class="empty-state"><strong>暂无在线会话</strong><span>上线或登录后台后，即可查看和管理连接。</span><MiuixButton :disabled="locked" @click="page = 1">填写登录信息</MiuixButton></div>
-          <label v-for="row in snapshot.sessions" v-else :key="row.radacctid" class="session-row" :class="{ selected: row.radacctid === snapshot.selected_id }"><input type="radio" name="session" :checked="row.radacctid === snapshot.selected_id" :disabled="locked" :aria-label="`选择会话 ${row.radacctid}`" @change="select(row.radacctid)"><div class="session-identity"><strong>{{ mask(row.username) }} <span v-if="row.radacctid === snapshot.selected_id" class="selected-tag">已选择</span></strong><span>{{ row.framedipaddress || 'IP 未上报' }} · #{{ row.radacctid }}</span></div><span class="session-duration">{{ formatDuration(row.acctsessiontime) }}</span></label>
+          <!-- 会话卡片：一行两张，只有一张时占满整行（见 compact.css 的 :only-child 规则）。
+               选中态由 miuix 主题色填充表达，取代了原来的 radio 圆点和“已选择”角标；
+               若觉得圆点更直观，可换回 label.session-row + input[type=radio]（旧结构见 0.4.10）。 -->
+          <div v-else class="session-grid">
+            <MiuixCard v-for="row in snapshot.sessions" :key="row.radacctid" class="session-card" :class="{ selected: row.radacctid === snapshot.selected_id }" press-feedback="sink" show-indication role="button" tabindex="0" :aria-pressed="row.radacctid === snapshot.selected_id" :aria-label="`选择会话 ${row.radacctid}`" @click="pickSession(row.radacctid)" @keydown.enter.prevent="pickSession(row.radacctid)" @keydown.space.prevent="pickSession(row.radacctid)"><div class="session-identity"><strong>{{ mask(row.username) }}</strong><span>{{ row.framedipaddress || 'IP 未上报' }} · #{{ row.radacctid }}</span></div><span class="session-duration">{{ formatDuration(row.acctsessiontime) }}</span></MiuixCard>
+          </div>
         </MiuixCard>
         <div class="overview-footer"><span>{{ demo ? '模拟数据 · 不连接校园网' : '后台计费数据 · 仅读取所选网卡 IP' }}</span><div class="row-actions"><MiuixButton v-if="demo" :disabled="locked || !snapshot.sessions.length" @click="simulateUpdate">模拟流量更新</MiuixButton><MiuixButton v-if="saved.show_sessions" class="clear-session-button" :disabled="locked" aria-label="清除本地会话" title="清除本地会话" @click="forget"><MiuixIcon :icon="Clear" :size="16" /><span>清除本地会话</span></MiuixButton><MiuixButton v-if="!snapshot.authenticated" :disabled="locked" @click="page = 1">登录设置</MiuixButton></div></div>
       </section>
