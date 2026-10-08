@@ -1,16 +1,22 @@
-# DGCU-Net-Portal
+<div align="center">
+  <img src="./docs/xiaowei.png" width="100" height="100" alt="DGCU-Net-Portal 图标" />
+  <h1>DGCU-Net-Portal</h1>
+  <p>DGCU-Net-Portal 是适用于东莞城市学院的校园网登录助手客户端，在 lfradius portal 下完成自动化登录解放双手。</p>
 
-[![Stars](https://m3-markdown-badges.vercel.app/stars/3/3/miaoermua/DGCU-Net-Portal)](https://github.com/miaoermua/DGCU-Net-Portal)
-[![Issues](https://m3-markdown-badges.vercel.app/issues/1/2/miaoermua/DGCU-Net-Portal)](https://github.com/miaoermua/DGCU-Net-Portal/issues)
-[![Support](https://ziadoua.github.io/m3-Markdown-Badges/badges/Sponsor/sponsor1.svg)](https://www.miaoer.net/sponsor)
-[![COPYING](https://ziadoua.github.io/m3-Markdown-Badges/badges/LicenceGPLv3/licencegplv31.svg)](https://github.com/miaoermua/DGCU-Net-Portal/blob/main/LICENSE)
+  <p>
+    <a href="https://github.com/miaoermua/DGCU-Net-Portal"><img src="https://m3-markdown-badges.vercel.app/stars/3/3/miaoermua/DGCU-Net-Portal" alt="Stars" /></a>
+    <a href="https://github.com/miaoermua/DGCU-Net-Portal/issues"><img src="https://m3-markdown-badges.vercel.app/issues/1/2/miaoermua/DGCU-Net-Portal" alt="Issues" /></a>
+    <a href="https://www.miaoer.net/sponsor"><img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/Sponsor/sponsor1.svg" alt="Support" /></a>
+    <a href="https://github.com/miaoermua/DGCU-Net-Portal/blob/main/LICENSE"><img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/LicenceGPLv3/licencegplv31.svg" alt="COPYING" /></a>
+  </p>
 
-
-![Rust](https://ziadoua.github.io/m3-Markdown-Badges/badges/Rust/rust1.svg)
-![ViteJS](https://ziadoua.github.io/m3-Markdown-Badges/badges/ViteJS/vitejs1.svg)
-![TypeScript](https://ziadoua.github.io/m3-Markdown-Badges/badges/TypeScript/typescript1.svg)
-
-DGCU-Net-Portal 是适用于东莞城市学院的校园网登录助手客户端，在 lfradius portal 下完成自动化登录解放双手。
+  <p>
+    <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/Rust/rust1.svg" alt="Rust" />
+    <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/ViteJS/vitejs1.svg" alt="ViteJS" />
+    <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/Vue/vue1.svg" alt="Vue" />
+    <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/TypeScript/typescript1.svg" alt="TypeScript" />
+  </p>
+</div>
 
 ## 功能
 
