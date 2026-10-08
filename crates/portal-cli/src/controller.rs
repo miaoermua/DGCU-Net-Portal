@@ -3,7 +3,8 @@ use crate::{
     network,
     settings::{CredentialStore, ReconnectMode, Settings},
     traffic::{AccountingRates, Rate},
-    AppError, CmccContext, Credential, OnlineSession, PortalClient, PortalLoginOutcome,
+    AccountInfo, AppError, CmccContext, Credential, OnlineSession, PortalClient,
+    PortalLoginOutcome,
 };
 use serde::Serialize;
 use std::{
@@ -22,12 +23,15 @@ pub struct Snapshot {
     pub background_paused: bool,
     pub authenticated: bool,
     pub one_session: bool,
+    /// 后台报告的套餐与到期时间；未登录或无此接口时为 None。
+    pub account: Option<AccountInfo>,
 }
 pub struct Controller {
     pub settings: Settings,
     logs: crate::logging::LogBuffer,
     api: Option<PortalClient>,
     credential: Option<Credential>,
+    account: Option<AccountInfo>,
     rows: Vec<OnlineSession>,
     selected: Option<String>,
     accounting: AccountingRates,
@@ -62,6 +66,7 @@ impl Controller {
             logs,
             api: None,
             credential: None,
+            account: None,
             rows: Vec::new(),
             selected: None,
             accounting: AccountingRates::default(),
@@ -79,6 +84,7 @@ impl Controller {
     pub fn clear(&mut self) {
         self.api = None;
         self.credential = None;
+        self.account = None;
         self.rows.clear();
         self.selected = None;
         self.accounting.clear();
@@ -113,6 +119,7 @@ impl Controller {
             background_paused: self.paused,
             authenticated: self.api.is_some(),
             one_session: self.settings.credential_store == CredentialStore::Memory,
+            account: self.account.clone(),
         }
     }
     pub async fn connect<F: Fn(Phase)>(
@@ -177,6 +184,8 @@ impl Controller {
         let baseline = match api.login(&credential.username, &credential.password).await {
             Ok(()) => {
                 backend_authenticated = true;
+                // 套餐与到期时间只在连接时读一次：它随订购变更，不随会话变化。
+                self.account = api.account().await.ok();
                 api.sessions().await.ok()
             }
             Err(e) => {
@@ -271,6 +280,9 @@ impl Controller {
             }
         }
         if backend_authenticated {
+            if self.account.is_none() {
+                self.account = api.account().await.ok();
+            }
             self.api = Some(api);
         }
         let rows = self.api.as_ref().unwrap().sessions().await;
@@ -491,6 +503,7 @@ impl Controller {
         let old_status = self.status.clone();
         let old_message = self.message.clone();
         let old_api = self.api.clone();
+        let old_account = self.account.clone();
         let old_rows = self.rows.clone();
         let old_selected = self.selected.clone();
         let old_accounting = self.accounting.clone();
@@ -522,6 +535,7 @@ impl Controller {
                 self.attempts = 0;
                 if terminate_first {
                     self.api = old_api;
+                    self.account = old_account;
                     self.rows = old_rows;
                     self.selected = old_selected;
                     self.accounting = old_accounting;

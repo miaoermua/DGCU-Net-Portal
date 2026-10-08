@@ -42,6 +42,11 @@ export interface Rate {
   download_bps: number | null
   sample_seconds: number | null
 }
+export interface AccountInfo {
+  plan: string
+  bandwidth: string | null
+  expires_on: string | null
+}
 export interface Snapshot {
   status: string
   message: string
@@ -51,6 +56,7 @@ export interface Snapshot {
   background_paused: boolean
   authenticated: boolean
   one_session: boolean
+  account: AccountInfo | null
 }
 export type Unlisten = () => void
 export interface DesktopBridge {

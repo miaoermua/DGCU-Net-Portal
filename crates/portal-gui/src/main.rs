@@ -106,6 +106,7 @@ async fn connect(
             background_paused: false,
             authenticated: true,
             one_session: Settings::load().credential_store == CredentialStore::Memory,
+            account: None,
         }))
 }
 #[tauri::command]

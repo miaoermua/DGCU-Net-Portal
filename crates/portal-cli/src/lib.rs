@@ -124,6 +124,80 @@ struct OnlineLog {
     total: u64,
 }
 
+/// 用户自服务首页 `myinfo` 报告的套餐与到期时间。只提取界面要用的两项：
+/// 账号名和凭据不进入这个结构，也就不会随快照进入前端。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountInfo {
+    /// 原始套餐名，例如“电信100M包年”。
+    pub plan: String,
+    /// 由套餐名解析出的带宽档位，例如“100Mbps”；认不出写法时为 None。
+    pub bandwidth: Option<String>,
+    /// 到期日，只保留“年-月-日”。
+    pub expires_on: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MyInfo {
+    #[serde(default)]
+    myinfo: Vec<MyInfoField>,
+}
+#[derive(Deserialize)]
+struct MyInfoField {
+    name: String,
+    #[serde(default)]
+    value: String,
+}
+impl MyInfo {
+    fn value(&self, name: &str) -> Option<&str> {
+        self.myinfo
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| field.value.trim())
+            .filter(|value| !value.is_empty())
+    }
+    fn into_account(self) -> AccountInfo {
+        let plan = self.value("servername").unwrap_or_default().to_owned();
+        AccountInfo {
+            bandwidth: bandwidth_tier(&plan),
+            expires_on: self.value("expiretime").and_then(expires_on),
+            plan,
+        }
+    }
+}
+
+/// 取套餐名里第一个紧跟 `M`/`m`/`兆` 的数字作为带宽档位，输出 `{n}Mbps`。
+///
+/// 这里刻意不维护 20M/100M/300M 的档位白名单：日后后台新增 500M、1000M 之类
+/// 的档位无需改代码就能显示。认不出的写法（例如中文“千兆”）返回 None，
+/// 界面回退到原始套餐名，不会出现空白。
+fn bandwidth_tier(plan: &str) -> Option<String> {
+    let mut digits = String::new();
+    for character in plan.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+            continue;
+        }
+        if matches!(character, 'M' | 'm' | '兆') {
+            // 超出 u64 的数字串会解析失败，直接当作认不出。
+            if let Ok(mbps) = digits.parse::<u64>() {
+                if mbps > 0 {
+                    return Some(format!("{mbps}Mbps"));
+                }
+            }
+        }
+        digits.clear();
+    }
+    None
+}
+
+/// `expiretime` 形如“2027-10-01 00:00:00”，界面只要日期部分。
+fn expires_on(value: &str) -> Option<String> {
+    let date = value
+        .split(|c: char| c.is_whitespace() || c == 'T')
+        .next()?;
+    (!date.is_empty()).then(|| date.to_owned())
+}
+
 pub fn validate_url(value: &str) -> Result<Url, AppError> {
     let url = Url::parse(value)?;
     if !matches!(url.scheme(), "http" | "https")
@@ -241,6 +315,12 @@ impl PortalClient {
         .await?;
         self.logs.record(logging::Event::BackendAccepted);
         Ok(())
+    }
+    /// 读取套餐与到期时间。后台登录后调用，失败不影响会话查询。
+    pub async fn account(&self) -> Result<AccountInfo, AppError> {
+        let info: MyInfo = self.get("home.php?c=user&a=myinfo").await?;
+        self.logs.record(logging::Event::ReadAccount);
+        Ok(info.into_account())
     }
     pub async fn sessions(&self) -> Result<Vec<OnlineSession>, AppError> {
         let mut rows = Vec::new();

@@ -1,8 +1,8 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import type { DesktopBridge, InterfaceInfo, LogEntry, Session, Settings, Snapshot, UiPreferences, Unlisten } from './types'
+import type { AccountInfo, DesktopBridge, InterfaceInfo, LogEntry, Session, Settings, Snapshot, UiPreferences, Unlisten } from './types'
 
 export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/lfradius/', auth_url: 'http://172.18.100.65/lfradius/web/admin/login', probe_url: 'http://captive.apple.com/hotspot-detect.html', paip: '172.18.100.65', basip: '', probe_enabled: true, refresh_policy: 'one_minute', poll_jitter: 'low', traffic_enabled: false, credential_store: 'system', interface_name: '', bypass_proxy: true, username: '', reconnect_mode: 'disabled', run_mode: 'lightweight', service_enabled: false, show_sessions: false, log_enabled: false, theme_mode: 'system' })
-export const emptySnapshot = (): Snapshot => ({ sessions: [], rates: {}, selected_id: null, authenticated: false, one_session: true, background_paused: true, status: 'idle', message: '填写账号后连接校园网' })
+export const emptySnapshot = (): Snapshot => ({ sessions: [], rates: {}, selected_id: null, authenticated: false, one_session: true, background_paused: true, status: 'idle', message: '填写账号后连接校园网', account: null })
 export function normalizeSettings(value: Settings): Settings {
   const next = { ...value }
   if (next.credential_store === 'memory') { next.reconnect_mode = 'disabled'; next.service_enabled = false; next.username = '' }
@@ -23,9 +23,10 @@ const demoSessions = (): Session[] => [
   { radacctid: '90002', username: 'demo-student', framedipaddress: '192.0.2.20', acctstarttime: '', acctsessiontime: 1200, acctinputoctets: 102400, acctoutputoctets: 2097152 },
 ]
 const phaseLabels: Record<string, string> = { discovering: '正在寻找认证页', reading_form: '正在读取认证表单', authenticating: '正在提交认证', waiting_portal: '正在等待 Portal 认证', waiting_dial: '正在等待代拨结果', accepted: 'Portal 已确认成功' }
+const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps', expires_on: '2027-10-01' }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.4.8')
+  const version = ref('0.4.10')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
@@ -118,7 +119,7 @@ export function createPortalState(bridge?: DesktopBridge) {
           demoLog('auth.phase', status)
           phase.value = status; await new Promise(resolve => setTimeout(resolve, 300))
         }
-        receive({ ...emptySnapshot(), status: backendOnly ? 'backend' : 'accepted', message: '模拟流程完成，没有访问校园网', authenticated: true, one_session: saved.value.credential_store === 'memory', sessions: demoSessions(), selected_id: backendOnly ? null : '90001' })
+        receive({ ...emptySnapshot(), status: backendOnly ? 'backend' : 'accepted', message: '模拟流程完成，没有访问校园网', authenticated: true, one_session: saved.value.credential_store === 'memory', sessions: demoSessions(), selected_id: backendOnly ? null : '90001', account: demoAccount })
         page.value = 0; return
       }
       if ((!username.value || !password.value) && saved.value.credential_store === 'memory') { page.value = 1; notify('请填写账号和密码'); return }

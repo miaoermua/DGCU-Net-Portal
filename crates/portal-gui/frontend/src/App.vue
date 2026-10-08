@@ -40,6 +40,16 @@ watch(licensesOpen, async open => {
 })
 onUnmounted(() => { logDialog.value?.close(); sessionDialog.value?.close(); licenseDialog.value?.close() })
 const logTime = (value: number) => new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
+const account = computed(() => snapshot.value.account)
+const accountPlan = computed(() => account.value?.bandwidth || (account.value?.plan || '—'))
+const accountPlanNote = computed(() => !account.value ? '登录后台后读取' : account.value.plan && account.value.plan !== account.value.bandwidth ? account.value.plan : '认证系统未报告套餐')
+const accountExpiryNote = computed(() => !account.value ? '登录后台后读取' : account.value.expires_on ? '认证计费到期日' : '认证系统未报告到期时间')
+// 在线会话即在线设备：每条会话对应一台设备，未登录后台时无从判断，不显示 0。
+const deviceCount = computed(() => snapshot.value.authenticated ? String(snapshot.value.sessions.length) : '—')
+const deviceNote = computed(() => {
+  if (!snapshot.value.authenticated) return '登录后台后读取'
+  return snapshot.value.sessions.length ? '同一账号的在线设备' : '当前没有在线设备'
+})
 const selectedInterface = computed(() => networkInterfaces.value.find(item => item.name === draft.interface_name) || networkInterfaces.value.find(item => !item.internal && item.ipv4 && item.mac))
 const credentialStoreItems = ['系统凭证（推荐）', '配置文件（明文，仅测试）', '仅一次会话']
 const credentialStoreIndex = computed({ get: () => ({ system: 0, file: 1, memory: 2 }[draft.credential_store]), set: (value: number) => { draft.credential_store = (['system', 'file', 'memory'] as const)[value] ?? 'system' } })
@@ -114,12 +124,17 @@ const interfaceSummary = computed(() => {
           <MiuixCard class="metric"><span class="metric-label">↓ 区间下载速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.download_bps == null }">{{ saved.traffic_enabled ? formatRate(rate?.download_bps) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? (rate?.sample_seconds ? `最近 ${rate.sample_seconds} 秒平均` : '等待后台计费更新') : '设置中开启后台流量统计' }}</span></MiuixCard>
           <MiuixCard class="metric"><span class="metric-label">↑ 区间上传速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.upload_bps == null }">{{ saved.traffic_enabled ? formatRate(rate?.upload_bps) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '按后台计费时间计算' : '设置中开启后台流量统计' }}</span></MiuixCard>
         </div>
+        <div class="account-grid" aria-label="账号与设备信息">
+          <MiuixCard class="metric"><span class="metric-label">套餐</span><strong :class="{ waiting: !account?.bandwidth }">{{ accountPlan }}</strong><span class="metric-note">{{ accountPlanNote }}</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">过期时间</span><strong :class="{ waiting: !account?.expires_on }">{{ account?.expires_on || '—' }}</strong><span class="metric-note">{{ accountExpiryNote }}</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">设备数量</span><strong :class="{ waiting: !snapshot.authenticated }">{{ deviceCount }}</strong><span class="metric-note">{{ deviceNote }}</span></MiuixCard>
+        </div>
         <div v-if="saved.show_sessions" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixButton :disabled="locked" @click="connect(true)">仅登录后台</MiuixButton><MiuixIconButton class="refresh-icon" :disabled="locked || !snapshot.authenticated" aria-label="刷新会话" title="刷新会话" @click="refresh"><MiuixIcon :icon="Refresh" :size="18" /></MiuixIconButton></div></div>
         <MiuixCard v-if="saved.show_sessions" class="session-list">
           <div v-if="!snapshot.sessions.length" class="empty-state"><strong>暂无在线会话</strong><span>上线或登录后台后，即可查看和管理连接。</span><MiuixButton :disabled="locked" @click="page = 1">填写登录信息</MiuixButton></div>
           <label v-for="row in snapshot.sessions" v-else :key="row.radacctid" class="session-row" :class="{ selected: row.radacctid === snapshot.selected_id }"><input type="radio" name="session" :checked="row.radacctid === snapshot.selected_id" :disabled="locked" :aria-label="`选择会话 ${row.radacctid}`" @change="select(row.radacctid)"><div class="session-identity"><strong>{{ mask(row.username) }} <span v-if="row.radacctid === snapshot.selected_id" class="selected-tag">已选择</span></strong><span>{{ row.framedipaddress || 'IP 未上报' }} · #{{ row.radacctid }}</span></div><span class="session-duration">{{ formatDuration(row.acctsessiontime) }}</span></label>
         </MiuixCard>
-        <div class="overview-footer"><span>{{ demo ? '模拟数据 · 不连接校园网' : '后台计费数据 · 仅读取所选网卡 IP / MAC，不采集网卡流量' }}</span><div class="row-actions"><MiuixButton v-if="demo" :disabled="locked || !snapshot.sessions.length" @click="simulateUpdate">模拟流量更新</MiuixButton><MiuixButton v-if="saved.show_sessions" class="clear-session-button" :disabled="locked" aria-label="清除本地会话" title="清除本地会话" @click="forget"><MiuixIcon :icon="Clear" :size="16" /><span>清除本地会话</span></MiuixButton><MiuixButton v-if="!snapshot.authenticated" :disabled="locked" @click="page = 1">登录设置</MiuixButton></div></div>
+        <div class="overview-footer"><span>{{ demo ? '模拟数据 · 不连接校园网' : '后台计费数据 · 仅读取所选网卡 IP' }}</span><div class="row-actions"><MiuixButton v-if="demo" :disabled="locked || !snapshot.sessions.length" @click="simulateUpdate">模拟流量更新</MiuixButton><MiuixButton v-if="saved.show_sessions" class="clear-session-button" :disabled="locked" aria-label="清除本地会话" title="清除本地会话" @click="forget"><MiuixIcon :icon="Clear" :size="16" /><span>清除本地会话</span></MiuixButton><MiuixButton v-if="!snapshot.authenticated" :disabled="locked" @click="page = 1">登录设置</MiuixButton></div></div>
       </section>
 
       <section v-else-if="page === 1" class="settings-page" aria-label="偏好设置">

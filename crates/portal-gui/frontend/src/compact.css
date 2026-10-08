@@ -89,6 +89,8 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .picker-list { display: grid; gap: 8px; margin-bottom: 16px; max-height: 240px; overflow: auto; }.picker-session { display: flex; flex-direction: column; gap: 5px; text-align: left; border: 0; border-radius: 10px; background: var(--m-color-secondary-container); color: var(--m-color-on-background); padding: 12px; cursor: pointer; }.picker-session strong { font-size: 13px; }.picker-session span { font-size: 11px; color: var(--m-color-on-surface-variant-summary); }
 .disconnect-button:not(:disabled) { color: var(--m-color-error); }
 .traffic-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+/* 套餐 / 过期时间 / 设备数量，跟随流量卡片的样式但排成三列。 */
+.account-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
 .metric > .m-card { display: flex; flex-direction: column; padding: 14px 12px 12px; gap: 7px; width: 100%; }
 .metric-label { font-size: 11px; color: var(--m-color-on-surface-variant-summary); }
 .metric strong { display: flex; align-items: center; min-height: 25px; font-size: 20px; line-height: 25px; font-weight: 650; letter-spacing: -.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -141,6 +143,6 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .confirm-dialog::backdrop { background: var(--m-color-window-dimming); }
 .confirm-dialog h2 { font-size: 17px; }.confirm-dialog p { color: var(--m-color-on-surface-variant-summary); font-size: 13px; line-height: 1.8; margin: 14px 0 20px; }.dialog-actions { display: flex; gap: 9px; justify-content: flex-end; }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; clip: rect(0, 0, 0, 0); overflow: hidden; white-space: nowrap; }
-@media (max-width: 680px) { .portal-app { padding: 14px; }.connection-card > .m-card { padding: 14px; }.traffic-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.metric > .m-card { padding: 11px 12px; }.metric-note { display: none; }.header-actions { gap: 4px; }.privacy-tag { display: none; } }
+@media (max-width: 680px) { .portal-app { padding: 14px; }.connection-card > .m-card { padding: 14px; }.traffic-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.account-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.metric > .m-card { padding: 11px 12px; }.metric-note { display: none; }.header-actions { gap: 4px; }.privacy-tag { display: none; } }
 @media (max-width: 480px) { .connection-card > .m-card { align-items: stretch; flex-direction: column; }.connection-actions { justify-content: flex-end; }.overview-footer { flex-wrap: wrap; }.credential-fields, .advanced-fields > .m-card { grid-template-columns: 1fr; }.settings-footer > span { display: none; }.settings-footer { justify-content: flex-end; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }

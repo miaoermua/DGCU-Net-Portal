@@ -31,6 +31,7 @@ pub enum Event {
     PollDial,
     Accepted,
     ReadSessions,
+    ReadAccount,
     SelectSession,
     Disconnect,
     Disconnected,
@@ -124,6 +125,7 @@ impl Event {
             Self::PollDial => ("info", "dial.poll", "查询代拨状态"),
             Self::Accepted => ("info", "portal.accepted", "认证系统已确认成功"),
             Self::ReadSessions => ("info", "sessions.read", "已读取后台会话列表"),
+            Self::ReadAccount => ("info", "account.read", "已读取账号套餐与到期时间"),
             Self::SelectSession => ("info", "session.select", "已选择要管理的会话"),
             Self::Disconnect => ("info", "session.disconnect", "正在请求指定会话下线"),
             Self::Disconnected => (

@@ -160,6 +160,12 @@ impl Mock {
                     } else {
                         r#"{"v":{"success":0},"d":[]}"#.into()
                     }
+                } else if path.contains("myinfo") {
+                    if request.contains("backend=synthetic") {
+                        r#"{"v":{"success":1},"d":{"myinfo":[{"name":"user","value":"202642710133"},{"name":"servername","value":"电信100M包年"},{"name":"expiretime","value":"2027-10-01 00:00:00"}]}}"#.into()
+                    } else {
+                        r#"{"v":{"success":0},"d":[]}"#.into()
+                    }
                 } else if mode == "fake" {
                     "<div>请登录</div>".into()
                 } else {
@@ -305,6 +311,48 @@ fn parse_har_numbers_and_missing_ip() {
     let row:OnlineSession=serde_json::from_value(serde_json::json!({"radacctid":"s","username":"u","acctstarttime":"t","acctsessiontime":"60","framedipaddress":"","acctinputoctets":"7","acctoutputoctets":12})).unwrap();
     assert_eq!(row.acctsessiontime, 60);
     assert_eq!(row.framedipaddress, None);
+}
+#[test]
+fn bandwidth_tier_covers_known_and_future_plans() {
+    assert_eq!(bandwidth_tier("电信100M包年").as_deref(), Some("100Mbps"));
+    assert_eq!(bandwidth_tier("电信20M包月").as_deref(), Some("20Mbps"));
+    assert_eq!(bandwidth_tier("电信300M包年").as_deref(), Some("300Mbps"));
+    // 后台日后新增档位时无需改代码。
+    assert_eq!(bandwidth_tier("电信500M包年").as_deref(), Some("500Mbps"));
+    assert_eq!(bandwidth_tier("电信1000M包年").as_deref(), Some("1000Mbps"));
+    assert_eq!(bandwidth_tier("电信100兆包年").as_deref(), Some("100Mbps"));
+    // 只有紧跟 M 的数字才算档位，年限不会被误读。
+    assert_eq!(bandwidth_tier("2年100M包年").as_deref(), Some("100Mbps"));
+    // 认不出的写法返回 None，由界面回退到原始套餐名。
+    assert_eq!(bandwidth_tier("电信千兆包年"), None);
+    assert_eq!(bandwidth_tier(""), None);
+}
+#[test]
+fn expires_on_keeps_the_date_only() {
+    assert_eq!(
+        expires_on("2027-10-01 00:00:00").as_deref(),
+        Some("2027-10-01")
+    );
+    assert_eq!(
+        expires_on("2027-10-01T00:00:00").as_deref(),
+        Some("2027-10-01")
+    );
+    assert_eq!(expires_on(""), None);
+}
+#[tokio::test]
+async fn account_info_needs_the_backend_cookie() {
+    let mock = Mock::new("direct");
+    let client = PortalClient::new(&mock.base).unwrap();
+    // 未登录后台时读不到，但这是个可忽略的普通错误。
+    assert!(client.account().await.is_err());
+    client
+        .login("test-user", "secret-placeholder")
+        .await
+        .unwrap();
+    let account = client.account().await.unwrap();
+    assert_eq!(account.plan, "电信100M包年");
+    assert_eq!(account.bandwidth.as_deref(), Some("100Mbps"));
+    assert_eq!(account.expires_on.as_deref(), Some("2027-10-01"));
 }
 #[test]
 fn refuses_ambiguous_or_old_session() {
