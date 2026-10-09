@@ -135,6 +135,8 @@ pub struct AccountInfo {
     pub bandwidth: Option<String>,
     /// 到期日，只保留“年-月-日”。
     pub expires_on: Option<String>,
+    /// 后台把未订购账号的套餐名写成“学生”：界面显示 Free，并说明只能在公共区域使用（例如：图书馆）。
+    pub unpurchased: bool,
 }
 
 #[derive(Deserialize)]
@@ -158,8 +160,10 @@ impl MyInfo {
     }
     fn into_account(self) -> AccountInfo {
         let plan = self.value("servername").unwrap_or_default().to_owned();
+        let bandwidth = bandwidth_tier(&plan);
         AccountInfo {
-            bandwidth: bandwidth_tier(&plan),
+            unpurchased: unpurchased_plan(&plan, bandwidth.as_deref()),
+            bandwidth,
             expires_on: self.value("expiretime").and_then(expires_on),
             plan,
         }
@@ -189,6 +193,14 @@ fn bandwidth_tier(plan: &str) -> Option<String> {
         digits.clear();
     }
     None
+}
+
+/// 未订购账号的套餐名被后台写成“学生”：既没有带宽档位，也没有订购关系。
+///
+/// 要求带宽同时认不出来才判定：日后后台若出现“学生100M”这类带档位的写法，
+/// 会按已订购处理，不会被这句文案冤枉。
+fn unpurchased_plan(plan: &str, bandwidth: Option<&str>) -> bool {
+    bandwidth.is_none() && plan.contains("学生")
 }
 
 /// `expiretime` 形如“2027-10-01 00:00:00”，界面只要日期部分。

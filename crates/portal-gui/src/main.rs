@@ -10,6 +10,8 @@ use portal_cli::{
 use tauri::{AppHandle, Emitter, Manager, State};
 use zeroize::Zeroizing;
 
+mod update;
+
 struct AppState {
     demo: bool,
 }
@@ -252,6 +254,11 @@ fn open_external(url: String) -> Result<(), String> {
         .map(|_| ())
         .map_err(|_| "无法打开系统浏览器".into())
 }
+/// 只比对 GitHub Releases 上的版本号；下载与安装留给用户自己的渠道，不在这里代劳。
+#[tauri::command]
+async fn check_update() -> Result<update::UpdateStatus, String> {
+    update::check().await
+}
 /// 彻底退出：停下 daemon，必要时结束登录启动任务。只退界面走托盘菜单，不经过这里。
 #[tauri::command]
 async fn exit_app(app: AppHandle, _state: State<'_, AppState>) -> Result<(), String> {
@@ -360,6 +367,7 @@ fn main() {
             open_auth_site,
             open_repository,
             open_external,
+            check_update,
             exit_app
         ])
         .run(tauri::generate_context!())

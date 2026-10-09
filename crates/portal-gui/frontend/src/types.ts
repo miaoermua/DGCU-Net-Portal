@@ -46,6 +46,8 @@ export interface AccountInfo {
   plan: string
   bandwidth: string | null
   expires_on: string | null
+  // 后台把未订购账号的套餐名写成“学生”，此时卡片显示 Free，而不是回退成原始套餐名。
+  unpurchased: boolean
 }
 export type Reachability = 'reachable' | 'captive' | 'unreachable'
 export interface Diagnostic {
@@ -67,6 +69,14 @@ export interface Snapshot {
   one_session: boolean
   account: AccountInfo | null
 }
+export interface UpdateInfo {
+  current: string
+  latest: string
+  newer: boolean
+  url: string
+}
+// idle：还没查过（演示模式停在这一步）；checking：正在查；latest：已是最新；available：有新版本；error：超时或网络失败。
+export type UpdatePhase = 'idle' | 'checking' | 'latest' | 'available' | 'error'
 export type Unlisten = () => void
 export interface DesktopBridge {
   core: { invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> }

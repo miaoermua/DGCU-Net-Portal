@@ -1,5 +1,5 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import type { AccountInfo, DesktopBridge, Diagnostic, InterfaceInfo, LogEntry, Rate, Session, Settings, Snapshot, UiPreferences, Unlisten } from './types'
+import type { AccountInfo, DesktopBridge, Diagnostic, InterfaceInfo, LogEntry, Rate, Session, Settings, Snapshot, UiPreferences, Unlisten, UpdateInfo, UpdatePhase } from './types'
 
 export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/lfradius/', auth_url: 'http://172.18.100.65/lfradius/web/admin/login', probe_url: 'http://captive.apple.com/hotspot-detect.html', paip: '172.18.100.65', basip: '', probe_enabled: true, refresh_policy: 'one_minute', poll_jitter: 'low', traffic_enabled: false, credential_store: 'system', interface_name: '', bypass_proxy: true, username: '', reconnect_mode: 'disabled', run_mode: 'lightweight', service_enabled: false, show_sessions: false, log_enabled: false, theme_mode: 'system' })
 export const emptySnapshot = (): Snapshot => ({ sessions: [], rates: {}, selected_id: null, authenticated: false, one_session: true, background_paused: true, status: 'idle', message: '填写账号后连接校园网', account: null })
@@ -25,17 +25,20 @@ const demoSessions = (): Session[] => [
   { radacctid: '90002', username: 'demo-student', framedipaddress: '192.0.2.20', acctstarttime: '', acctsessiontime: 1200, acctinputoctets: 102400, acctoutputoctets: 2097152 },
 ]
 const phaseLabels: Record<string, string> = { discovering: '正在寻找认证页', reading_form: '正在读取认证表单', authenticating: '正在提交认证', waiting_portal: '正在等待 Portal 认证', waiting_dial: '正在等待代拨结果', accepted: 'Portal 已确认成功' }
-const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps', expires_on: '2027-10-01' }
+const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps', expires_on: '2027-10-01', unpurchased: false }
 const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet_direct: 'reachable', internet: 'reachable', internet_latency_ms: 38 }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.5.0')
+  const version = ref('0.5.3')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
   const preferencesBusy = ref(false), logEntries = ref<LogEntry[]>([]), logsOpen = ref(false), sessionPickerOpen = ref(false)
   const diagnostic = ref<Diagnostic | null>(null), diagnosing = ref(false)
+  const updatePhase = ref<UpdatePhase>('idle'), updateInfo = ref<UpdateInfo | null>(null), updateError = ref('')
   let logEpoch = 0, demoSequence = 0, logTimer: ReturnType<typeof setInterval> | undefined, snapshotTimer: ReturnType<typeof setInterval> | undefined
+  // 上一次拿到更新结果的时间，用来丢弃短时间内重复的检查。
+  let updateCheckedAt = 0
   // 上一次真正算出来的区间速率。后台计费未更新时接口会返回空速率，
   // 此时继续展示这份结果，屏幕上的数值不会退回“等待更新”。
   let lastRate: { id: string; rate: Rate } | null = null
@@ -230,6 +233,25 @@ export function createPortalState(bridge?: DesktopBridge) {
       else if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
     })
   }
+  // 只查版本号，不做下载安装：Arch 包的二进制归 pacman 记账，AppImage / zip 也要用户自己挑，
+  // 所以拿到结果后交给系统浏览器打开 Release 页面就够了。
+  async function checkUpdate() {
+    if (demo.value || !bridge || updatePhase.value === 'checking') return
+    // 关于页来回切换时不必反复请求：一分钟内的结果直接复用，未认证的 GitHub API 限额只有 60 次/小时/IP。
+    if (updateInfo.value && Date.now() - updateCheckedAt < 60_000) return
+    updatePhase.value = 'checking'
+    try {
+      const info = await bridge.core.invoke<UpdateInfo>('check_update')
+      if (disposed) return
+      updateCheckedAt = Date.now(); updateInfo.value = info
+      updatePhase.value = info.newer ? 'available' : 'latest'
+    } catch (error) {
+      // Rust 侧的 10 秒超时和网络错误都带着说明返回，原样展示给用户。
+      if (disposed) return
+      updateInfo.value = null; updateError.value = String(error); updatePhase.value = 'error'
+    }
+  }
+  async function openUpdate() { if (updateInfo.value?.url) await openUrl(updateInfo.value.url) }
   async function refreshInterfaces() {
     if (!bridge || demo.value || !ready.value) return
     try { networkInterfaces.value = await bridge.core.invoke<InterfaceInfo[]>('list_interfaces') }
@@ -278,7 +300,9 @@ export function createPortalState(bridge?: DesktopBridge) {
     if (logTimer) clearInterval(logTimer)
     if (open) logTimer = setInterval(() => { void readLogs() }, 1000)
   })
-  function dispose() { disposed = true; stopWatch(); stopLogWatch(); if (logTimer) clearInterval(logTimer); if (snapshotTimer) clearInterval(snapshotTimer); logEpoch++; logEntries.value = []; unlisteners.splice(0).forEach(stop => stop()); clearFields(); answer(false) }
-  return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, serviceRunning, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces, hasUnsavedConnectionSettings }
+  // 进入关于页（page 2）时自动检查一次更新。
+  const stopUpdateWatch = watch(page, value => { if (value === 2) void checkUpdate() })
+  function dispose() { disposed = true; stopWatch(); stopLogWatch(); stopUpdateWatch(); if (logTimer) clearInterval(logTimer); if (snapshotTimer) clearInterval(snapshotTimer); logEpoch++; logEntries.value = []; unlisteners.splice(0).forEach(stop => stop()); clearFields(); answer(false) }
+  return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, serviceRunning, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, openUrl, updatePhase, updateInfo, updateError, checkUpdate, openUpdate, refreshInterfaces, hasUnsavedConnectionSettings }
 }
 export function usePortal() { const state = createPortalState(window.__TAURI__); onMounted(state.initialize); onUnmounted(state.dispose); return state }

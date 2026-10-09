@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { MotionConfig } from 'motion-v'
-import { MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixIcon, MiuixIconButton, MiuixProgressIndicator, MiuixSwitchPreference, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
-import { Clear, Close, File, Forward, Info, Link, Refresh, SearchDevice, Settings as SettingsIcon } from 'miuix-vue/icons'
+import { MiuixArrowPreference, MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixIcon, MiuixIconButton, MiuixProgressIndicator, MiuixSwitchPreference, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
+import { Clear, Close, File, Forward, Info, Link, Refresh, SearchDevice, Settings as SettingsIcon, Update } from 'miuix-vue/icons'
 import { usePortal, formatBytes, formatRate, formatDuration, mask } from './usePortal'
 import { licenseGroups, licenseNotice } from './licenses'
 import xiaoweiLogo from './assets/xiaowei.png'
 
-const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, refreshInterfaces, close, hasUnsavedConnectionSettings, serviceRunning } = usePortal()
+const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, updatePhase, updateInfo, updateError, checkUpdate, openUpdate, refreshInterfaces, close, hasUnsavedConnectionSettings, serviceRunning } = usePortal()
 watch(() => saved.value.theme_mode, value => setThemeMode(value), { immediate: true })
 const styleNonce = document.querySelector<HTMLStyleElement>('#motion-csp')?.nonce || undefined
 const locked = computed(() => busy.value || !ready.value)
@@ -46,9 +46,25 @@ watch(licensesOpen, async open => {
 onUnmounted(() => { logDialog.value?.close(); sessionDialog.value?.close(); licenseDialog.value?.close() })
 const logTime = (value: number) => new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
 const account = computed(() => snapshot.value.account)
-const accountPlan = computed(() => account.value?.bandwidth || (account.value?.plan || '—'))
-const accountPlanNote = computed(() => !account.value ? '登录后台后读取' : account.value.plan && account.value.plan !== account.value.bandwidth ? account.value.plan : '认证系统未报告套餐')
-const accountExpiryNote = computed(() => !account.value ? '登录后台后读取' : account.value.expires_on ? '认证计费到期日' : '认证系统未报告到期时间')
+// 未订购的账号后台把套餐名写成“学生”：卡片直接说明 Free，不显示套餐名，也不套“读取中”的灰字。
+const accountPlan = computed(() => { const value = account.value; return !value ? '—' : value.unpurchased ? 'Free' : value.bandwidth || value.plan || '—' })
+const accountPlanNote = computed(() => {
+  const value = account.value
+  if (!value) return '登录后台后读取'
+  if (value.unpurchased) return '未购买套餐，仅限公共区域'
+  return value.plan && value.plan !== value.bandwidth ? value.plan : '认证系统未报告套餐'
+})
+const accountExpiryNote = computed(() => {
+  const value = account.value
+  if (!value) return '登录后台后读取'
+  if (value.expires_on) return '认证计费到期日'
+  // 未订购本来就没有到期时间，不写成“认证系统没报告”，免得看起来像读取失败。
+  return value.unpurchased ? '未购买套餐，无到期时间' : '认证系统未报告到期时间'
+})
+// 未订购账号只在公共区域能上网：认证成功后提示一次；套餐信息晚于状态到达时也能补上。
+watch([isOnline, () => !!account.value?.unpurchased], ([online, unpurchased]) => {
+  if (online && unpurchased) notice.value = '当前未购买套餐，使用环境仅限公共区域。'
+})
 // 在线会话即在线设备：每条会话对应一台设备，未登录后台时无从判断，不显示 0。
 const deviceCount = computed(() => snapshot.value.authenticated ? String(snapshot.value.sessions.length) : '—')
 const deviceNote = computed(() => {
@@ -120,6 +136,20 @@ const interfaceSummary = computed(() => {
   const address = `${selectedInterface.value.ipv4 || '无 IPv4'} · ${selectedInterface.value.mac || '无 MAC'}`
   return draft.interface_name ? `${selectedInterface.value.name} · ${address}` : `自动选择 · ${address}`
 })
+// 关于页的更新提示：只说清“有没有新版本、去哪里看”，打开的动作交给系统浏览器完成。
+// 不在这里下载或替换自身，Arch 包等渠道仍由用户自己的包管理器更新。
+const updateTitle = computed(() => (updatePhase.value === 'available' && updateInfo.value ? `发现新版本 ${updateInfo.value.latest}` : '检查更新'))
+const updateSummary = computed(() => {
+  switch (updatePhase.value) {
+    case 'checking': return '正在连接 GitHub，10 秒无响应即停止'
+    case 'available': return updateInfo.value ? `当前 ${updateInfo.value.current} · 请在你的平台或系统包管理器里完成更新` : ''
+    case 'latest': return `已是最新版本 ${updateInfo.value?.current ?? version.value}`
+    case 'error': return updateError.value
+    default: return demo ? '演示模式不访问 GitHub' : '进入本页时自动检查一次'
+  }
+})
+// 整行点击：有新版本就打开 Release 页面，检测失败时就地重试。
+function updateAction() { return updatePhase.value === 'error' ? checkUpdate() : openUpdate() }
 </script>
 
 <template>
@@ -141,8 +171,8 @@ const interfaceSummary = computed(() => {
           <MiuixCard class="metric"><span class="metric-label">↑ 区间上传速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.upload_bps == null }">{{ saved.traffic_enabled ? formatRate(rate?.upload_bps) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '按后台计费时间计算' : '设置中开启后台流量统计' }}</span></MiuixCard>
         </div>
         <div class="account-grid" aria-label="账号、设备与网络检测">
-          <MiuixCard class="metric"><span class="metric-label">套餐</span><strong :class="{ waiting: !account?.bandwidth }">{{ accountPlan }}</strong><span class="metric-note">{{ accountPlanNote }}</span></MiuixCard>
-          <MiuixCard class="metric"><span class="metric-label">过期时间</span><strong :class="{ waiting: !account?.expires_on }">{{ account?.expires_on || '—' }}</strong><span class="metric-note">{{ accountExpiryNote }}</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">套餐</span><strong :class="{ waiting: !account?.bandwidth && !account?.unpurchased }">{{ accountPlan }}</strong><span class="metric-note">{{ accountPlanNote }}</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">过期时间</span><strong :class="{ waiting: !account?.expires_on && !account?.unpurchased }">{{ account?.expires_on || '—' }}</strong><span class="metric-note">{{ accountExpiryNote }}</span></MiuixCard>
           <MiuixCard class="metric"><span class="metric-label">设备数量</span><strong :class="{ waiting: !snapshot.authenticated }">{{ deviceCount }}</strong><span class="metric-note">{{ deviceNote }}</span></MiuixCard>
           <MiuixCard class="metric clickable" role="button" tabindex="0" :aria-busy="diagnosing" :aria-label="`外网延迟：${diagnosing ? '正在检测' : diagnoseStatus.value}，点击检测一次连通性`" @click="diagnose" @keydown.enter.prevent="diagnose" @keydown.space.prevent="diagnose"><span class="metric-label">外网延迟</span><strong :class="{ waiting: diagnoseStatus.waiting }">{{ diagnosing ? '检测中' : diagnoseStatus.value }}</strong><span class="metric-note">{{ diagnosing ? '正在检测认证服务器与外网' : diagnoseStatus.note }}</span></MiuixCard>
         </div>
@@ -195,7 +225,23 @@ const interfaceSummary = computed(() => {
         <details class="advanced-settings"><summary>连接地址和探测参数</summary><MiuixCard class="advanced-fields"><label class="field">HTTP 探测地址<input v-model="draft.probe_url" :disabled="settingsLocked" spellcheck="false"></label><label class="field">认证后台<input v-model="draft.auth_url" :disabled="settingsLocked" spellcheck="false"></label><label class="field">认证服务器<input v-model="draft.server" :disabled="settingsLocked" spellcheck="false"></label><label class="field">Portal URL（可选）<input v-model="portalUrl" :disabled="locked" autocomplete="off" spellcheck="false" placeholder="留空使用 DGCU 模板，或粘贴当前网络的认证网址"></label><label class="field">paip（Portal 参数）<input v-model="draft.paip" :disabled="settingsLocked" spellcheck="false" placeholder="172.18.100.65"></label><label class="field">basip 覆盖值（可选）<input v-model="draft.basip" :disabled="settingsLocked" spellcheck="false" placeholder="留空使用认证页返回值"></label><p class="advanced-note">paip 默认是 172.18.100.65，会写入 Portal URL 查询参数。basip 默认留空，程序会使用认证入口表单返回的隐藏值；只有填写覆盖值时才替换服务器返回值。两者都必须是 IP 地址。</p></MiuixCard></details>
       </section>
 
-      <section v-else class="about-page" aria-label="关于"><MiuixCard class="about-card"><div class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><div><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></div></div><MiuixBasicComponent title="GitHub 仓库" summary="miaoermua/DGCU-Net-Portal" :disabled="locked" clickable @click="openRepository"><template #start><svg class="about-entry-icon github-entry-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2.5a9.5 9.5 0 0 0-3 18.52c.47.09.64-.2.64-.45v-1.6c-2.6.57-3.15-1.1-3.15-1.1-.43-1.1-1.05-1.4-1.05-1.4-.86-.59.07-.58.07-.58.95.07 1.45.98 1.45.98.85 1.45 2.23 1.03 2.78.79.09-.62.33-1.03.6-1.27-2.08-.24-4.27-1.04-4.27-4.63 0-1.02.36-1.85.98-2.5-.1-.24-.42-1.2.09-2.48 0 0 .8-.25 2.62.96a9.1 9.1 0 0 1 4.77 0c1.82-1.21 2.62-.96 2.62-.96.51 1.28.19 2.24.09 2.48.61.65.98 1.48.98 2.5 0 3.6-2.2 4.39-4.28 4.63.34.29.64.84.64 1.7v2.48c0 .25.17.54.65.45A9.5 9.5 0 0 0 12 2.5Z"/></svg></template><template #end><span class="about-entry-arrow" aria-hidden="true">↗</span></template></MiuixBasicComponent><MiuixBasicComponent title="开源软件声明" :summary="`${licenseCount} 个开源项目 · 名称 / 地址 / 许可证`" :disabled="locked" clickable @click="licensesOpen = true"><template #start><MiuixIcon class="about-entry-icon" :icon="File" :size="20" /></template><template #end><span class="about-entry-arrow" aria-hidden="true">›</span></template></MiuixBasicComponent></MiuixCard></section>
+      <section v-else class="about-page" aria-label="关于">
+        <!-- 品牌区当作页头放在卡片外面，卡片只负责分组，避免“卡片里再套一层容器”的观感。 -->
+        <header class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><div><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></div></header>
+        <MiuixCard class="about-card">
+          <!-- 更新提示：进入本页自动查一次 GitHub Releases。检测中沿用状态卡的 miuix 无限转圈；
+               失败时左侧换成 Refresh 图标，点图标或整行都原地重试；发现新版本时按钮带 Update 图标，
+               点击只打开 Release 页面，下载与安装由用户自己选渠道。 -->
+          <MiuixBasicComponent class="update-entry" :class="{ 'update-entry--available': updatePhase === 'available' }" :title="updateTitle" :summary="updateSummary" :summary-color="updatePhase === 'error' ? 'var(--m-color-error)' : undefined" :clickable="updatePhase === 'available' || updatePhase === 'error'" @click="updateAction">
+            <template #start><span v-if="updatePhase === 'checking'" class="update-spinner"><MiuixProgressIndicator type="infinite" :size="20" color="currentColor" /></span><button v-else-if="updatePhase === 'error'" class="update-retry" type="button" title="重试检测更新" aria-label="重试检测更新" @click.stop="checkUpdate"><MiuixIcon class="about-entry-icon" :icon="Refresh" :size="20" /></button><MiuixIcon v-else class="about-entry-icon" :icon="Update" :size="20" /></template>
+            <template #end><MiuixButton v-if="updatePhase === 'available'" class="update-button" type="primary" @click.stop="openUpdate"><MiuixIcon :icon="Update" :size="16" /><span>更新</span></MiuixButton><MiuixButton v-else-if="updatePhase === 'error'" class="update-button" @click.stop="checkUpdate"><MiuixIcon :icon="Refresh" :size="16" /><span>重试</span></MiuixButton><span v-else-if="updatePhase === 'latest'" class="update-tag">已是最新</span></template>
+          </MiuixBasicComponent>
+          <!-- 箭头行用 miuix 自己的 ArrowPreference：箭头图标、点击反馈、禁用配色都由组件给出。
+               行之间不加分隔线，miuix 的列表本来就是靠行间距＋圆角卡片分组的。 -->
+          <MiuixArrowPreference title="GitHub 仓库" summary="miaoermua/DGCU-Net-Portal" :disabled="locked" @click="openRepository"><template #start><svg class="about-entry-icon github-entry-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2.5a9.5 9.5 0 0 0-3 18.52c.47.09.64-.2.64-.45v-1.6c-2.6.57-3.15-1.1-3.15-1.1-.43-1.1-1.05-1.4-1.05-1.4-.86-.59.07-.58.07-.58.95.07 1.45.98 1.45.98.85 1.45 2.23 1.03 2.78.79.09-.62.33-1.03.6-1.27-2.08-.24-4.27-1.04-4.27-4.63 0-1.02.36-1.85.98-2.5-.1-.24-.42-1.2.09-2.48 0 0 .8-.25 2.62.96a9.1 9.1 0 0 1 4.77 0c1.82-1.21 2.62-.96 2.62-.96.51 1.28.19 2.24.09 2.48.61.65.98 1.48.98 2.5 0 3.6-2.2 4.39-4.28 4.63.34.29.64.84.64 1.7v2.48c0 .25.17.54.65.45A9.5 9.5 0 0 0 12 2.5Z"/></svg></template></MiuixArrowPreference>
+          <MiuixArrowPreference title="开源软件声明" :summary="`${licenseCount} 个开源项目 · 名称 / 地址 / 许可证`" :disabled="locked" @click="licensesOpen = true"><template #start><MiuixIcon class="about-entry-icon" :icon="File" :size="20" /></template></MiuixArrowPreference>
+        </MiuixCard>
+      </section>
     </main>
     <dialog ref="dialog" class="confirm-dialog" aria-labelledby="dialog-title" @cancel.prevent="answer(false)"><template v-if="confirmation"><h2 id="dialog-title">{{ confirmation.title }}</h2><p>{{ confirmation.text }}</p><div class="dialog-actions"><MiuixButton @click="answer(false)">取消</MiuixButton><MiuixButton type="primary" @click="answer(true)">{{ confirmation.label }}</MiuixButton></div></template></dialog>
     <dialog ref="logDialog" class="logs-dialog" aria-labelledby="logs-title" @cancel.prevent="logsOpen = false"><div class="logs-heading"><h2 id="logs-title">portal-cli 日志 <span v-if="demo" class="mode-badge">模拟</span></h2><MiuixIconButton class="dialog-icon-button" aria-label="关闭日志" title="关闭日志" @click="logsOpen = false"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton></div><p class="dialog-caption">{{ demo ? '仅为 Demo 操作生成的模拟事件。' : '当前 GUI 进程与 CLI 共用认证核心的日志，不读取其他 CLI 进程。' }} 不记录账号、密码、URL 或 Cookie。</p><div class="logs-body" role="log" aria-label="客户端日志" aria-live="off"><p v-if="!logEntries.length" class="logs-empty">暂无日志，开启后执行认证操作即可查看。</p><div v-for="entry in logEntries" :key="entry.sequence" class="log-line"><time>{{ logTime(entry.timestamp_ms) }}</time><span class="log-level" :class="entry.level">{{ entry.level.toUpperCase() }}</span><code>{{ entry.code }}</code><span>{{ entry.message }}</span></div></div><div class="logs-footer"><span>{{ logEntries.length }} / 300 条 · 关闭日志开关即清空</span><MiuixIconButton class="dialog-icon-button" aria-label="清空日志" title="清空日志" @click="clearLogs"><MiuixIcon :icon="Clear" :size="18" /></MiuixIconButton></div></dialog>

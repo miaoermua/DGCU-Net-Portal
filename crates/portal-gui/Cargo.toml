@@ -15,6 +15,7 @@ serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true
 webbrowser.workspace = true
+reqwest.workspace = true
 directories.workspace = true
 tauri-plugin-single-instance = "2"
 

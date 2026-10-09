@@ -328,6 +328,27 @@ fn bandwidth_tier_covers_known_and_future_plans() {
     assert_eq!(bandwidth_tier(""), None);
 }
 #[test]
+fn student_plan_is_the_unpurchased_one() {
+    // 后台给未订购账号的套餐名就是“学生”，本来也认不出带宽档位。
+    assert!(unpurchased_plan("学生", None));
+    assert!(unpurchased_plan("学生套餐", None));
+    // 能认出带宽的一律按已订购处理，包括日后可能出现的带档位写法。
+    assert!(!unpurchased_plan(
+        "电信100M包年",
+        bandwidth_tier("电信100M包年").as_deref()
+    ));
+    assert!(!unpurchased_plan(
+        "学生100M包年",
+        bandwidth_tier("学生100M包年").as_deref()
+    ));
+    // 只是认不出写法的套餐名照旧显示原样，不能被当成未订购。
+    assert!(!unpurchased_plan(
+        "电信千兆包年",
+        bandwidth_tier("电信千兆包年").as_deref()
+    ));
+    assert!(!unpurchased_plan("", None));
+}
+#[test]
 fn expires_on_keeps_the_date_only() {
     assert_eq!(
         expires_on("2027-10-01 00:00:00").as_deref(),
@@ -353,6 +374,7 @@ async fn account_info_needs_the_backend_cookie() {
     assert_eq!(account.plan, "电信100M包年");
     assert_eq!(account.bandwidth.as_deref(), Some("100Mbps"));
     assert_eq!(account.expires_on.as_deref(), Some("2027-10-01"));
+    assert!(!account.unpurchased);
 }
 #[test]
 fn refuses_ambiguous_or_old_session() {

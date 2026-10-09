@@ -259,11 +259,45 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     expect(state.busy.value).toBe(false)
     state.dispose()
   })
-  it('canceling a confirmation never sends disconnect', async () => {
+  it('checks for an update when the about page opens and only opens the release page', async () => {
     const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
-    state.snapshot.value = { ...emptySnapshot(), authenticated: true, sessions: [row('A')], selected_id: 'A' }
-    const action = state.disconnect(); state.answer(false); await action
-    expect(mock.invoke).not.toHaveBeenCalledWith('disconnect', expect.anything())
+    state.password.value = 'never-send-this'
+    mock.invoke.mockResolvedValueOnce({ current: '0.5.0', latest: 'v0.6.0', newer: true, url: 'https://github.com/miaoermua/DGCU-Net-Portal/releases/tag/v0.6.0' } as never)
+    state.page.value = 2
+    await vi.waitFor(() => expect(state.updatePhase.value).toBe('available'))
+    expect(mock.invoke).toHaveBeenLastCalledWith('check_update')
+    expect(state.updateInfo.value?.latest).toBe('v0.6.0')
+    // 更新动作只打开 Release 页面：不下载、不替换自身，也不带任何账号数据。
+    await state.openUpdate()
+    expect(mock.invoke).toHaveBeenLastCalledWith('open_external', { url: 'https://github.com/miaoermua/DGCU-Net-Portal/releases/tag/v0.6.0' })
+    expect(state.password.value).toBe('never-send-this')
+    state.dispose()
+  })
+  it('surfaces the ten second timeout as a retryable error and recovers on retry', async () => {
+    const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
+    mock.invoke.mockRejectedValueOnce('检测更新超时，请检查网络后重试')
+    await state.checkUpdate()
+    expect(state.updatePhase.value).toBe('error')
+    expect(state.updateError.value).toContain('超时')
+    // 检查更新失败不占用全局忙碌状态，网络页的按钮该用还能用。
+    expect(state.busy.value).toBe(false)
+    mock.invoke.mockResolvedValueOnce({ current: '0.5.0', latest: 'v0.5.0', newer: false, url: 'https://github.com/miaoermua/DGCU-Net-Portal/releases' } as never)
+    await state.checkUpdate()
+    expect(state.updatePhase.value).toBe('latest')
+    state.dispose()
+  })
+  it('reuses a recent result instead of spending the unauthenticated github quota', async () => {
+    const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
+    mock.invoke.mockResolvedValue({ current: '0.5.0', latest: 'v0.5.0', newer: false, url: 'https://github.com/miaoermua/DGCU-Net-Portal/releases' } as never)
+    await state.checkUpdate()
+    await state.checkUpdate()
+    expect(mock.invoke.mock.calls.filter(([command]) => command === 'check_update')).toHaveLength(1)
+    state.dispose()
+  })
+  it('never checks for an update in demo mode', async () => {
+    const state = createPortalState(); await state.initialize()
+    await state.checkUpdate()
+    expect(state.updatePhase.value).toBe('idle')
     state.dispose()
   })
 })

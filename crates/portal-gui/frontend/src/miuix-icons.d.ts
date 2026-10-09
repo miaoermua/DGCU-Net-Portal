@@ -8,4 +8,5 @@ declare module 'miuix-vue/icons' {
   export const File: any
   export const Refresh: any
   export const SearchDevice: any
+  export const Update: any
 }
