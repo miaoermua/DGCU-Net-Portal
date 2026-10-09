@@ -222,13 +222,35 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      # 只取各平台的发行包，避免把 frontend-dist（js/css/png）与 linux-binaries（裸二进制）带进 Release。
+      - name: 下载发行包（macOS）
+        uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true
+          pattern: 'macos-*'
+      - name: 下载发行包（Windows）
+        uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+          pattern: 'windows-*'
+      - name: 下载发行包（Linux）
+        uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+          pattern: 'linux-x86_64'
+      - name: 下载发行包（Arch Linux）
+        uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+          pattern: 'archlinux-*'
       - name: 汇总 SHA256SUMS.txt
         run: |
           cd release
+          rm -f -- *.sha256
           ls -l
           find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -printf '%f\n' \
             | sort | xargs sha256sum > SHA256SUMS.txt
