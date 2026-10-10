@@ -286,6 +286,34 @@ async fn backend_cookie_survives_across_commands() {
     assert!(!text.contains("test-user"));
     assert!(!text.contains("synthetic"));
 }
+#[tokio::test]
+async fn rebind_keeps_the_backend_cookie() {
+    let mock = Mock::new("direct");
+    let mut client = PortalClient::new(&mock.base).unwrap();
+    client.login("test-user", "test-password").await.unwrap();
+    assert!(client.sessions().await.is_ok());
+    // 换一个源地址重建客户端，等价于"网卡地址变了之后重新绑定"。
+    let loopback = Some(std::net::IpAddr::from([127, 0, 0, 1]));
+    client.rebind(loopback).unwrap();
+    assert_eq!(client.bound_address(), loopback);
+    // 重建后的 client 必须还带着 backend Cookie：没有它 onlinelog 会拒绝。
+    assert!(client.sessions().await.is_ok());
+}
+#[test]
+fn base_url_is_normalized_for_relative_joins() {
+    assert!(normalize_base("http://172.18.100.65/lfradius")
+        .unwrap()
+        .as_str()
+        .ends_with("/lfradius/"));
+    assert!(matches!(
+        normalize_base("http://172.18.100.65/lfradius/?c=user"),
+        Err(AppError::InvalidUrl)
+    ));
+    assert!(matches!(
+        normalize_base("ftp://172.18.100.65/lfradius/"),
+        Err(AppError::InvalidUrl)
+    ));
+}
 #[test]
 fn counters_use_accounting_seconds_not_poll_seconds() {
     let mut rates = traffic::AccountingRates::default();
@@ -399,4 +427,67 @@ fn transient_settings_cannot_persist_account_or_background_mode() {
 #[test]
 fn unicode_redaction_does_not_panic() {
     assert_eq!(redact("测试用户名六"), "测试***名六");
+}
+
+/// 双开回归测试：端点上有活着的同版本实例时，第二个 daemon 必须让位。
+/// 以前用 try_overwrite(true) 会删掉对方的端点文件重新绑定，两个进程都活着，
+/// 但先启动的那个再也收不到请求，也不会退出。
+#[cfg(unix)]
+#[tokio::test]
+async fn second_daemon_yields_to_live_endpoint() {
+    let socket = test_socket_name("yield");
+    let live = fake_daemon(&socket, env!("CARGO_PKG_VERSION")).await;
+    assert!(daemon::bind_endpoint(&socket).await.unwrap().is_none());
+    // 让位的一方不能动别人的端点文件：假实例仍然收得到连接。
+    assert!(ipc::request_on(&socket, ipc::Request::Status).await.is_ok());
+    live.abort();
+    let _ = std::fs::remove_file(format!("/tmp/{socket}"));
+}
+/// 升级路径：端点上是旧版本 daemon 时应当接管，否则界面会一直连在旧进程上。
+#[cfg(unix)]
+#[tokio::test]
+async fn outdated_daemon_is_replaced() {
+    let socket = test_socket_name("outdated");
+    let old = fake_daemon(&socket, "0.0.1").await;
+    assert!(daemon::bind_endpoint(&socket).await.unwrap().is_some());
+    old.abort();
+    let _ = std::fs::remove_file(format!("/tmp/{socket}"));
+}
+/// daemon 退出走的是 std::process::exit，端点文件会留在原地；重启必须能捡回它。
+#[cfg(unix)]
+#[tokio::test]
+async fn stale_endpoint_file_is_reclaimed() {
+    let socket = test_socket_name("stale");
+    let path = format!("/tmp/{socket}");
+    // 只绑上再关掉，留下一个没人监听的端点文件。
+    drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+    assert!(daemon::bind_endpoint(&socket).await.unwrap().is_some());
+    let _ = std::fs::remove_file(path);
+}
+/// 只回一条 Status 的最小 daemon，用来验证抢占保护。刻意不复用 `daemon::serve`，
+/// 免得测试读真实设置、真的发起登录。
+#[cfg(unix)]
+async fn fake_daemon(socket_name: &str, version: &str) -> tokio::task::JoinHandle<()> {
+    let path = format!("/tmp/{socket_name}");
+    let _ = std::fs::remove_file(&path);
+    let listener = tokio::net::UnixListener::bind(path).unwrap();
+    let response = serde_json::to_string(&ipc::Response {
+        ok: true,
+        message: "daemon 正在运行".into(),
+        version: Some(version.into()),
+        ..Default::default()
+    })
+    .unwrap();
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt as _;
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.write_all(b"\n").await;
+        }
+    })
+}
+/// 每个测试用独立端点名，避免并发测试看到对方的文件。
+#[cfg(unix)]
+fn test_socket_name(tag: &str) -> String {
+    format!("portal-cli-test-{}-{tag}", std::process::id())
 }
