@@ -57,7 +57,16 @@ impl Response {
 pub async fn request(
     request: Request,
 ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
-    let name = SOCKET_NAME.to_ns_name::<GenericNamespaced>()?;
+    request_on(SOCKET_NAME, request).await
+}
+
+/// 与 [`request`] 相同，但端点名由调用方给出。daemon 启动时用它探测目标端点上
+/// 是否已经有活着的实例，测试也用它验证独立端点上的行为。
+pub async fn request_on(
+    socket_name: &str,
+    request: Request,
+) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+    let name = socket_name.to_ns_name::<GenericNamespaced>()?;
     let stream = Stream::connect(name).await?;
     let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = BufReader::new(reader);
