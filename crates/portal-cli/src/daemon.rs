@@ -223,7 +223,9 @@ async fn handle(
             ));
             logs.record(crate::logging::Event::poll_jitter(settings.poll_jitter));
             let mut controller = state.lock().await;
-            controller.settings = settings;
+            // 走 apply_settings 而不是直接赋值：后台地址或网卡设置变了要让
+            // 已建立的连接跟着变，否则用户会以为“改了设置没用”。
+            controller.apply_settings(settings);
             Response {
                 ok: true,
                 message: "配置已重新加载".into(),

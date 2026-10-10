@@ -286,6 +286,34 @@ async fn backend_cookie_survives_across_commands() {
     assert!(!text.contains("test-user"));
     assert!(!text.contains("synthetic"));
 }
+#[tokio::test]
+async fn rebind_keeps_the_backend_cookie() {
+    let mock = Mock::new("direct");
+    let mut client = PortalClient::new(&mock.base).unwrap();
+    client.login("test-user", "test-password").await.unwrap();
+    assert!(client.sessions().await.is_ok());
+    // 换一个源地址重建客户端，等价于"网卡地址变了之后重新绑定"。
+    let loopback = Some(std::net::IpAddr::from([127, 0, 0, 1]));
+    client.rebind(loopback).unwrap();
+    assert_eq!(client.bound_address(), loopback);
+    // 重建后的 client 必须还带着 backend Cookie：没有它 onlinelog 会拒绝。
+    assert!(client.sessions().await.is_ok());
+}
+#[test]
+fn base_url_is_normalized_for_relative_joins() {
+    assert!(normalize_base("http://172.18.100.65/lfradius")
+        .unwrap()
+        .as_str()
+        .ends_with("/lfradius/"));
+    assert!(matches!(
+        normalize_base("http://172.18.100.65/lfradius/?c=user"),
+        Err(AppError::InvalidUrl)
+    ));
+    assert!(matches!(
+        normalize_base("ftp://172.18.100.65/lfradius/"),
+        Err(AppError::InvalidUrl)
+    ));
+}
 #[test]
 fn counters_use_accounting_seconds_not_poll_seconds() {
     let mut rates = traffic::AccountingRates::default();

@@ -10,6 +10,7 @@ use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     net::IpAddr,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -41,10 +42,19 @@ pub struct Controller {
     message: String,
     missing: u32,
     attempts: u32,
+    /// 网络层恢复的独立退避计数；与 `attempts`（会话掉线重拨）互不干扰。
+    network_attempts: u32,
     last_attempt: Option<Instant>,
     awaiting_session: Option<HashSet<String>>,
     reconnecting: bool,
+    /// 当前 client 绑定的网卡上下文。与实时解析结果不一致时重建 client。
+    bound_network: Option<network::NetworkContext>,
+    /// 网卡解析入口。默认是真实的 `network::resolve`；测试里替换成受控实现，
+    /// 就能在不改动本机网络的前提下验证"地址变化 → 重建 client"。
+    resolve_network: NetworkResolver,
 }
+type NetworkResolver =
+    Arc<dyn Fn(&str) -> Result<Option<network::NetworkContext>, String> + Send + Sync>;
 impl Default for Controller {
     fn default() -> Self {
         Self::new(Settings::default())
@@ -76,9 +86,12 @@ impl Controller {
             message: "输入账号后上线，或仅登录后台查询会话".into(),
             missing: 0,
             attempts: 0,
+            network_attempts: 0,
             last_attempt: None,
             awaiting_session: None,
             reconnecting: false,
+            bound_network: None,
+            resolve_network: Arc::new(network::resolve),
         }
     }
     pub fn clear(&mut self) {
@@ -135,13 +148,12 @@ impl Controller {
         if !self.reconnecting {
             self.clear();
         }
+        let resolved = (self.resolve_network)(&self.settings.interface_name);
         let network = if backend_only {
-            network::resolve(&self.settings.interface_name)
-                .ok()
-                .flatten()
+            resolved.ok().flatten()
         } else {
             Some(
-                network::resolve(&self.settings.interface_name)
+                resolved
                     .map_err(AppError::NetworkInterface)
                     .and_then(|value| {
                         value.ok_or_else(|| {
@@ -176,6 +188,8 @@ impl Controller {
             local_address,
         )?
         .with_logs(self.logs.clone());
+        // 记下这次 client 绑定的网卡上下文；后续轮询据此判断是否需要重建。
+        self.bound_network = network.clone();
         self.status = "authenticating".into();
         // Authenticate the self-service client before Portal login so we can record a
         // baseline. The same cookie jar is reused after Portal login; a second
@@ -336,7 +350,78 @@ impl Controller {
         // Otherwise credential drops here, before the online session ends.
         Ok(self.snapshot())
     }
+    /// 重新解析网卡；地址变了就用新地址重建 client。返回是否发生了重建。
+    ///
+    /// 合盖唤醒、Wi-Fi 漫游、插拔网线都会换掉 IPv4，而 `local_address` 是钉在
+    /// client 上的：不重建就会对每个请求立刻失败。Cookie 在共享 jar 里，重建
+    /// 不影响登录态，也不需要重新走认证流程。
+    fn rebind_changed_network(&mut self) -> bool {
+        // 解析失败（例如短暂读不到 MAC）时不动现有绑定，等下一次轮询再判断。
+        let Ok(current) = (self.resolve_network)(&self.settings.interface_name) else {
+            return false;
+        };
+        if current == self.bound_network {
+            return false;
+        }
+        let Some(api) = self.api.as_mut() else {
+            return false;
+        };
+        let local = current
+            .as_ref()
+            .and_then(|context| context.ipv4.parse::<IpAddr>().ok());
+        match api.rebind(local) {
+            Ok(()) => {
+                self.bound_network = current;
+                self.logs.record(crate::logging::Event::NetworkRebind);
+                true
+            }
+            Err(_) => {
+                self.logs.record(crate::logging::Event::NetworkRebindFailed);
+                false
+            }
+        }
+    }
+    /// 应用新设置，并让连接层跟着设置走。
+    ///
+    /// 原实现只替换 `settings`，于是"保存设置"对已经建立的 client 完全无效：
+    /// 改了网卡或后台地址却还在用旧连接，用户只会看到"改了没用"。这里至少在
+    /// 重建代价很低的情况下立刻生效，其余交给下一次轮询的自动重建。
+    pub fn apply_settings(&mut self, settings: Settings) {
+        let server = settings.server.clone();
+        let server_changed = server != self.settings.server;
+        let network_changed = settings.interface_name != self.settings.interface_name
+            || settings.bypass_proxy != self.settings.bypass_proxy;
+        self.settings = settings;
+        if !server_changed && !network_changed {
+            return;
+        }
+        if self.api.is_none() {
+            self.bound_network = None;
+            return;
+        }
+        if server_changed {
+            let result = match self.api.as_mut() {
+                Some(api) => api.rebase(&server),
+                None => Ok(()),
+            };
+            match result {
+                Ok(()) => self.logs.record(crate::logging::Event::NetworkRebind),
+                Err(_) => self.logs.record(crate::logging::Event::NetworkRebindFailed),
+            }
+        }
+        if network_changed {
+            // 清掉记录，下一次轮询按新网卡重新解析地址并重建 client。
+            self.bound_network = None;
+        }
+    }
+    /// 自动重拨与网络恢复共用的退避：30 秒 × 2^attempts，并叠加抖动。
+    fn retry_backoff(&self) -> Duration {
+        self.settings
+            .poll_jitter
+            .apply(Duration::from_secs(30 * (1 << self.attempts)))
+    }
     pub async fn refresh(&mut self) -> Result<Snapshot, AppError> {
+        self.rebind_changed_network();
         let api = self.api.as_ref().ok_or(AppError::Rejected)?;
         self.rows = api.sessions().await?;
         self.bind_new_session();
@@ -461,6 +546,8 @@ impl Controller {
         {
             return;
         }
+        // 每次轮询前先确认 client 绑的还是当前网卡地址；换过地址就重建。
+        self.rebind_changed_network();
         let rows = match self.api.as_ref().ok_or(AppError::Rejected) {
             Ok(api) => api.sessions().await,
             Err(error) => Err(error),
@@ -470,10 +557,16 @@ impl Controller {
                 self.rows = rows;
                 self.bind_new_session();
                 self.update_session_status();
+                self.network_attempts = 0;
             }
             Err(error) => {
                 self.logs.error(&error);
                 self.message = error.to_string();
+                // 原实现到这里直接 return：missing 永远不会增加，掉线重拨的
+                // 阈值也就永远达不到，于是网络恢复不了、重拨也永不触发。
+                if Self::recoverable_poll_error(&error) {
+                    self.retry_after_failure(progress).await;
+                }
                 return;
             }
         }
@@ -485,13 +578,10 @@ impl Controller {
         {
             return;
         }
-        if self.last_attempt.is_some_and(|t| {
-            t.elapsed()
-                < self
-                    .settings
-                    .poll_jitter
-                    .apply(Duration::from_secs(30 * (1 << self.attempts)))
-        }) {
+        if self
+            .last_attempt
+            .is_some_and(|t| t.elapsed() < self.retry_backoff())
+        {
             return;
         }
         let Some(credential) = self.credential.take() else {
@@ -560,12 +650,104 @@ impl Controller {
     fn transient_reconnect_error(error: &AppError) -> bool {
         matches!(
             error,
-            AppError::Network
+            AppError::Network(_)
                 | AppError::Timeout(_)
                 | AppError::DiscoveryTimeout
                 | AppError::DiscoveryNotFound
                 | AppError::Http(408 | 425 | 429 | 500..=599)
         )
+    }
+
+    /// 轮询失败是否值得起一次重建+重连。
+    ///
+    /// `Rejected` 也算：合盖一夜后后台 Cookie 过期同样会让每次轮询都失败，
+    /// 而重连会用保存的凭据重新登录后台。真正被拒绝（密码错）时重连会失败，
+    /// 由 `retry_after_failure` 收尾暂停。
+    fn recoverable_poll_error(error: &AppError) -> bool {
+        Self::transient_reconnect_error(error) || matches!(error, AppError::Rejected)
+    }
+
+    /// 重连尝试本身的失败是否属于“环境暂时不可用”。
+    ///
+    /// 比 `transient_reconnect_error` 多一类 `NetworkInterface`：网卡暂时消失
+    /// （关 Wi-Fi、刚唤醒）是环境问题，不该像认证被拒那样停下来等人。
+    fn retryable_connection_error(error: &AppError) -> bool {
+        Self::transient_reconnect_error(error) || matches!(error, AppError::NetworkInterface(_))
+    }
+
+    /// 网络恢复的退避：30 秒起步，每次翻倍，最长 8 分钟。
+    fn network_retry_backoff(&self) -> Duration {
+        const MAX_SHIFT: u32 = 4;
+        self.settings.poll_jitter.apply(Duration::from_secs(
+            30 << self.network_attempts.min(MAX_SHIFT),
+        ))
+    }
+
+    /// 轮询因网络/网卡失败后的自愈路径：用当前网卡上下文重建 client 并重连一次。
+    ///
+    /// 事务性：只有 `connect` 成功才替换现有会话与 client；失败时回滚到调用前
+    /// 的状态，保留凭据等待下一个退避窗口，直到网络恢复为止。
+    async fn retry_after_failure<F: Fn(Phase)>(&mut self, progress: F) {
+        if self.paused
+            || self.settings.credential_store == CredentialStore::Memory
+            || self.settings.reconnect_mode == ReconnectMode::Disabled
+        {
+            return;
+        }
+        if self
+            .last_attempt
+            .is_some_and(|t| t.elapsed() < self.network_retry_backoff())
+        {
+            return;
+        }
+        let Some(credential) = self.credential.take() else {
+            return;
+        };
+        let retry_credential =
+            Credential::new(credential.username.clone(), credential.password.clone());
+        let old_status = self.status.clone();
+        let old_message = self.message.clone();
+        let old_api = self.api.clone();
+        let old_account = self.account.clone();
+        let old_rows = self.rows.clone();
+        let old_selected = self.selected.clone();
+        let old_accounting = self.accounting.clone();
+        let old_rates = self.latest_rates.clone();
+        let old_paused = self.paused;
+        let old_missing = self.missing;
+        let old_bound = self.bound_network.clone();
+        self.last_attempt = Some(Instant::now());
+        self.logs.record(crate::logging::Event::NetworkRetry);
+        self.reconnecting = true;
+        let result = self.connect(credential, "", false, progress).await;
+        self.reconnecting = false;
+        match result {
+            Ok(_) => {
+                self.network_attempts = 0;
+            }
+            Err(error) if Self::retryable_connection_error(&error) => {
+                self.network_attempts = self.network_attempts.saturating_add(1);
+                self.credential = Some(retry_credential);
+                self.api = old_api;
+                self.account = old_account;
+                self.rows = old_rows;
+                self.selected = old_selected;
+                self.accounting = old_accounting;
+                self.latest_rates = old_rates;
+                self.paused = old_paused;
+                self.missing = old_missing;
+                self.bound_network = old_bound;
+                self.status = old_status;
+                self.message = format!("{}；网络或网卡暂不可用，正在按退避自动重连", old_message);
+            }
+            Err(_) => {
+                // 保留凭据：暂停只是"不再自动尝试"，不该顺手把用户保存的账号丢掉。
+                self.credential = Some(retry_credential);
+                self.logs.record(crate::logging::Event::RetryPaused);
+                self.paused = true;
+                self.message = "自动重连被认证系统拒绝，已暂停；请手动检查账号和网络".into();
+            }
+        }
     }
 }
 
@@ -598,5 +780,93 @@ mod tests {
         c.bind_new_session();
         assert!(c.selected.is_none());
         assert!(c.awaiting_session.is_none());
+    }
+    fn context(ipv4: &str) -> network::NetworkContext {
+        network::NetworkContext {
+            interface_name: "en0".into(),
+            ipv4: ipv4.into(),
+            mac: "02:00:00:00:00:01".into(),
+        }
+    }
+    /// 合盖唤醒后网卡地址变了：client 必须按新地址重建，且不丢后台 Cookie。
+    /// 这是这次"日志疯狂刷 network.error"故障的核心回归测试。
+    #[tokio::test]
+    async fn changed_interface_address_rebuilds_client_without_relogin() {
+        let mock = crate::tests::Mock::new("direct");
+        let mut c = Controller::default();
+        let client = PortalClient::new(&mock.base).unwrap();
+        client.login("test-user", "test-password").await.unwrap();
+        c.api = Some(client);
+        c.bound_network = Some(context("192.0.2.1"));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        c.resolve_network = Arc::new(move |_| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Some(context("127.0.0.1")))
+        });
+        assert!(c.rebind_changed_network());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let api = c.api.as_ref().unwrap();
+        assert_eq!(
+            api.bound_address(),
+            Some(IpAddr::from([127, 0, 0, 1])),
+            "应按新地址重新绑定"
+        );
+        // Cookie 还在，所以不需要重新登录就能继续查询。
+        assert!(api.sessions().await.is_ok());
+        // 地址没再变化就不该反复重建。
+        assert!(!c.rebind_changed_network());
+    }
+    /// 轮询失败要能区分"环境暂时不可用"和"认证被拒"。
+    #[test]
+    fn classifies_poll_failures_for_automatic_recovery() {
+        use crate::NetworkFault;
+        assert!(Controller::recoverable_poll_error(&AppError::Network(
+            NetworkFault::Connect
+        )));
+        assert!(Controller::recoverable_poll_error(&AppError::Rejected));
+        assert!(!Controller::recoverable_poll_error(&AppError::InvalidUrl));
+        assert!(Controller::retryable_connection_error(
+            &AppError::NetworkInterface("no interface".into())
+        ));
+        assert!(!Controller::retryable_connection_error(&AppError::Rejected));
+    }
+    /// 网络/网卡不可用时的重连尝试必须可回滚：保住凭据和现有会话，只推进退避。
+    #[tokio::test]
+    async fn network_failure_keeps_credential_and_backs_off() {
+        let mut c = Controller {
+            settings: Settings {
+                credential_store: CredentialStore::System,
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            // 已连线状态下后台轮询才会跑；默认构造是暂停态。
+            paused: false,
+            ..Default::default()
+        };
+        c.credential = Some(Credential::new("test-user".into(), "test-password".into()));
+        c.resolve_network = Arc::new(|_| Err("no interface".into()));
+        c.retry_after_failure(|_| {}).await;
+        assert!(c.credential.is_some(), "凭据必须保留，否则永远无法自愈");
+        assert!(!c.paused, "网卡暂时消失不该像认证被拒那样停下来");
+        assert_eq!(c.network_attempts, 1);
+        assert!(c.last_attempt.is_some());
+        // 退避窗口内不再重复尝试。
+        c.retry_after_failure(|_| {}).await;
+        assert_eq!(c.network_attempts, 1);
+    }
+    /// 后台地址或网卡设置变了，已建立的连接要跟着变。
+    #[test]
+    fn settings_change_invalidates_existing_binding() {
+        let mut c = Controller {
+            bound_network: Some(context("192.0.2.1")),
+            ..Default::default()
+        };
+        let settings = Settings {
+            interface_name: "en1".into(),
+            ..Default::default()
+        };
+        c.apply_settings(settings);
+        assert!(c.bound_network.is_none(), "换网卡后应强制重新解析并重建");
     }
 }
