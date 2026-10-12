@@ -68,15 +68,16 @@ jobs:
         run: >-
           cargo build --release --locked -p portal-gui -p portal-cli
           --features portal-gui/custom-protocol --target ${{ matrix.target }}
-      - name: 打包 .app / ZIP / SHA-256
+      - name: 打包 .app / ZIP / DMG / SHA-256
         run: >-
           python3 scripts/package_macos.py --output target/packages
-          --arch ${{ matrix.arch }} --binary-dir target/${{ matrix.target }}/release
+          --arch ${{ matrix.arch }} --binary-dir target/${{ matrix.target }}/release --dmg
       - uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.arch }}
           path: |
             target/packages/*.zip
+            target/packages/*.dmg
             target/packages/*.sha256
   windows:
     name: Windows ${{ matrix.arch }}
