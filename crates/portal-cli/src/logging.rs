@@ -38,6 +38,10 @@ pub enum Event {
     LocalReleased,
     AutoRetry,
     RetryPaused,
+    NetworkRetry,
+    NetworkRebind,
+    NetworkRebindFailed,
+    NetworkConnect,
     NetworkError,
     InterfaceError,
     Rejected,
@@ -136,6 +140,26 @@ impl Event {
             Self::LocalReleased => ("info", "local.clear", "已释放客户端会话和凭据"),
             Self::AutoRetry => ("info", "reconnect.start", "会话连续离线，正在自动重拨"),
             Self::RetryPaused => ("warn", "reconnect.paused", "自动重拨已暂停，请手动检查"),
+            Self::NetworkRetry => (
+                "info",
+                "network.retry",
+                "网络或网卡暂不可用，正在按退避自动重建连接",
+            ),
+            Self::NetworkRebind => (
+                "info",
+                "network.rebind",
+                "网卡地址已变化，已按新地址重建连接",
+            ),
+            Self::NetworkRebindFailed => (
+                "warn",
+                "network.rebind_failed",
+                "网卡地址变化后重建连接失败，稍后自动重试",
+            ),
+            Self::NetworkConnect => (
+                "error",
+                "network.connect",
+                "无法建立连接；本机网卡地址可能已变化，正在自动重试",
+            ),
             Self::NetworkError => ("error", "network.error", "网络请求未完成，请检查连接或代理"),
             Self::InterfaceError => ("error", "network.interface", "所选网卡没有可用 IPv4/MAC"),
             Self::Rejected => ("error", "auth.rejected", "认证被拒绝或后台登录已过期"),
@@ -233,9 +257,12 @@ impl LogBuffer {
         inner.entries.push_back(entry);
     }
     pub fn error(&self, error: &crate::AppError) {
-        use crate::AppError;
+        use crate::{AppError, NetworkFault};
         self.record(match error {
-            AppError::Network => Event::NetworkError,
+            // 连接阶段失败单独成一条：它几乎总是“本机源地址失效”，
+            // 和真正的网络抖动不是一回事，混在一起就没法从日志判断了。
+            AppError::Network(NetworkFault::Connect) => Event::NetworkConnect,
+            AppError::Network(_) => Event::NetworkError,
             AppError::NetworkInterface(_) => Event::InterfaceError,
             AppError::DiscoveryTimeout => Event::ProbeTimeout,
             AppError::DiscoveryNotFound => Event::ProbeNoRedirect,

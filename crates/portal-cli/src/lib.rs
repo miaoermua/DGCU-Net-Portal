@@ -14,18 +14,28 @@ pub use cmcc::{CmccContext, PortalLoginOutcome};
 
 use reqwest::{Client, Response};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{net::IpAddr, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 use url::Url;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 pub const DEFAULT_SERVER: &str = "http://172.18.100.65/lfradius/";
 
+/// 单次请求的整体上限，包含连接、发送和读取。
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// 连接阶段单独设限：源地址失效时应该立刻失败，而不是拖到整体超时。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// 空闲连接保活，让睡眠唤醒后的死连接能被内核探活剔除。
+const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
+/// 空闲连接最多留 15 秒；合盖前后残留的半开连接不会一直被复用。
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("地址无效，只支持不含凭据的 HTTP(S) URL")]
     InvalidUrl,
+    /// 传输层失败。分类只进本地日志，不含 URL、响应体或系统错误原文。
     #[error("请求失败，请检查网络、服务器地址和代理")]
-    Network,
+    Network(NetworkFault),
     #[error("网卡配置错误：{0}")]
     NetworkInterface(String),
     #[error("认证页探测请求超时。后台地址可达不代表外部探测站点可达；可粘贴浏览器弹出的完整 Portal URL 后再试")]
@@ -55,9 +65,31 @@ pub enum AppError {
     #[error("无法唯一确定本次会话，请手动选择会话 ID")]
     AmbiguousSession,
 }
+
+/// 传输层失败的分类。只保留对排查有用的三档，供日志与文案选择。
+///
+/// 之所以要分开：`Connect` 几乎总是本机绑定的源地址已经失效（合盖唤醒换网段
+/// 后最典型），而 `Timeout` 更像链路慢或被拦。两者原先压成同一句，日志里完全
+/// 看不出区别。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NetworkFault {
+    /// 连接阶段失败，含源地址绑定失败。
+    Connect,
+    Timeout,
+    Other,
+}
 impl From<reqwest::Error> for AppError {
-    fn from(_: reqwest::Error) -> Self {
-        Self::Network
+    fn from(error: reqwest::Error) -> Self {
+        // 只取 reqwest 自己暴露的判定，不拼接 `source()` 链或系统错误原文：
+        // 那些可能带上本地地址和 URL，日志里不允许出现。
+        let fault = if error.is_timeout() {
+            NetworkFault::Timeout
+        } else if error.is_connect() {
+            NetworkFault::Connect
+        } else {
+            NetworkFault::Other
+        };
+        Self::Network(fault)
     }
 }
 impl From<url::ParseError> for AppError {
@@ -223,12 +255,31 @@ pub fn validate_url(value: &str) -> Result<Url, AppError> {
     Ok(url)
 }
 
-/// One client per account/context. Cookies are memory-only. Clones share this jar.
-/// Dropping all clients releases the jar; third-party HTTP buffers are not zeroize-guaranteed.
+/// 校验后台地址并补上结尾斜杠，让 `Url::join` 始终相对该路径拼接。
+fn normalize_base(value: &str) -> Result<Url, AppError> {
+    let mut url = validate_url(value)?;
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(AppError::InvalidUrl);
+    }
+    if !url.path().ends_with('/') {
+        url.set_path(&format!("{}/", url.path()));
+    }
+    Ok(url)
+}
+
+/// One client per account/context. Cookies live in an explicit jar that survives
+/// a rebuilt HTTP client — that is what lets `rebind` follow an address change
+/// without losing the login. Dropping all clients releases the jar; third-party
+/// HTTP buffers are not zeroize-guaranteed.
 #[derive(Clone)]
 pub struct PortalClient {
     client: Client,
     base_url: Url,
+    /// Cookie 放在显式的 jar 里，重建 HTTP 客户端时不丢登录态。
+    jar: Arc<reqwest::cookie::Jar>,
+    /// 保留构建参数，供 `rebind` 用新源地址重建。
+    bypass: bool,
+    local_address: Option<IpAddr>,
     logs: logging::LogBuffer,
 }
 impl PortalClient {
@@ -243,28 +294,59 @@ impl PortalClient {
         bypass: bool,
         local_address: Option<IpAddr>,
     ) -> Result<Self, AppError> {
-        let mut base_url = validate_url(base)?;
-        if base_url.query().is_some() || base_url.fragment().is_some() {
-            return Err(AppError::InvalidUrl);
-        }
-        if !base_url.path().ends_with('/') {
-            base_url.set_path(&format!("{}/", base_url.path()));
-        }
+        let base_url = normalize_base(base)?;
+        let jar = Arc::new(reqwest::cookie::Jar::default());
+        let client = Self::build_client(bypass, local_address, jar.clone())?;
+        Ok(Self {
+            client,
+            base_url,
+            jar,
+            bypass,
+            local_address,
+            logs: logging::LogBuffer::default(),
+        })
+    }
+    /// 后台地址变更后重新指向新地址。
+    ///
+    /// 客户端会连同连接池一起重建（旧池连的是旧主机）；Cookie 按域匹配，旧域的
+    /// Cookie 不会发往新后台，不需要手动清空。
+    pub fn rebase(&mut self, base: &str) -> Result<(), AppError> {
+        self.base_url = normalize_base(base)?;
+        self.client = Self::build_client(self.bypass, self.local_address, self.jar.clone())?;
+        Ok(())
+    }
+    fn build_client(
+        bypass: bool,
+        local_address: Option<IpAddr>,
+        jar: Arc<reqwest::cookie::Jar>,
+    ) -> Result<Client, AppError> {
         let mut builder = Client::builder()
-            .cookie_store(true)
+            .cookie_provider(jar)
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(10));
+            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .tcp_keepalive(TCP_KEEPALIVE)
+            .pool_idle_timeout(POOL_IDLE_TIMEOUT);
         if bypass {
             builder = builder.no_proxy();
         }
         if let Some(address) = local_address {
             builder = builder.local_address(address);
         }
-        Ok(Self {
-            client: builder.build()?,
-            base_url,
-            logs: logging::LogBuffer::default(),
-        })
+        Ok(builder.build()?)
+    }
+    /// 用新的本地源地址重建 HTTP 客户端，Cookie 留在共享 jar 里。
+    ///
+    /// 合盖唤醒、Wi-Fi 漫游后网卡地址会变化，而 `local_address` 是绑死在
+    /// 客户端上的：不重建就会对每个请求立刻失败。
+    pub fn rebind(&mut self, local_address: Option<IpAddr>) -> Result<(), AppError> {
+        self.client = Self::build_client(self.bypass, local_address, self.jar.clone())?;
+        self.local_address = local_address;
+        Ok(())
+    }
+    /// 当前绑定的源地址；未绑定时为 None（跟随系统路由）。
+    pub fn bound_address(&self) -> Option<IpAddr> {
+        self.local_address
     }
     pub fn with_logs(mut self, logs: logging::LogBuffer) -> Self {
         self.logs = logs;
