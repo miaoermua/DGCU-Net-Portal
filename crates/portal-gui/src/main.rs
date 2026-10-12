@@ -54,27 +54,42 @@ async fn daemon_request(request: Request) -> Result<portal_cli::ipc::Response, S
         DAEMON_VERIFIED.store(true, std::sync::atomic::Ordering::Relaxed);
         return Ok(response);
     }
-    // 装了登录服务的机器上端点由 launchd/systemd 托管，GUI 再自己 spawn 一个就是
-    // 第二个启动源（两边都会 bind 同一个端点）。先请服务管理器拉起，失败时——
-    // 例如服务没装载、plist 已被删——才退回直接启动。
-    let served = Settings::load().service_enabled && portal_cli::service::start().is_ok();
-    if !served {
-        let binary = daemon_binary()?;
-        let mut command = std::process::Command::new(binary);
-        command.arg("run").arg("--daemon");
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            // 不加这个标志，GUI 拉起 daemon 时会闪一个控制台黑框。
-            command.creation_flags(0x0800_0000);
-        }
-        command.spawn().map_err(|_| "无法启动 portal-cli daemon")?;
-    }
-    // daemon 首次启动要创建 IPC 端点，Windows 上明显比 Unix 慢，
-    // 单次 150ms 等待经常还没就绪就连过去；交给服务管理器冷启动更慢，多等一会。
-    let attempts = if served { 25 } else { 10 };
+    // 有后台登录服务时优先请服务管理器拉起，避免不必要地启动第二个进程。
+    let service_started = Settings::load().service_enabled && portal_cli::service::start().is_ok();
     let mut last = "无法连接 portal-cli daemon".to_string();
-    for _ in 0..attempts {
+    // 服务管理器接受启动命令不代表 daemon 已经起来；短暂等待后直接启动同包程序兜底。
+    if service_started {
+        for _ in 0..5 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            match ipc::request(request.clone()).await {
+                Ok(response) => {
+                    DAEMON_VERIFIED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(response);
+                }
+                Err(error) => last = error.to_string(),
+            }
+        }
+    }
+
+    let binary = daemon_binary()?;
+    let mut command = std::process::Command::new(&binary);
+    command.arg("run").arg("--daemon");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // 不加这个标志，GUI 拉起 daemon 时会闪一个控制台黑框。
+        command.creation_flags(0x0800_0000);
+    }
+    command.spawn().map_err(|error| {
+        format!(
+            "无法启动 portal-cli daemon（{}）：{error}",
+            binary.display()
+        )
+    })?;
+
+    // daemon 首次启动要创建 IPC 端点，Windows 上比 Unix 慢一档；端点上有旧进程留下的
+    // 僵尸文件时还要先探测再清理，所以等待给到 5 秒。
+    for _ in 0..25 {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         match ipc::request(request.clone()).await {
             Ok(response) => {
@@ -84,7 +99,7 @@ async fn daemon_request(request: Request) -> Result<portal_cli::ipc::Response, S
             Err(error) => last = error.to_string(),
         }
     }
-    Err(last)
+    Err(format!("连接 portal-cli daemon 失败：{last}"))
 }
 #[tauri::command]
 async fn initial(state: State<'_, AppState>) -> Result<serde_json::Value, String> {

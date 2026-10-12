@@ -35,7 +35,7 @@ cargo run -p portal-cli -- diagnose interfaces
 
 密码不通过命令行参数传递。`up` 通过本地 IPC 把交互输入交给 daemon；GUI 配置会把凭据写入系统凭据库。
 
-daemon 的本地 IPC 使用 `portal-cli.sock`。GUI 首次需要认证时会拉起同包内的 `portal-cli run --daemon`，GUI 关闭后 daemon 仍继续运行。
+daemon 的本地 IPC 使用 `portal-cli.sock`。GUI 首次需要认证时会启动 daemon；如果启用了用户级后台服务，GUI 会先请求 launchd/systemd 启动并等待 IPC 就绪，服务管理器未能实际拉起 daemon 时会自动退回启动同包内的 `portal-cli run --daemon`。GUI 关闭后 daemon 仍继续运行。
 
 ## 认证行为
 

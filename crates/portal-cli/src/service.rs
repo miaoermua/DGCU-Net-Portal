@@ -6,8 +6,9 @@ use std::{path::Path, process::Command};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::{fs, path::PathBuf};
 
-// Windows 分支用 schtasks() 拿工具原话做诊断，这条通用文案只在别处用得上。
-#[cfg(not(target_os = "windows"))]
+/// systemd 的失败都落在退出码上，Linux 分支用它即可；macOS 的 launchctl 不一样，
+/// 见 launchctl()。Windows 分支用 schtasks() 拿工具原话做诊断。
+#[cfg(target_os = "linux")]
 fn run(command: &mut Command) -> Result<(), String> {
     let result = command.output().map_err(|_| "无法运行服务管理工具")?;
     if result.status.success() {
@@ -44,6 +45,35 @@ fn plist_path() -> Result<PathBuf, String> {
         .home_dir()
         .join("Library/LaunchAgents/net.dgcu.portal.plist"))
 }
+/// 服务标签：写进 plist 的 Label，也用来按名字找 launchd 任务。
+#[cfg(target_os = "macos")]
+const LABEL: &str = "net.dgcu.portal";
+/// launchctl 的失败不一定落在退出码上：任务已经加载过时 `load -w` 只会打印
+/// “Load failed: 5: Input/output error”，退出码却仍是 0。只看退出码会把这种空转
+/// 当成“服务已经拉起”，调用方于是不再兜底启动 daemon，界面只会看到连接被拒。
+#[cfg(target_os = "macos")]
+fn launchctl(command: &mut Command) -> Result<(), String> {
+    let output = command.output().map_err(|_| "无法运行 launchctl")?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.success() && !stderr.contains("Load failed") {
+        return Ok(());
+    }
+    let reason = stderr.trim();
+    Err(if reason.is_empty() {
+        "系统拒绝服务操作；请确认已打包安装并具有用户服务权限".into()
+    } else {
+        format!("launchctl 拒绝服务操作：{reason}")
+    })
+}
+/// 任务是否已经在 launchd 手里。已经加载不等于进程正在跑：daemon 退出后任务仍是
+/// 加载状态，此时 `load -w` 是空操作，只有 `start` 能把它再拉起来。
+#[cfg(target_os = "macos")]
+fn is_loaded() -> bool {
+    Command::new("launchctl")
+        .args(["list", LABEL])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
 #[cfg(target_os = "macos")]
 fn xml(value: &str) -> String {
     value
@@ -56,10 +86,15 @@ fn xml(value: &str) -> String {
 fn enable_platform(executable: &str) -> Result<(), String> {
     let path = plist_path()?;
     fs::create_dir_all(path.parent().unwrap()).map_err(|_| "无法创建 LaunchAgents")?;
-    let body=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>net.dgcu.portal</string><key>ProgramArguments</key><array><string>{}</string><string>run</string><string>--daemon</string></array><key>RunAtLoad</key><true/></dict></plist>",xml(executable));
+    let body=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array><string>{}</string><string>run</string><string>--daemon</string></array><key>RunAtLoad</key><true/></dict></plist>",xml(executable));
     fs::write(&path, body).map_err(|_| "无法写入用户 LaunchAgent")?;
+    // 任务已经加载过时再 load -w 是空操作，还会以 “Load failed” 报错：此时 plist
+    // 已经是我们要的内容，什么都不用做。
+    if is_loaded() {
+        return Ok(());
+    }
     // -w makes the user logon job available; RunAtLoad will launch the single instance.
-    run(Command::new("launchctl").arg("load").arg("-w").arg(path))
+    launchctl(Command::new("launchctl").arg("load").arg("-w").arg(path))
 }
 #[cfg(target_os = "macos")]
 pub fn disable() -> Result<(), String> {
@@ -71,16 +106,29 @@ pub fn disable() -> Result<(), String> {
     // without terminating this application's in-flight logout request.
     fs::remove_file(path).map_err(|_| "无法移除用户 LaunchAgent".into())
 }
+/// 任务已经加载过（plist 还在、daemon 却退出了）时 `load -w` 是空操作：它只打印
+/// “Load failed: 5: Input/output error”，退出码却仍是 0，上层会误以为服务已经接管，
+/// 于是不再兜底启动 daemon，登录只剩下“连接被拒”。按 label 直接 start 才真的会把
+/// daemon 再拉一个起来；任务尚未加载时才需要 load 把 plist 装上（RunAtLoad 顺带启动）。
 #[cfg(target_os = "macos")]
 fn start_platform() -> Result<(), String> {
-    run(Command::new("launchctl")
-        .arg("load")
-        .arg("-w")
-        .arg(plist_path()?))
+    if is_loaded() {
+        return launchctl(Command::new("launchctl").arg("start").arg(LABEL));
+    }
+    launchctl(
+        Command::new("launchctl")
+            .arg("load")
+            .arg("-w")
+            .arg(plist_path()?),
+    )
 }
+/// 任务没加载过时 unload 会报错，但“没在跑”本来就是这里想要的结果。
 #[cfg(target_os = "macos")]
 fn stop_platform() -> Result<(), String> {
-    run(Command::new("launchctl").arg("unload").arg(plist_path()?))
+    if !is_loaded() {
+        return Ok(());
+    }
+    launchctl(Command::new("launchctl").arg("unload").arg(plist_path()?))
 }
 #[cfg(target_os = "linux")]
 fn unit_path() -> Result<PathBuf, String> {
