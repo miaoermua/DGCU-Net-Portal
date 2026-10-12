@@ -13,7 +13,7 @@ export interface LicenseGroup {
   entries: LicenseEntry[]
 }
 
-export const licenseNotice = 'DGCU-Net-Portal 以 GPL-3.0-only 发布，并使用下列开源项目。点击任意条目在系统浏览器中打开其仓库。这里只列出主要依赖，完整依赖树可以用 cargo license 与 pnpm licenses list 生成。'
+export const licenseNotice = 'miaoermua/DGCU-Net-Portal 是基于 GPL 3.0-only 协议的自由软件，使用了这些开源软件。点击任意条目在系统浏览器中打开其仓库。这里只列出主要依赖，完整依赖树可以用 cargo license 与 pnpm licenses list 生成。'
 
 export const licenseGroups: LicenseGroup[] = [
   {

@@ -5,7 +5,7 @@ import { MiuixArrowPreference, MiuixBasicComponent, MiuixButton, MiuixCard, Miui
 import { Clear, Close, File, Forward, Info, Link, Refresh, SearchDevice, Settings as SettingsIcon, Update } from 'miuix-vue/icons'
 import { usePortal, formatBytes, formatRate, formatDuration, mask } from './usePortal'
 import { licenseGroups, licenseNotice } from './licenses'
-import xiaoweiLogo from './assets/xiaowei.png'
+import appIcon from '../../icons/icon.png'
 
 const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, updatePhase, updateInfo, updateError, checkUpdate, openUpdate, refreshInterfaces, close, hasUnsavedConnectionSettings, serviceRunning } = usePortal()
 watch(() => saved.value.theme_mode, value => setThemeMode(value), { immediate: true })
@@ -38,7 +38,6 @@ function pickSession(id: string) {
   void select(id)
 }
 const licensesOpen = ref(false)
-const licenseCount = computed(() => licenseGroups.reduce((total, group) => total + group.entries.length, 0))
 watch(licensesOpen, async open => {
   if (open) { licenseFocus = document.activeElement as HTMLElement; await nextTick(); licenseDialog.value?.showModal(); licenseDialog.value?.querySelector<HTMLButtonElement>('button')?.focus() }
   else { licenseDialog.value?.close(); licenseFocus?.focus() }
@@ -228,7 +227,7 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate(tru
       <section v-else class="about-page" aria-label="关于">
         <!-- 品牌区上下堆叠、水平居中；留白与垂直位置全部由 .about-brand 自己的 flex 承担
              （上方留白多于下方），模板里不再额外包一层容器。 -->
-        <header class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></header>
+        <header class="about-brand"><img :src="appIcon" alt="小薇" class="about-logo"><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></header>
         <MiuixCard class="about-card">
           <!-- 更新提示：进入本页自动查一次 GitHub Releases。检测中沿用状态卡的 miuix 无限转圈；
                左侧图标固定是 Update，不再随检测结果换成 Refresh；右侧按钮固定是「刷新」，一按就重新查
@@ -241,14 +240,14 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate(tru
           <!-- 箭头行用 miuix 自己的 ArrowPreference：箭头图标、点击反馈、禁用配色都由组件给出。
                行之间不加分隔线，miuix 的列表本来就是靠行间距＋圆角卡片分组的。 -->
           <MiuixArrowPreference title="GitHub 仓库" summary="miaoermua/DGCU-Net-Portal" :disabled="locked" @click="openRepository"><template #start><svg class="about-entry-icon github-entry-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2.5a9.5 9.5 0 0 0-3 18.52c.47.09.64-.2.64-.45v-1.6c-2.6.57-3.15-1.1-3.15-1.1-.43-1.1-1.05-1.4-1.05-1.4-.86-.59.07-.58.07-.58.95.07 1.45.98 1.45.98.85 1.45 2.23 1.03 2.78.79.09-.62.33-1.03.6-1.27-2.08-.24-4.27-1.04-4.27-4.63 0-1.02.36-1.85.98-2.5-.1-.24-.42-1.2.09-2.48 0 0 .8-.25 2.62.96a9.1 9.1 0 0 1 4.77 0c1.82-1.21 2.62-.96 2.62-.96.51 1.28.19 2.24.09 2.48.61.65.98 1.48.98 2.5 0 3.6-2.2 4.39-4.28 4.63.34.29.64.84.64 1.7v2.48c0 .25.17.54.65.45A9.5 9.5 0 0 0 12 2.5Z"/></svg></template></MiuixArrowPreference>
-          <MiuixArrowPreference title="开源软件声明" :summary="`${licenseCount} 个开源项目 · 名称 / 地址 / 许可证`" :disabled="locked" @click="licensesOpen = true"><template #start><MiuixIcon class="about-entry-icon" :icon="File" :size="20" /></template></MiuixArrowPreference>
+          <MiuixArrowPreference title="开源软件声明" :disabled="locked" @click="licensesOpen = true"><template #start><MiuixIcon class="about-entry-icon" :icon="File" :size="20" /></template></MiuixArrowPreference>
         </MiuixCard>
       </section>
     </main>
     <dialog ref="dialog" class="confirm-dialog" aria-labelledby="dialog-title" @cancel.prevent="answer(false)"><template v-if="confirmation"><h2 id="dialog-title">{{ confirmation.title }}</h2><p>{{ confirmation.text }}</p><div class="dialog-actions"><MiuixButton @click="answer(false)">取消</MiuixButton><MiuixButton type="primary" @click="answer(true)">{{ confirmation.label }}</MiuixButton></div></template></dialog>
     <dialog ref="logDialog" class="logs-dialog" aria-labelledby="logs-title" @cancel.prevent="logsOpen = false"><div class="logs-heading"><h2 id="logs-title">portal-cli 日志 <span v-if="demo" class="mode-badge">模拟</span></h2><MiuixIconButton class="dialog-icon-button" aria-label="关闭日志" title="关闭日志" @click="logsOpen = false"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton></div><p class="dialog-caption">{{ demo ? '仅为 Demo 操作生成的模拟事件。' : '当前 GUI 进程与 CLI 共用认证核心的日志，不读取其他 CLI 进程。' }} 不记录账号、密码、URL 或 Cookie。</p><div class="logs-body" role="log" aria-label="客户端日志" aria-live="off"><p v-if="!logEntries.length" class="logs-empty">暂无日志，开启后执行认证操作即可查看。</p><div v-for="entry in logEntries" :key="entry.sequence" class="log-line"><time>{{ logTime(entry.timestamp_ms) }}</time><span class="log-level" :class="entry.level">{{ entry.level.toUpperCase() }}</span><code>{{ entry.code }}</code><span>{{ entry.message }}</span></div></div><div class="logs-footer"><span>{{ logEntries.length }} / 300 条 · 关闭日志开关即清空</span><MiuixIconButton class="dialog-icon-button" aria-label="清空日志" title="清空日志" @click="clearLogs"><MiuixIcon :icon="Clear" :size="18" /></MiuixIconButton></div></dialog>
     <dialog ref="sessionDialog" class="confirm-dialog session-picker" aria-labelledby="picker-title" @cancel.prevent="sessionPickerOpen = false"><h2 id="picker-title">选择要下线的会话</h2><p>无法唯一确定本次连接，请选择目标；不会自动下线其他设备。</p><div class="picker-list"><button v-for="row in snapshot.sessions" :key="row.radacctid" class="picker-session" :disabled="locked" @click="selectForDisconnect(row.radacctid)"><strong>会话 {{ row.radacctid }}</strong><span>{{ row.framedipaddress || 'IP 未上报' }} · {{ mask(row.username) }}</span></button><p v-if="!snapshot.sessions.length">暂无可选会话，请打开认证后台确认远端状态。</p></div><div class="dialog-actions"><MiuixButton @click="sessionPickerOpen = false">取消</MiuixButton><MiuixButton v-if="!snapshot.sessions.length" @click="openSite">认证后台</MiuixButton></div></dialog>
-    <dialog ref="licenseDialog" class="logs-dialog license-dialog" aria-labelledby="licenses-title" @cancel.prevent="licensesOpen = false"><div class="logs-heading"><h2 id="licenses-title">开源软件声明</h2><MiuixIconButton class="dialog-icon-button" aria-label="关闭开源软件声明" title="关闭开源软件声明" @click="licensesOpen = false"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton></div><p class="dialog-caption">{{ licenseNotice }}</p><div class="license-groups" role="list"><section v-for="group in licenseGroups" :key="group.title" class="license-group"><h3>{{ group.title }}</h3><button v-for="entry in group.entries" :key="entry.name" role="listitem" class="license-row" :disabled="locked" :title="`打开 ${entry.name} 仓库`" @click="openUrl(entry.url)"><span class="license-head"><strong>{{ entry.name }}</strong><span class="license-tag">{{ entry.license }}</span></span><span class="license-summary">{{ entry.summary }}</span></button></section></div></dialog>
+    <dialog ref="licenseDialog" class="logs-dialog license-dialog" aria-labelledby="licenses-title" @cancel.prevent="licensesOpen = false"><div class="logs-heading"><h2 id="licenses-title">开源软件声明</h2><MiuixIconButton class="dialog-icon-button" aria-label="关闭开源软件声明" title="关闭开源软件声明" @click="licensesOpen = false"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton></div><MiuixCard class="license-notice-card"><span class="license-notice-icon"><MiuixIcon :icon="Info" :size="20" /></span><div class="license-notice-copy"><strong>自由软件 · GPL 3.0-only</strong><p>{{ licenseNotice }}</p></div></MiuixCard><div class="license-groups"><section v-for="group in licenseGroups" :key="group.title" class="license-group"><h3>{{ group.title }}</h3><MiuixCard class="license-group-card"><MiuixArrowPreference v-for="entry in group.entries" :key="entry.name" :title="entry.name" :summary="entry.summary" :disabled="locked" @click="openUrl(entry.url)"><template #end><span class="license-tag">{{ entry.license }}</span></template></MiuixArrowPreference></MiuixCard></section></div></dialog>
     <MiuixSnackbarHost />
   </div>
   </MotionConfig>
