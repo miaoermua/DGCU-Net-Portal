@@ -153,12 +153,11 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 /* 关于页的更新行：转圈沿用状态卡的 infinite 指示器，描边用 currentColor，所以颜色在这里给。 */
 .update-entry .update-spinner { display: flex; align-items: center; color: var(--m-color-primary); }
 .update-entry--available .about-entry-icon { color: var(--m-color-primary); }
-/* 检测失败时左侧的 Refresh 就是一个重试按钮：去掉按钮外观，只留图标本身。 */
+/* 检测失败时左侧图标额外可点重试：去掉按钮外观，只留图标本身。图标本身仍是 Update。 */
 .update-entry .update-retry { display: flex; align-items: center; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--m-color-primary); cursor: pointer; }
 .update-entry .update-retry:hover { opacity: .7; }
 .update-button.m-button { gap: 6px; min-height: 30px; padding: 7px 11px; font-size: 12px; }
 .update-button .m-icon { width: 16px; height: 16px; }
-.update-tag { color: var(--m-color-primary); font-size: 11px; font-weight: 600; }
 .confirm-dialog { max-width: min(390px, calc(100% - 32px)); border: 0; border-radius: 22px; padding: 24px; color: var(--m-color-on-background); background: var(--m-color-background); box-shadow: 0 16px 70px #0002; }
 .confirm-dialog::backdrop { background: var(--m-color-window-dimming); }
 .confirm-dialog h2 { font-size: 17px; }.confirm-dialog p { color: var(--m-color-on-surface-variant-summary); font-size: 13px; line-height: 1.8; margin: 14px 0 20px; }.dialog-actions { display: flex; gap: 9px; justify-content: flex-end; }

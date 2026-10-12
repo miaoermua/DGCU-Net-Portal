@@ -294,6 +294,15 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     expect(mock.invoke.mock.calls.filter(([command]) => command === 'check_update')).toHaveLength(1)
     state.dispose()
   })
+  it('always refetches when the refresh button forces a check', async () => {
+    const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
+    mock.invoke.mockResolvedValue({ current: '0.5.0', latest: '0.5.0', newer: false, url: 'https://github.com/miaoermua/DGCU-Net-Portal/releases' } as never)
+    await state.checkUpdate()
+    // 关于页的「刷新」按钮常驻，一分钟内也必须真查一次，否则刚自动查完时按了没反应。
+    await state.checkUpdate(true)
+    expect(mock.invoke.mock.calls.filter(([command]) => command === 'check_update')).toHaveLength(2)
+    state.dispose()
+  })
   it('never checks for an update in demo mode', async () => {
     const state = createPortalState(); await state.initialize()
     await state.checkUpdate()

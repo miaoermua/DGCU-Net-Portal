@@ -148,8 +148,8 @@ const updateSummary = computed(() => {
     default: return demo ? '演示模式不访问 GitHub' : '进入本页时自动检查一次'
   }
 })
-// 整行点击：有新版本就打开 Release 页面，检测失败时就地重试。
-function updateAction() { return updatePhase.value === 'error' ? checkUpdate() : openUpdate() }
+// 整行点击：有新版本就打开 Release 页面，检测失败时就地重试（force 让重试不受一分钟复用影响）。
+function updateAction() { return updatePhase.value === 'error' ? checkUpdate(true) : openUpdate() }
 </script>
 
 <template>
@@ -230,11 +230,12 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate() :
         <header class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><div><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></div></header>
         <MiuixCard class="about-card">
           <!-- 更新提示：进入本页自动查一次 GitHub Releases。检测中沿用状态卡的 miuix 无限转圈；
-               失败时左侧换成 Refresh 图标，点图标或整行都原地重试；发现新版本时按钮带 Update 图标，
-               点击只打开 Release 页面，下载与安装由用户自己选渠道。 -->
+               左侧图标固定是 Update，不再随检测结果换成 Refresh；右侧按钮固定是「刷新」，一按就重新查
+               （绕开一分钟复用，否则刚自动查完时按了没反应）。检测失败时点图标、点整行都能原地重试；
+               发现新版本时点整行只打开 Release 页面，下载与安装由用户自己选渠道。 -->
           <MiuixBasicComponent class="update-entry" :class="{ 'update-entry--available': updatePhase === 'available' }" :title="updateTitle" :summary="updateSummary" :summary-color="updatePhase === 'error' ? 'var(--m-color-error)' : undefined" :clickable="updatePhase === 'available' || updatePhase === 'error'" @click="updateAction">
-            <template #start><span v-if="updatePhase === 'checking'" class="update-spinner"><MiuixProgressIndicator type="infinite" :size="20" color="currentColor" /></span><button v-else-if="updatePhase === 'error'" class="update-retry" type="button" title="重试检测更新" aria-label="重试检测更新" @click.stop="checkUpdate"><MiuixIcon class="about-entry-icon" :icon="Refresh" :size="20" /></button><MiuixIcon v-else class="about-entry-icon" :icon="Update" :size="20" /></template>
-            <template #end><MiuixButton v-if="updatePhase === 'available'" class="update-button" type="primary" @click.stop="openUpdate"><MiuixIcon :icon="Update" :size="16" /><span>更新</span></MiuixButton><MiuixButton v-else-if="updatePhase === 'error'" class="update-button" @click.stop="checkUpdate"><MiuixIcon :icon="Refresh" :size="16" /><span>重试</span></MiuixButton><span v-else-if="updatePhase === 'latest'" class="update-tag">已是最新</span></template>
+            <template #start><span v-if="updatePhase === 'checking'" class="update-spinner"><MiuixProgressIndicator type="infinite" :size="20" color="currentColor" /></span><button v-else-if="updatePhase === 'error'" class="update-retry" type="button" title="重试检测更新" aria-label="重试检测更新" @click.stop="checkUpdate(true)"><MiuixIcon class="about-entry-icon" :icon="Update" :size="20" /></button><MiuixIcon v-else class="about-entry-icon" :icon="Update" :size="20" /></template>
+            <template #end><MiuixButton class="update-button" :type="updatePhase === 'available' ? 'primary' : undefined" :disabled="updatePhase === 'checking'" @click.stop="checkUpdate(true)"><MiuixIcon :icon="Refresh" :size="16" /><span>刷新</span></MiuixButton></template>
           </MiuixBasicComponent>
           <!-- 箭头行用 miuix 自己的 ArrowPreference：箭头图标、点击反馈、禁用配色都由组件给出。
                行之间不加分隔线，miuix 的列表本来就是靠行间距＋圆角卡片分组的。 -->

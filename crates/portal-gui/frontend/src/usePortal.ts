@@ -29,7 +29,7 @@ const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps
 const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet_direct: 'reachable', internet: 'reachable', internet_latency_ms: 38 }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.5.3')
+  const version = ref('0.5.6')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
@@ -235,10 +235,12 @@ export function createPortalState(bridge?: DesktopBridge) {
   }
   // 只查版本号，不做下载安装：Arch 包的二进制归 pacman 记账，AppImage / zip 也要用户自己挑，
   // 所以拿到结果后交给系统浏览器打开 Release 页面就够了。
-  async function checkUpdate() {
+  // force 给“刷新”按钮用：按钮常驻就该一按就查，否则自动检查刚跑完的一分钟内点了没反应，
+  // 未认证的 GitHub API 限额只有 60 次/小时/IP，所以复用只留给自动检查那条路径。
+  async function checkUpdate(force = false) {
     if (demo.value || !bridge || updatePhase.value === 'checking') return
-    // 关于页来回切换时不必反复请求：一分钟内的结果直接复用，未认证的 GitHub API 限额只有 60 次/小时/IP。
-    if (updateInfo.value && Date.now() - updateCheckedAt < 60_000) return
+    // 关于页来回切换时不必反复请求：一分钟内的结果直接复用。
+    if (!force && updateInfo.value && Date.now() - updateCheckedAt < 60_000) return
     updatePhase.value = 'checking'
     try {
       const info = await bridge.core.invoke<UpdateInfo>('check_update')
