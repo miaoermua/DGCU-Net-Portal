@@ -56,7 +56,8 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .status-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 14px; background: var(--m-color-secondary-container); color: var(--m-color-on-surface-variant-summary); flex-shrink: 0; }
 .status-icon.online { color: var(--m-color-primary); background: var(--m-color-tertiary-container); }
 .status-icon.authenticating { color: var(--m-color-primary); background: var(--m-color-tertiary-container); }
-.status-icon .m-icon, .status-icon .m-progress { width: 25px; height: 25px; }
+/* 圈和 Link 图标同尺寸、原地互换，所以一起缩；比 svg 自己的 size 属性小 25%。 */
+.status-icon .m-icon, .status-icon .m-progress { width: 18.75px; height: 18.75px; }
 .status-line { flex-wrap: wrap; gap: 8px; }
 .status-line h2 { font-size: 17px; line-height: 1.4; }
 .status-message { font-size: 11px; color: var(--m-color-on-surface-variant-summary); line-height: 1.6; margin-top: 3px; overflow-wrap: anywhere; }
@@ -64,7 +65,7 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .shutdown-icon, .refresh-icon, .clear-session-icon, .backend-login-icon { --m-icon-button-min-width: 32px; --m-icon-button-min-height: 32px; --m-icon-button-radius: 10px; --m-icon-button-bg: var(--m-color-secondary-container); }
 .auth-site-icon.m-button { padding: 8px; min-width: 32px; width: 32px; }
 .auth-site-icon .m-icon { width: 18px; height: 18px; }
-.about-logo { width: 48px; height: 48px; border-radius: 12px; background: #fff; object-fit: contain; }
+.about-logo { width: 88px; height: 88px; border-radius: 22px; background: #fff; object-fit: contain; }
 .preference-action { width: 100%; display: flex; align-items: center; justify-content: space-between; border: 0; border-top: 1px solid var(--m-color-surface); padding: 11px 14px; text-align: left; background: transparent; color: var(--m-color-on-background); cursor: pointer; }
 .preference-action > span:first-child { display: flex; flex-direction: column; gap: 4px; }.preference-action strong { font-size: 13px; font-weight: 500; }.preference-action small { font-size: 12px; color: var(--m-color-on-surface-variant-summary); }.preference-action > span:last-child { font-size: 22px; color: var(--m-color-on-surface-variant-actions); }
 .logs-dialog { width: min(660px, calc(100% - 28px)); height: min(590px, calc(100dvh - 40px)); max-height: calc(100dvh - 40px); border: 0; border-radius: 18px; padding: 18px; background: var(--m-color-background); color: var(--m-color-on-background); }
@@ -145,13 +146,18 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .advanced-settings summary { font-size: 12px; padding: 8px 4px; color: var(--m-color-on-surface-variant-summary); cursor: pointer; }
 .settings-footer { position: sticky; bottom: 0; padding: 12px 0 2px; background: var(--m-color-surface); }
 .inline-note { margin-bottom: 8px; color: var(--m-color-primary); font-size: 11px; line-height: 1.5; }
-/* 关于页：卡片自己不加内边距，行距由 miuix 的 BasicComponent（16px）提供。
-   行与行之间不画分隔线：miuix 自己的列表就是靠行间距和圆角卡片分组，加了线反而不像。 */
-.about-brand { display: flex; gap: 14px; align-items: center; padding: 4px 4px 14px; }
-.about-brand h2 { font-size: 17px; margin-bottom: 5px; }.about-brand p { font-size: 11px; color: var(--m-color-on-surface-variant-summary); }
+.about-page { display: flex; flex-direction: column; }
+.about-card { margin-top: 50px; }
+.about-brand { height: 275px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 12px; padding: 0 4px 24px; text-align: center; }
+.about-brand h2 { font-size: 25px; font-weight: 700; letter-spacing: -.5px; }
+.about-brand p { font-size: 12px; color: var(--m-color-on-surface-variant-summary); }
 .about-entry-icon { width: 20px; height: 20px; color: var(--m-color-on-background); fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-/* 关于页的更新行：转圈沿用状态卡的 infinite 指示器，描边用 currentColor，所以颜色在这里给。 */
-.update-entry .update-spinner { display: flex; align-items: center; color: var(--m-color-primary); }
+/* 关于页的更新行：转圈沿用状态卡的 infinite 指示器，描边用 currentColor，所以颜色在这里给。
+   槽位写死 20px（与 .about-entry-icon / 重试按钮同宽）并把转圈居中，这样「转圈 ⇄ Update 图标
+   ⇄ 重试按钮」三种状态互换时占位一样宽，右侧文字不会左右跳。 */
+.update-entry .update-spinner { width: 20px; display: flex; align-items: center; justify-content: center; color: var(--m-color-primary); }
+/* 转圈靠 CSS 缩放而不是改 :size：viewBox 会等比放大描边，不用另外配 stroke-width。 */
+.update-entry .update-spinner .m-progress { width: 17px; height: 17px; }
 .update-entry--available .about-entry-icon { color: var(--m-color-primary); }
 /* 检测失败时左侧图标额外可点重试：去掉按钮外观，只留图标本身。图标本身仍是 Update。 */
 .update-entry .update-retry { display: flex; align-items: center; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--m-color-primary); cursor: pointer; }

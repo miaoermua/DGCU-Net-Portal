@@ -226,8 +226,9 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate(tru
       </section>
 
       <section v-else class="about-page" aria-label="关于">
-        <!-- 品牌区当作页头放在卡片外面，卡片只负责分组，避免“卡片里再套一层容器”的观感。 -->
-        <header class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><div><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></div></header>
+        <!-- 品牌区上下堆叠、水平居中；留白与垂直位置全部由 .about-brand 自己的 flex 承担
+             （上方留白多于下方），模板里不再额外包一层容器。 -->
+        <header class="about-brand"><img :src="xiaoweiLogo" alt="小薇" class="about-logo"><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></header>
         <MiuixCard class="about-card">
           <!-- 更新提示：进入本页自动查一次 GitHub Releases。检测中沿用状态卡的 miuix 无限转圈；
                左侧图标固定是 Update，不再随检测结果换成 Refresh；右侧按钮固定是「刷新」，一按就重新查
