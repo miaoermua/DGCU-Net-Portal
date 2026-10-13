@@ -52,3 +52,77 @@ impl AccountingRates {
         rates
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn session(id: &str, seconds: u64, up: u64, down: u64) -> OnlineSession {
+        OnlineSession {
+            radacctid: id.into(),
+            username: "test-user".into(),
+            acctstarttime: "2026-01-01 00:00:00".into(),
+            acctsessiontime: seconds,
+            framedipaddress: Some("192.0.2.2".parse().unwrap()),
+            acctinputoctets: up,
+            acctoutputoctets: down,
+        }
+    }
+
+    /// NAS 换机器或重新计时会让累计字节归零。此时绝不能拿「现在的值减上一次」
+    /// 去算速率：`0 - 80000` 会绕成天文数字，界面直接炸出一根离谱的柱子。
+    #[test]
+    fn counters_restarting_to_zero_do_not_produce_a_wrapped_rate() {
+        let mut rates = AccountingRates::default();
+        rates.update(&[session("1", 60, 100, 80000)]);
+        // 累计值回退：用例会算出负差，靠 u64 减法回绕成巨大的速率。
+        let after = rates.update(&[session("1", 120, 50, 0)]);
+        assert_eq!(after["1"].download_bps, None);
+        assert_eq!(after["1"].upload_bps, None);
+    }
+
+    /// accounting 时间本身回退（后台重启）同样不能出速率。
+    #[test]
+    fn accounting_time_going_backwards_is_not_divided_by() {
+        let mut rates = AccountingRates::default();
+        rates.update(&[session("1", 120, 700, 7000)]);
+        let after = rates.update(&[session("1", 60, 800, 8000)]);
+        assert_eq!(after["1"].download_bps, None);
+        assert_eq!(after["1"].sample_seconds, None);
+    }
+
+    /// 会话从后台列表消失后要清掉它的基线：同一 id 若再出现（重新登录），
+    /// 应当从「首次采样」重新开始，而不是拿上一条生命周期的计数做差。
+    #[test]
+    fn vanished_session_drops_its_baseline() {
+        let mut rates = AccountingRates::default();
+        rates.update(&[session("1", 60, 100, 1000)]);
+        // 会话消失：列表里不再有 id 1。
+        rates.update(&[]);
+        // 同一 id 再次出现，必须重新采样而不是接着上一段算。
+        assert!(rates.update(&[session("1", 90, 200, 2000)])["1"]
+            .download_bps
+            .is_none());
+    }
+
+    /// `clear()` 是「关掉流量统计」时的复位：不留基线，下次打开重新采样。
+    #[test]
+    fn clear_forgets_baselines_so_measurement_restarts() {
+        let mut rates = AccountingRates::default();
+        rates.update(&[session("1", 60, 100, 1000)]);
+        rates.clear();
+        assert!(rates.update(&[session("1", 120, 700, 7000)])["1"]
+            .download_bps
+            .is_none());
+    }
+
+    /// 时间没有推进就不给速率：界面显示的秒数也会一并为空，
+    /// 免得出现「0 秒内传了 6 MB」这种自相矛盾的读数。
+    #[test]
+    fn unchanged_snapshot_reports_no_rate() {
+        let mut rates = AccountingRates::default();
+        rates.update(&[session("1", 60, 100, 1000)]);
+        let after = rates.update(&[session("1", 60, 900, 9000)]);
+        assert_eq!(after["1"].download_bps, None);
+        assert_eq!(after["1"].sample_seconds, None);
+    }
+}

@@ -817,6 +817,53 @@ mod tests {
         // 地址没再变化就不该反复重建。
         assert!(!c.rebind_changed_network());
     }
+    /// 网卡地址与后台会话的对应关系决定「自动选中本机会话」。
+    ///
+    /// 同一 IP 上有两条会话时代码不能替用户挑，必须留空等手动选：挑错就等于
+    /// 把别人的设备下线或流量算到自己头上。
+    #[test]
+    fn local_session_binding_needs_an_unambiguous_ip_match() {
+        // `tests::row` 造出的会话都带 IP 192.0.2.2，网卡上下文要对上才能匹配。
+        let network = context("192.0.2.2");
+        let rows = vec![crate::tests::row("a", 1, 0, 0)];
+        assert_eq!(
+            Controller::unique_local_session(&rows, Some(&network)),
+            Some("a".into())
+        );
+        // 没有网卡上下文时无从判断，一律不自动绑定。
+        assert_eq!(Controller::unique_local_session(&rows, None), None);
+        // IP 对不上时不绑定。
+        assert_eq!(
+            Controller::unique_local_session(&rows, Some(&context("192.0.2.99"))),
+            None
+        );
+        // 同一 IP 出现两条：不猜。
+        let ambiguous = vec![
+            crate::tests::row("a", 1, 0, 0),
+            crate::tests::row("b", 1, 0, 0),
+        ];
+        assert_eq!(
+            Controller::unique_local_session(&ambiguous, Some(&network)),
+            None
+        );
+    }
+    /// 连不上 portal 服务器时，文案要指出「不在校园网」和「服务器离线」这两个方向。
+    ///
+    /// 后台与 Portal 都在校园内网地址上，这两种情况占绝大多数；只说「请检查网络」
+    /// 会让用户无从下手，所以这句是防呆设计的一部分，锁住以免被改回含糊的说法。
+    #[test]
+    fn unreachable_portal_names_the_two_likely_causes() {
+        use crate::NetworkFault;
+        for fault in [
+            NetworkFault::Connect,
+            NetworkFault::Timeout,
+            NetworkFault::Other,
+        ] {
+            let message = AppError::Network(fault).to_string();
+            assert!(message.contains("校园网"), "{message}");
+            assert!(message.contains("离线"), "{message}");
+        }
+    }
     /// 轮询失败要能区分"环境暂时不可用"和"认证被拒"。
     #[test]
     fn classifies_poll_failures_for_automatic_recovery() {

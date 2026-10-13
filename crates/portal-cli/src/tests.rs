@@ -429,6 +429,66 @@ fn unicode_redaction_does_not_panic() {
     assert_eq!(redact("测试用户名六"), "测试***名六");
 }
 
+/// 账号名要脱敏后才会进日志和界面：短名全掩，长名留头尾两字符。
+#[test]
+fn redaction_keeps_only_the_edges() {
+    assert_eq!(redact("ab"), "****");
+    assert_eq!(redact("abcd"), "****");
+    assert_eq!(redact("abcde"), "ab***de");
+    // 空串与单字符都不该 panic。
+    assert_eq!(redact(""), "****");
+}
+
+/// 反代或错误配置常把凭据塞进地址里：这类 URL 必须被拒绝，而不是带密码去请求。
+#[test]
+fn urls_carrying_credentials_are_rejected() {
+    for value in [
+        "http://user:pass@172.18.100.65/lfradius/",
+        "http://user@172.18.100.65/lfradius/",
+        "ftp://172.18.100.65/",
+        "not a url",
+        "",
+    ] {
+        assert!(
+            matches!(validate_url(value), Err(AppError::InvalidUrl)),
+            "{value}"
+        );
+    }
+    assert!(validate_url("http://172.18.100.65/lfradius/").is_ok());
+    assert!(validate_url("https://example.test/").is_ok());
+}
+
+/// 后台地址里的查询串与片段会被 `Url::join` 悄悄丢掉，参数错时很难察觉，直接拒绝。
+#[test]
+fn base_url_rejects_query_and_fragment() {
+    assert!(matches!(
+        normalize_base("http://172.18.100.65/lfradius/#frag"),
+        Err(AppError::InvalidUrl)
+    ));
+    assert!(normalize_base("https://example.test/lfradius").is_ok());
+}
+
+/// `new_session_id` 只在「恰好新增一条」时返回它：零条说明没登录上，
+/// 多条说明分不清是哪台设备，必须交给用户选。
+#[test]
+fn only_a_single_new_session_is_adopted() {
+    assert_eq!(
+        new_session_id(
+            &[row("old", 1, 0, 0)],
+            &[row("old", 1, 0, 0), row("new", 1, 0, 0)]
+        ),
+        Some("new".into())
+    );
+    assert_eq!(new_session_id(&[], &[]), None);
+    assert_eq!(
+        new_session_id(
+            &[],
+            &[row("a", 1, 0, 0), row("b", 1, 0, 0), row("c", 1, 0, 0)]
+        ),
+        None
+    );
+}
+
 /// 双开回归测试：端点上有活着的同版本实例时，第二个 daemon 必须让位。
 /// 以前用 try_overwrite(true) 会删掉对方的端点文件重新绑定，两个进程都活着，
 /// 但先启动的那个再也收不到请求，也不会退出。
