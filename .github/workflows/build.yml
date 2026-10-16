@@ -72,13 +72,24 @@ jobs:
         run: >-
           python3 scripts/package_macos.py --output target/packages
           --arch ${{ matrix.arch }} --binary-dir target/${{ matrix.target }}/release --dmg
-      - uses: actions/upload-artifact@v7
+      # macOS 的产物分成两个 artifact：dmg 进 Release，zip 只留在 Actions 里。
+      # 分开而不是「下完再删」，是为了让 release job 根本不下载 zip，也不用知道它的文件名。
+      - name: 上传 DMG（进 Release）
+        uses: actions/upload-artifact@v7
         with:
-          name: macos-${{ matrix.arch }}
+          name: macos-dmg-${{ matrix.arch }}
+          path: |
+            target/packages/*.dmg
+            target/packages/*.dmg.sha256
+          if-no-files-found: error
+      - name: 上传 ZIP（仅 Actions 存档）
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-zip-${{ matrix.arch }}
           path: |
             target/packages/*.zip
-            target/packages/*.dmg
             target/packages/*.sha256
+            !target/packages/*.dmg.sha256
   windows:
     name: Windows ${{ matrix.arch }}
     needs: frontend
@@ -224,12 +235,13 @@ jobs:
       contents: write
     steps:
       # 只取各平台的发行包，避免把 frontend-dist（js/css/png）与 linux-binaries（裸二进制）带进 Release。
-      - name: 下载发行包（macOS）
+      # macOS 只取 dmg：zip 以 macos-zip-* 单独留在 Actions 存档里，不进 Release。
+      - name: 下载发行包（macOS DMG）
         uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true
-          pattern: 'macos-*'
+          pattern: 'macos-dmg-*'
       - name: 下载发行包（Windows）
         uses: actions/download-artifact@v8
         with:
