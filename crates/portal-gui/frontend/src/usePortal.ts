@@ -116,8 +116,10 @@ export function createPortalState(bridge?: DesktopBridge) {
       value = { ...value, rates: { ...value.rates, [id]: lastRate.rate } }
       unchanged = true
     }
+    // 后台快照只同步连接状态。轮询与后台事件每两秒就会来一次，收到未认证的
+    // offline/unknown/error 时清空输入，会让用户永远填不完表单。临时凭据只由
+    // 明确的动作释放：连接提交后、下线、清除会话、退出应用与销毁状态。
     snapshot.value = value
-    if (!value.authenticated && value.one_session && ['offline', 'unknown', 'error'].includes(value.status)) clearFields()
     return unchanged
   }
   async function run(action: () => Promise<void>) {

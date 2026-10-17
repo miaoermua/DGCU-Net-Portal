@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createPortalState, defaultSettings, emptySnapshot, formatRate, normalizeSettings } from './usePortal'
 import { licenseGroups } from './licenses'
-import type { DesktopBridge, Session } from './types'
+import type { DesktopBridge, Session, Settings } from './types'
 
 const row = (id: string): Session => ({ radacctid: id, username: 'synthetic-user', framedipaddress: '192.0.2.1', acctstarttime: '', acctsessiontime: 60, acctinputoctets: 600, acctoutputoctets: 6000 })
-function desktop() {
+// passive 是后台轮询与事件返回的快照；one_session 与后端一致，随凭据保存方式变化。
+function desktop(status = 'idle', credentialStore: Settings['credential_store'] = 'system') {
   const stops = [vi.fn(), vi.fn(), vi.fn()]
+  const passive = { ...emptySnapshot(), status, authenticated: false, one_session: credentialStore === 'memory' }
   const invoke = vi.fn(async (command: string) => {
-    if (command === 'initial') return { demo: false, settings: defaultSettings() }
-    if (command === 'snapshot') return emptySnapshot()
+    if (command === 'initial') return { demo: false, settings: { ...defaultSettings(), credential_store: credentialStore } }
+    if (command === 'snapshot') return passive
     return { ...emptySnapshot(), status: 'accepted', authenticated: true, sessions: [row('A'), row('B')] }
   })
   const listen = vi.fn(async () => stops[listen.mock.calls.length - 1]!)
@@ -129,6 +131,55 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     expect(state.username.value).toBe(''); expect(state.password.value).toBe(''); expect(state.portalUrl.value).toBe('')
     expect(state.busy.value).toBe(false)
     expect(state.notice.value).toContain('Synthetic')
+    state.dispose()
+  })
+  // 回归：仅一次会话模式下后端会长期保留未认证的 offline/unknown/error，
+  // 每两秒的轮询与后台事件都会把它送进 receive()。过去这里顺手 clearFields()，
+  // 用户重新填写后又被下一次轮询清掉，表现为输入内容自己消失。
+  it.each(['error', 'offline', 'unknown'])('keeps credentials typed in one-session mode when polling reports %s', async status => {
+    vi.useFakeTimers()
+    const mock = desktop(status, 'memory'), state = createPortalState(mock.bridge)
+    await state.initialize()
+    expect(state.snapshot.value.one_session).toBe(true)
+    state.username.value = 'synthetic-user'
+    state.password.value = 'not-a-real-password'
+    state.portalUrl.value = 'http://portal.example.test/'
+    await vi.advanceTimersByTimeAsync(2000)
+    // 轮询必须真的跑过并接收了这条状态，否则上面的“保留”只是什么都没发生。
+    expect(mock.invoke.mock.calls.filter(([command]) => command === 'snapshot').length).toBeGreaterThan(0)
+    expect(state.snapshot.value.status).toBe(status)
+    expect(state.username.value).toBe('synthetic-user')
+    expect(state.password.value).toBe('not-a-real-password')
+    expect(state.portalUrl.value).toBe('http://portal.example.test/')
+    state.dispose()
+  })
+  it('keeps credentials retyped after a failed login through the next poll', async () => {
+    vi.useFakeTimers()
+    const mock = desktop('error', 'memory'), state = createPortalState(mock.bridge)
+    await state.initialize()
+    state.username.value = 'synthetic-user'; state.password.value = 'not-a-real-password'; state.portalUrl.value = 'http://portal.example.test/'
+    mock.invoke.mockRejectedValueOnce(new Error('Synthetic rejection'))
+    await state.connect()
+    // 主动认证失败仍按既有语义释放临时凭据。
+    expect(state.username.value).toBe(''); expect(state.password.value).toBe(''); expect(state.portalUrl.value).toBe('')
+    const polls = mock.invoke.mock.calls.filter(([command]) => command === 'snapshot').length
+    state.username.value = 'synthetic-user'; state.password.value = 'not-a-real-password'; state.portalUrl.value = 'http://portal.example.test/'
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(mock.invoke.mock.calls.filter(([command]) => command === 'snapshot').length).toBeGreaterThan(polls)
+    expect(state.snapshot.value.status).toBe('error')
+    expect(state.username.value).toBe('synthetic-user')
+    expect(state.password.value).toBe('not-a-real-password')
+    expect(state.portalUrl.value).toBe('http://portal.example.test/')
+    state.dispose()
+  })
+  it('still releases one-session credentials when an explicit login completes', async () => {
+    const mock = desktop(), state = createPortalState(mock.bridge)
+    await state.initialize()
+    state.saved.value.credential_store = 'memory'; state.draft.credential_store = 'memory'
+    state.username.value = 'synthetic-user'; state.password.value = 'not-a-real-password'; state.portalUrl.value = 'http://portal.example.test/'
+    await state.connect()
+    expect(state.snapshot.value.status).toBe('accepted')
+    expect(state.username.value).toBe(''); expect(state.password.value).toBe(''); expect(state.portalUrl.value).toBe('')
     state.dispose()
   })
   it('never chooses the first of multiple sessions and disconnects only selected ID', async () => {
