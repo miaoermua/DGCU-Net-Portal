@@ -409,20 +409,39 @@ fn refuses_ambiguous_or_old_session() {
     assert!(new_session_id(&[row("old", 1, 0, 0)], &[row("old", 1, 0, 0)]).is_none());
     assert!(new_session_id(&[], &[row("a", 1, 0, 0), row("b", 1, 0, 0)]).is_none());
 }
+/// 仅内存模式只影响密码存哪里：重连与后台服务是独立选项，保存时必须原样保留。
 #[test]
-fn transient_settings_cannot_persist_account_or_background_mode() {
+fn memory_settings_keep_redial_and_background_service_choices() {
     let mut s = settings::Settings {
         username: "test-user".into(),
-        reconnect_mode: settings::ReconnectMode::NewSession,
+        reconnect_mode: settings::ReconnectMode::TerminateAndReconnect,
         service_enabled: true,
         credential_store: settings::CredentialStore::Memory,
         ..Default::default()
     };
     s.normalize().unwrap();
-    assert!(s.username.is_empty());
+    assert!(s.username.is_empty(), "用户名仍按既有设计不落盘");
     assert_eq!(s.credential_store, settings::CredentialStore::Memory);
-    assert_eq!(s.reconnect_mode, settings::ReconnectMode::Disabled);
-    assert!(!s.service_enabled);
+    assert_eq!(
+        s.reconnect_mode,
+        settings::ReconnectMode::TerminateAndReconnect
+    );
+    assert!(s.service_enabled);
+}
+
+/// 序列化后的设置里不能出现密码字段或密码内容：仅内存模式的承诺就是这个。
+#[test]
+fn memory_settings_never_serialize_a_password() {
+    let mut s = settings::Settings {
+        username: "test-user".into(),
+        credential_store: settings::CredentialStore::Memory,
+        reconnect_mode: settings::ReconnectMode::NewSession,
+        ..Default::default()
+    };
+    s.normalize().unwrap();
+    let json = serde_json::to_string(&s).unwrap();
+    assert!(!json.contains("password"), "{json}");
+    assert!(!json.contains("test-user"), "{json}");
 }
 #[test]
 fn unicode_redaction_does_not_panic() {

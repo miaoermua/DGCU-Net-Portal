@@ -196,7 +196,7 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate(tru
           <form class="credential-fields" autocomplete="off" @submit.prevent="connect(false)"><label class="field">账号<input v-model="username" :disabled="locked" autocomplete="off" placeholder="校园网账号" spellcheck="false"></label><label class="field">密码<input v-model="password" :disabled="locked" type="password" autocomplete="new-password" placeholder="仅当前会话使用"><button type="submit" class="sr-only" :disabled="locked" tabindex="-1">上线</button></label></form>
           <MiuixDropdownPreference v-model="credentialStoreIndex" title="会话账户保存方式" summary="默认使用系统凭据，更安全" :items="credentialStoreItems" :disabled="settingsLocked" />
           <p v-if="draft.credential_store === 'file'" class="security-note">配置文件会以明文保存密码，仅建议用于测试或系统没有可用凭据库的设备。</p>
-          <p v-if="draft.credential_store === 'memory'" class="security-note">仅一次会话不会保存密码：密码只留在后台进程内存中，daemon 退出或清除会话后即丢失，不会写入配置文件或系统密钥库。</p>
+          <p v-if="draft.credential_store === 'memory'" class="security-note">仅一次会话不会保存密码：密码只留在后台进程内存中，daemon 退出或清除会话后即丢失，不会写入配置文件或系统密钥库；掉线重拨与后台服务选项不受影响。</p>
         </MiuixCard>
         <h3 class="group-heading">认证</h3>
         <MiuixCard>

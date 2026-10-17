@@ -193,12 +193,14 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     expect(mock.invoke).toHaveBeenCalledWith('disconnect', { id: 'B' })
     state.dispose()
   })
-  it('normalizes one-session settings before sending them to Rust', async () => {
+  it('keeps redial and background service choices when one-session storage is selected', async () => {
     const value = normalizeSettings({ ...defaultSettings(), credential_store: 'memory', username: 'synthetic', reconnect_mode: 'new_session', service_enabled: true })
-    expect(value.username).toBe(''); expect(value.credential_store).toBe('memory'); expect(value.reconnect_mode).toBe('disabled'); expect(value.service_enabled).toBe(false)
+    expect(value.username).toBe(''); expect(value.credential_store).toBe('memory'); expect(value.reconnect_mode).toBe('new_session'); expect(value.service_enabled).toBe(true)
     const state = createPortalState(); await state.initialize()
-    state.draft.credential_store = 'system'; state.draft.reconnect_mode = 'new_session'; state.draft.credential_store = 'memory'
-    expect(state.draft.reconnect_mode).toBe('disabled')
+    state.draft.credential_store = 'system'; state.draft.reconnect_mode = 'terminate_and_reconnect'; state.draft.service_enabled = true
+    state.draft.credential_store = 'memory'
+    expect(state.draft.reconnect_mode).toBe('terminate_and_reconnect')
+    expect(state.draft.service_enabled).toBe(true)
     state.dispose()
   })
   it('retains input while editing and releases event listeners and secrets on disposal', async () => {
