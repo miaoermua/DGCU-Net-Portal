@@ -113,9 +113,17 @@ impl Controller {
         self.status = "idle".into();
         self.message = "已清除本地会话；这不代表远端已经下线".into();
     }
+    /// 会话消失或连接失败时，Memory 模式是否该立刻丢弃本地登录态。
+    ///
+    /// 只有"重连也关着"时这份进程内凭据才没有后续用途；开启重连后它必须
+    /// 留到下一次重拨，否则掉线后没有任何可用的账号，重连永远无法成功。
+    fn drops_state_on_loss(&self) -> bool {
+        self.settings.credential_store == CredentialStore::Memory
+            && self.settings.reconnect_mode == ReconnectMode::Disabled
+    }
     fn fail(&mut self, e: AppError) -> AppError {
         self.logs.error(&e);
-        if self.settings.credential_store == CredentialStore::Memory {
+        if self.drops_state_on_loss() {
             self.clear();
         }
         self.status = "error".into();
@@ -216,11 +224,9 @@ impl Controller {
                 self.missing = 0;
                 self.status = "session_online".into();
                 self.message = "已恢复本机对应的在线会话".into();
-                self.paused = self.settings.credential_store == CredentialStore::Memory
-                    || self.settings.reconnect_mode == ReconnectMode::Disabled;
-                if self.settings.credential_store != CredentialStore::Memory
-                    && self.settings.reconnect_mode != ReconnectMode::Disabled
-                {
+                self.paused = self.settings.reconnect_mode == ReconnectMode::Disabled;
+                // 凭据只存在控制器内存里；只要开了重连就保留，与密码是否落盘无关。
+                if self.settings.reconnect_mode != ReconnectMode::Disabled {
                     self.credential = Some(credential);
                 }
                 return Ok(self.snapshot());
@@ -339,12 +345,8 @@ impl Controller {
             self.message
                 .push_str("；后台会话查询暂不可用，稍后自动重试");
         }
-        self.paused = self.settings.credential_store == CredentialStore::Memory
-            || self.settings.reconnect_mode == ReconnectMode::Disabled
-            || outcome.is_none();
-        if self.settings.credential_store != CredentialStore::Memory
-            && self.settings.reconnect_mode != ReconnectMode::Disabled
-        {
+        self.paused = self.settings.reconnect_mode == ReconnectMode::Disabled || outcome.is_none();
+        if self.settings.reconnect_mode != ReconnectMode::Disabled {
             self.credential = Some(credential);
         }
         // Otherwise credential drops here, before the online session ends.
@@ -392,6 +394,10 @@ impl Controller {
         let network_changed = settings.interface_name != self.settings.interface_name
             || settings.bypass_proxy != self.settings.bypass_proxy;
         self.settings = settings;
+        // 关掉重连后，进程内凭据就没有后续用途了，不留到用户看不见的地方。
+        if self.settings.reconnect_mode == ReconnectMode::Disabled {
+            self.credential = None;
+        }
         if !server_changed && !network_changed {
             return;
         }
@@ -445,7 +451,7 @@ impl Controller {
                 self.missing += 1;
                 self.status = "offline".into();
                 self.message = "所选会话已从后台在线列表消失".into();
-                if self.settings.credential_store == CredentialStore::Memory {
+                if self.drops_state_on_loss() {
                     self.clear();
                 }
             } else {
@@ -499,6 +505,8 @@ impl Controller {
     }
     pub async fn disconnect(&mut self, id: &str) -> Result<Snapshot, AppError> {
         self.paused = true;
+        // 手动下线是显式释放路径：重连凭据在这里必须作废，任何保存方式都一样。
+        self.credential = None;
         let result = match &self.api {
             Some(api) => api.disconnect_id(id).await,
             None => Err(AppError::Rejected),
@@ -509,7 +517,7 @@ impl Controller {
                 self.clear();
             }
             self.status = "unknown".into();
-            self.message = "远端下线未确认；请在认证后台检查。临时模式本地凭据已释放".into();
+            self.message = "远端下线未确认；请在认证后台检查。本地重连凭据已释放".into();
             return Err(e);
         }
         self.rows.retain(|r| r.radacctid != id);
@@ -540,7 +548,6 @@ impl Controller {
     /// not update accounting-rate samples.
     pub async fn redial_tick<F: Fn(Phase)>(&mut self, progress: F) {
         if self.api.is_none()
-            || self.settings.credential_store == CredentialStore::Memory
             || self.settings.reconnect_mode == ReconnectMode::Disabled
             || self.paused
         {
@@ -571,7 +578,6 @@ impl Controller {
             }
         }
         if self.paused
-            || self.settings.credential_store == CredentialStore::Memory
             || self.settings.reconnect_mode == ReconnectMode::Disabled
             || self.missing < 3
             || self.attempts >= 3
@@ -640,6 +646,8 @@ impl Controller {
                 );
             }
             Err(_) => {
+                // 暂停只是停止自动尝试；凭据仍留在进程内，供用户手动重试。
+                self.credential = Some(retry_credential);
                 self.logs.record(crate::logging::Event::RetryPaused);
                 self.paused = true;
                 self.message = "自动重拨被认证系统拒绝，已暂停；请手动检查".into();
@@ -688,10 +696,7 @@ impl Controller {
     /// 事务性：只有 `connect` 成功才替换现有会话与 client；失败时回滚到调用前
     /// 的状态，保留凭据等待下一个退避窗口，直到网络恢复为止。
     async fn retry_after_failure<F: Fn(Phase)>(&mut self, progress: F) {
-        if self.paused
-            || self.settings.credential_store == CredentialStore::Memory
-            || self.settings.reconnect_mode == ReconnectMode::Disabled
-        {
+        if self.paused || self.settings.reconnect_mode == ReconnectMode::Disabled {
             return;
         }
         if self
@@ -817,6 +822,53 @@ mod tests {
         // 地址没再变化就不该反复重建。
         assert!(!c.rebind_changed_network());
     }
+    /// 网卡地址与后台会话的对应关系决定「自动选中本机会话」。
+    ///
+    /// 同一 IP 上有两条会话时代码不能替用户挑，必须留空等手动选：挑错就等于
+    /// 把别人的设备下线或流量算到自己头上。
+    #[test]
+    fn local_session_binding_needs_an_unambiguous_ip_match() {
+        // `tests::row` 造出的会话都带 IP 192.0.2.2，网卡上下文要对上才能匹配。
+        let network = context("192.0.2.2");
+        let rows = vec![crate::tests::row("a", 1, 0, 0)];
+        assert_eq!(
+            Controller::unique_local_session(&rows, Some(&network)),
+            Some("a".into())
+        );
+        // 没有网卡上下文时无从判断，一律不自动绑定。
+        assert_eq!(Controller::unique_local_session(&rows, None), None);
+        // IP 对不上时不绑定。
+        assert_eq!(
+            Controller::unique_local_session(&rows, Some(&context("192.0.2.99"))),
+            None
+        );
+        // 同一 IP 出现两条：不猜。
+        let ambiguous = vec![
+            crate::tests::row("a", 1, 0, 0),
+            crate::tests::row("b", 1, 0, 0),
+        ];
+        assert_eq!(
+            Controller::unique_local_session(&ambiguous, Some(&network)),
+            None
+        );
+    }
+    /// 连不上 portal 服务器时，文案要指出「不在校园网」和「服务器离线」这两个方向。
+    ///
+    /// 后台与 Portal 都在校园内网地址上，这两种情况占绝大多数；只说「请检查网络」
+    /// 会让用户无从下手，所以这句是防呆设计的一部分，锁住以免被改回含糊的说法。
+    #[test]
+    fn unreachable_portal_names_the_two_likely_causes() {
+        use crate::NetworkFault;
+        for fault in [
+            NetworkFault::Connect,
+            NetworkFault::Timeout,
+            NetworkFault::Other,
+        ] {
+            let message = AppError::Network(fault).to_string();
+            assert!(message.contains("校园网"), "{message}");
+            assert!(message.contains("离线"), "{message}");
+        }
+    }
     /// 轮询失败要能区分"环境暂时不可用"和"认证被拒"。
     #[test]
     fn classifies_poll_failures_for_automatic_recovery() {
@@ -868,5 +920,194 @@ mod tests {
         };
         c.apply_settings(settings);
         assert!(c.bound_network.is_none(), "换网卡后应强制重新解析并重建");
+    }
+    /// 仅内存模式只是不落盘，不是"不能重连"：开了重连就必须在进程内保留凭据。
+    #[tokio::test]
+    async fn memory_login_keeps_credential_only_when_redial_is_enabled() {
+        for (mode, retained) in [
+            (ReconnectMode::NewSession, true),
+            (ReconnectMode::TerminateAndReconnect, true),
+            (ReconnectMode::Disabled, false),
+        ] {
+            let mock = crate::tests::Mock::new("direct");
+            let mut c = Controller {
+                settings: Settings {
+                    server: mock.base.clone(),
+                    credential_store: CredentialStore::Memory,
+                    reconnect_mode: mode,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            c.resolve_network = Arc::new(|_| Ok(Some(context("127.0.0.1"))));
+            c.connect(
+                Credential::new("test-user".into(), "test-password".into()),
+                "",
+                false,
+                |_| {},
+            )
+            .await
+            .unwrap();
+            assert_eq!(c.credential.is_some(), retained, "{mode:?}");
+            assert_eq!(c.paused, mode == ReconnectMode::Disabled, "{mode:?}");
+            if retained {
+                assert_eq!(c.credential.as_ref().unwrap().password, "test-password");
+            }
+        }
+    }
+    /// 会话消失只该累计缺失次数；重连开着时 API 与凭据要留到重拨真正发生。
+    #[test]
+    fn memory_session_loss_keeps_reconnect_state_when_redial_is_enabled() {
+        let mut c = Controller {
+            settings: Settings {
+                credential_store: CredentialStore::Memory,
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            api: Some(PortalClient::new("http://127.0.0.1:9/lfradius/").unwrap()),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            selected: Some("gone".into()),
+            paused: false,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            c.update_session_status();
+        }
+        assert_eq!(c.missing, 3);
+        assert!(c.api.is_some(), "重拨还需要这个 client");
+        assert!(c.credential.is_some(), "重拨还需要这份进程内凭据");
+        assert_eq!(c.status, "offline");
+    }
+    /// 重连关着时这份凭据没有任何后续用途，会话消失就该立刻释放。
+    #[test]
+    fn memory_session_loss_releases_state_when_redial_is_disabled() {
+        let mut c = Controller {
+            settings: Settings {
+                credential_store: CredentialStore::Memory,
+                reconnect_mode: ReconnectMode::Disabled,
+                ..Default::default()
+            },
+            api: Some(PortalClient::new("http://127.0.0.1:9/lfradius/").unwrap()),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            selected: Some("gone".into()),
+            ..Default::default()
+        };
+        c.update_session_status();
+        assert!(c.api.is_none());
+        assert!(c.credential.is_none());
+        assert!(c.paused);
+        assert_eq!(c.missing, 0);
+    }
+    /// 三次缺失检测后必须真的发起重拨，并且用的是内存里留下的凭据。
+    #[tokio::test]
+    async fn memory_redial_fires_after_three_missing_checks() {
+        let mock = crate::tests::Mock::new("direct");
+        let settings = Settings {
+            server: mock.base.clone(),
+            credential_store: CredentialStore::Memory,
+            reconnect_mode: ReconnectMode::NewSession,
+            ..Default::default()
+        };
+        let api = PortalClient::new(&settings.server).unwrap();
+        api.login("test-user", "test-password").await.unwrap();
+        let mut c = Controller {
+            settings,
+            api: Some(api),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            selected: Some("gone".into()),
+            paused: false,
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("127.0.0.1"))));
+        c.redial_tick(|_| {}).await;
+        c.redial_tick(|_| {}).await;
+        assert_eq!(c.missing, 2);
+        assert_eq!(c.attempts, 0, "未到三次缺失不应重拨");
+        assert!(c.credential.is_some());
+        c.redial_tick(|_| {}).await;
+        assert_eq!(c.attempts, 1);
+        assert!(
+            mock.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| request.contains("cmcc_login_value")),
+            "第三次缺失后应重新走一遍 Portal 登录"
+        );
+        assert!(c.credential.is_some(), "重拨后凭据仍在进程内");
+        // 短时间内重复轮询会落在退避窗口里，不会追加尝试。
+        c.redial_tick(|_| {}).await;
+        assert_eq!(c.attempts, 1, "退避窗口内不应重复拨号");
+    }
+    /// 认证被拒后暂停自动重拨：不再自动尝试，但凭据留着手动重试。
+    #[tokio::test]
+    async fn rejected_redial_pauses_and_keeps_credential() {
+        let mock = crate::tests::Mock::new("fake");
+        let settings = Settings {
+            server: mock.base.clone(),
+            credential_store: CredentialStore::Memory,
+            reconnect_mode: ReconnectMode::NewSession,
+            ..Default::default()
+        };
+        let api = PortalClient::new(&settings.server).unwrap();
+        api.login("test-user", "test-password").await.unwrap();
+        let mut c = Controller {
+            settings,
+            api: Some(api),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            selected: Some("gone".into()),
+            paused: false,
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("127.0.0.1"))));
+        for _ in 0..3 {
+            c.redial_tick(|_| {}).await;
+        }
+        assert_eq!(c.attempts, 1);
+        assert!(c.paused, "认证被拒应暂停自动重拨");
+        assert!(c.message.contains("已暂停"), "{}", c.message);
+        assert!(c.credential.is_some(), "暂停不等于释放，凭据留给手动重试");
+        c.redial_tick(|_| {}).await;
+        assert_eq!(c.attempts, 1);
+    }
+    /// 手动下线与 Forget 都是显式释放：不论凭据存在哪里都必须作废。
+    #[tokio::test]
+    async fn manual_release_paths_clear_credentials() {
+        let mut c = Controller {
+            settings: Settings {
+                credential_store: CredentialStore::Memory,
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            ..Default::default()
+        };
+        // 没有可用 client 时下线会失败，但手动下线本身就该释放凭据。
+        assert!(c.disconnect("gone").await.is_err());
+        assert!(c.credential.is_none());
+        assert!(c.paused);
+        c.credential = Some(Credential::new("test-user".into(), "test-password".into()));
+        c.forget();
+        assert!(c.credential.is_none());
+        assert!(c.api.is_none());
+    }
+    /// 关掉重连后，进程内不再保留没有用途的凭据。
+    #[test]
+    fn disabling_redial_drops_retained_credential() {
+        let mut c = Controller {
+            settings: Settings {
+                credential_store: CredentialStore::Memory,
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        c.credential = Some(Credential::new("test-user".into(), "test-password".into()));
+        c.apply_settings(Settings {
+            credential_store: CredentialStore::Memory,
+            reconnect_mode: ReconnectMode::Disabled,
+            ..Default::default()
+        });
+        assert!(c.credential.is_none());
     }
 }

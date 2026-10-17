@@ -196,20 +196,20 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate(tru
           <form class="credential-fields" autocomplete="off" @submit.prevent="connect(false)"><label class="field">账号<input v-model="username" :disabled="locked" autocomplete="off" placeholder="校园网账号" spellcheck="false"></label><label class="field">密码<input v-model="password" :disabled="locked" type="password" autocomplete="new-password" placeholder="仅当前会话使用"><button type="submit" class="sr-only" :disabled="locked" tabindex="-1">上线</button></label></form>
           <MiuixDropdownPreference v-model="credentialStoreIndex" title="会话账户保存方式" summary="默认使用系统凭据，更安全" :items="credentialStoreItems" :disabled="settingsLocked" />
           <p v-if="draft.credential_store === 'file'" class="security-note">配置文件会以明文保存密码，仅建议用于测试或系统没有可用凭据库的设备。</p>
-          <p v-if="draft.credential_store === 'memory'" class="security-note">仅一次会话不会保存密码，结束后释放本地凭据并关闭自动重拨。</p>
+          <p v-if="draft.credential_store === 'memory'" class="security-note">仅一次会话不会保存密码：密码只留在后台进程内存中，daemon 退出或清除会话后即丢失，不会写入配置文件或系统密钥库；掉线重拨与后台服务选项不受影响。</p>
         </MiuixCard>
         <h3 class="group-heading">认证</h3>
         <MiuixCard>
           <div class="interface-picker"><div class="interface-picker-heading"><span>使用所选网卡的 IPv4 和 MAC 生成 Portal 参数</span><MiuixButton :disabled="!ready || preferencesBusy || demo" @click="refreshInterfaces">刷新</MiuixButton></div><MiuixDropdownPreference v-model="interfaceIndex" title="认证网卡" :summary="interfaceSummary" :items="interfaceItems" :disabled="settingsLocked" /></div>
           <MiuixSwitchPreference v-model="draft.bypass_proxy" title="绕过程序代理" summary="直连认证服务器；TUN / VPN 路由仍由系统决定" :disabled="settingsLocked" />
           <MiuixSwitchPreference v-model="draft.probe_enabled" title="认证失败后自动探测" summary="默认先按 DGCU-Net-Portal 模板提交，模板失败后再探测公共 HTTP 地址" :disabled="settingsLocked" />
-          <MiuixDropdownPreference v-model="reconnectIndex" title="掉线重拨" summary="每 5 秒检测一次；连续 3 次检测不到会话后按所选模式重连" :items="reconnectItems" :disabled="settingsLocked || draft.credential_store === 'memory'" />
+          <MiuixDropdownPreference v-model="reconnectIndex" title="掉线重拨" summary="每 5 秒检测一次；连续 3 次检测不到会话后按所选模式重连，失败按 30 秒起退避" :items="reconnectItems" :disabled="settingsLocked" />
           <MiuixDropdownPreference v-model="jitterIndex" title="轮询频率抖动" summary="分别给 5 秒掉线检测和 1 分钟后台刷新增加时间抖动，可降低风控特征" :items="jitterItems" :disabled="settingsLocked" />
         </MiuixCard>
         <h3 class="group-heading">系统</h3>
         <MiuixCard>
           <MiuixDropdownPreference v-model="runModeIndex" title="运行方式" :summary="runModeSummary" :items="runModeItems" :disabled="settingsLocked" />
-          <MiuixSwitchPreference v-model="draft.service_enabled" title="写入用户后台服务" summary="当前用户登录系统时启动 portal-cli daemon" :disabled="settingsLocked || draft.credential_store === 'memory'" />
+          <MiuixSwitchPreference v-model="draft.service_enabled" title="写入用户后台服务" summary="当前用户登录系统时启动 portal-cli daemon" :disabled="settingsLocked" />
         </MiuixCard>
         <h3 class="group-heading">界面</h3>
         <MiuixCard>

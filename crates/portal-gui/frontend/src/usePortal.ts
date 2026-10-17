@@ -5,7 +5,8 @@ export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/
 export const emptySnapshot = (): Snapshot => ({ sessions: [], rates: {}, selected_id: null, authenticated: false, one_session: true, background_paused: true, status: 'idle', message: '填写账号后连接校园网', account: null })
 export function normalizeSettings(value: Settings): Settings {
   const next = { ...value }
-  if (next.credential_store === 'memory') { next.reconnect_mode = 'disabled'; next.service_enabled = false; next.username = '' }
+  // 仅内存模式只决定密码放在哪里：重连与后台服务是独立选项，仍按用户选择保存。
+  if (next.credential_store === 'memory') next.username = ''
   return next
 }
 export function formatBytes(value: number | undefined | null): string {
@@ -29,7 +30,7 @@ const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps
 const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet_direct: 'reachable', internet: 'reachable', internet_latency_ms: 38 }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.5.8')
+  const version = ref('0.5.12')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
@@ -116,8 +117,10 @@ export function createPortalState(bridge?: DesktopBridge) {
       value = { ...value, rates: { ...value.rates, [id]: lastRate.rate } }
       unchanged = true
     }
+    // 后台快照只同步连接状态。轮询与后台事件每两秒就会来一次，收到未认证的
+    // offline/unknown/error 时清空输入，会让用户永远填不完表单。临时凭据只由
+    // 明确的动作释放：连接提交后、下线、清除会话、退出应用与销毁状态。
     snapshot.value = value
-    if (!value.authenticated && value.one_session && ['offline', 'unknown', 'error'].includes(value.status)) clearFields()
     return unchanged
   }
   async function run(action: () => Promise<void>) {
@@ -297,14 +300,13 @@ export function createPortalState(bridge?: DesktopBridge) {
       if (bridge && !demo.value) snapshotTimer = setInterval(() => { void pollSnapshot() }, 2000)
     } catch (error) { notify(`启动失败：${String(error)}`) }
   }
-  const stopWatch = watch(() => draft.credential_store, value => { if (value === 'memory') { draft.reconnect_mode = 'disabled'; draft.service_enabled = false } }, { flush: 'sync' })
   const stopLogWatch = watch(logsOpen, open => {
     if (logTimer) clearInterval(logTimer)
     if (open) logTimer = setInterval(() => { void readLogs() }, 1000)
   })
   // 进入关于页（page 2）时自动检查一次更新。
   const stopUpdateWatch = watch(page, value => { if (value === 2) void checkUpdate() })
-  function dispose() { disposed = true; stopWatch(); stopLogWatch(); stopUpdateWatch(); if (logTimer) clearInterval(logTimer); if (snapshotTimer) clearInterval(snapshotTimer); logEpoch++; logEntries.value = []; unlisteners.splice(0).forEach(stop => stop()); clearFields(); answer(false) }
+  function dispose() { disposed = true; stopLogWatch(); stopUpdateWatch(); if (logTimer) clearInterval(logTimer); if (snapshotTimer) clearInterval(snapshotTimer); logEpoch++; logEntries.value = []; unlisteners.splice(0).forEach(stop => stop()); clearFields(); answer(false) }
   return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, serviceRunning, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, openUrl, updatePhase, updateInfo, updateError, checkUpdate, openUpdate, refreshInterfaces, hasUnsavedConnectionSettings }
 }
 export function usePortal() { const state = createPortalState(window.__TAURI__); onMounted(state.initialize); onUnmounted(state.dispose); return state }

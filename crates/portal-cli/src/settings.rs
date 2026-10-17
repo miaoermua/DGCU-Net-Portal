@@ -197,9 +197,10 @@ impl Settings {
                 .parse::<IpAddr>()
                 .map_err(|_| "basip 覆盖值必须是有效的 IP 地址".to_string())?;
         }
+        // 仅内存模式只描述密码放在哪里，不该连带改掉用户选择的掉线重拨与
+        // 后台服务：凭据在 daemon 存活期间仍可用于重拨，重启后自然消失。
+        // 用户名继续按既有设计不落盘。
         if self.credential_store == CredentialStore::Memory {
-            self.reconnect_mode = ReconnectMode::Disabled;
-            self.service_enabled = false;
             self.username.clear();
         }
         Ok(())

@@ -19,7 +19,7 @@ python3 scripts/package_macos.py --output target/packages --dmg
 
 加 `--dmg` 才出磁盘映像，不加就只有 `.app` 的 ZIP。卷名用 `--volume` 改，默认 `DGCU-Net-Portal`。
 
-CI 里 macOS 的两个架构（arm64 / x86_64）都带 `--dmg`，产物和 ZIP 一起进 Release。
+CI 里 macOS 的两个架构（arm64 / x86_64）都带 `--dmg`。产物分成两个 artifact：`macos-dmg-*` 进 Release，`macos-zip-*` 只作为 Actions 存档保留，不上传到 Release 页面。
 
 ## 依赖
 
