@@ -113,9 +113,17 @@ impl Controller {
         self.status = "idle".into();
         self.message = "已清除本地会话；这不代表远端已经下线".into();
     }
+    /// 会话消失或连接失败时，Memory 模式是否该立刻丢弃本地登录态。
+    ///
+    /// 只有"重连也关着"时这份进程内凭据才没有后续用途；开启重连后它必须
+    /// 留到下一次重拨，否则掉线后没有任何可用的账号，重连永远无法成功。
+    fn drops_state_on_loss(&self) -> bool {
+        self.settings.credential_store == CredentialStore::Memory
+            && self.settings.reconnect_mode == ReconnectMode::Disabled
+    }
     fn fail(&mut self, e: AppError) -> AppError {
         self.logs.error(&e);
-        if self.settings.credential_store == CredentialStore::Memory {
+        if self.drops_state_on_loss() {
             self.clear();
         }
         self.status = "error".into();
@@ -216,11 +224,9 @@ impl Controller {
                 self.missing = 0;
                 self.status = "session_online".into();
                 self.message = "已恢复本机对应的在线会话".into();
-                self.paused = self.settings.credential_store == CredentialStore::Memory
-                    || self.settings.reconnect_mode == ReconnectMode::Disabled;
-                if self.settings.credential_store != CredentialStore::Memory
-                    && self.settings.reconnect_mode != ReconnectMode::Disabled
-                {
+                self.paused = self.settings.reconnect_mode == ReconnectMode::Disabled;
+                // 凭据只存在控制器内存里；只要开了重连就保留，与密码是否落盘无关。
+                if self.settings.reconnect_mode != ReconnectMode::Disabled {
                     self.credential = Some(credential);
                 }
                 return Ok(self.snapshot());
@@ -339,12 +345,9 @@ impl Controller {
             self.message
                 .push_str("；后台会话查询暂不可用，稍后自动重试");
         }
-        self.paused = self.settings.credential_store == CredentialStore::Memory
-            || self.settings.reconnect_mode == ReconnectMode::Disabled
-            || outcome.is_none();
-        if self.settings.credential_store != CredentialStore::Memory
-            && self.settings.reconnect_mode != ReconnectMode::Disabled
-        {
+        self.paused =
+            self.settings.reconnect_mode == ReconnectMode::Disabled || outcome.is_none();
+        if self.settings.reconnect_mode != ReconnectMode::Disabled {
             self.credential = Some(credential);
         }
         // Otherwise credential drops here, before the online session ends.
@@ -392,6 +395,10 @@ impl Controller {
         let network_changed = settings.interface_name != self.settings.interface_name
             || settings.bypass_proxy != self.settings.bypass_proxy;
         self.settings = settings;
+        // 关掉重连后，进程内凭据就没有后续用途了，不留到用户看不见的地方。
+        if self.settings.reconnect_mode == ReconnectMode::Disabled {
+            self.credential = None;
+        }
         if !server_changed && !network_changed {
             return;
         }
@@ -445,7 +452,7 @@ impl Controller {
                 self.missing += 1;
                 self.status = "offline".into();
                 self.message = "所选会话已从后台在线列表消失".into();
-                if self.settings.credential_store == CredentialStore::Memory {
+                if self.drops_state_on_loss() {
                     self.clear();
                 }
             } else {
@@ -499,6 +506,8 @@ impl Controller {
     }
     pub async fn disconnect(&mut self, id: &str) -> Result<Snapshot, AppError> {
         self.paused = true;
+        // 手动下线是显式释放路径：重连凭据在这里必须作废，任何保存方式都一样。
+        self.credential = None;
         let result = match &self.api {
             Some(api) => api.disconnect_id(id).await,
             None => Err(AppError::Rejected),
@@ -509,7 +518,7 @@ impl Controller {
                 self.clear();
             }
             self.status = "unknown".into();
-            self.message = "远端下线未确认；请在认证后台检查。临时模式本地凭据已释放".into();
+            self.message = "远端下线未确认；请在认证后台检查。本地重连凭据已释放".into();
             return Err(e);
         }
         self.rows.retain(|r| r.radacctid != id);
@@ -540,7 +549,6 @@ impl Controller {
     /// not update accounting-rate samples.
     pub async fn redial_tick<F: Fn(Phase)>(&mut self, progress: F) {
         if self.api.is_none()
-            || self.settings.credential_store == CredentialStore::Memory
             || self.settings.reconnect_mode == ReconnectMode::Disabled
             || self.paused
         {
@@ -571,7 +579,6 @@ impl Controller {
             }
         }
         if self.paused
-            || self.settings.credential_store == CredentialStore::Memory
             || self.settings.reconnect_mode == ReconnectMode::Disabled
             || self.missing < 3
             || self.attempts >= 3
@@ -688,10 +695,7 @@ impl Controller {
     /// 事务性：只有 `connect` 成功才替换现有会话与 client；失败时回滚到调用前
     /// 的状态，保留凭据等待下一个退避窗口，直到网络恢复为止。
     async fn retry_after_failure<F: Fn(Phase)>(&mut self, progress: F) {
-        if self.paused
-            || self.settings.credential_store == CredentialStore::Memory
-            || self.settings.reconnect_mode == ReconnectMode::Disabled
-        {
+        if self.paused || self.settings.reconnect_mode == ReconnectMode::Disabled {
             return;
         }
         if self
