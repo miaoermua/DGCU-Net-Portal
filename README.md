@@ -36,13 +36,14 @@
 - Mac 用户下载解压后将 DGCU-Net-Portal 拖入应用程序目录后即可完成安装。
 - Windows 用户下载解压到你喜欢的应用安装目录下，将 portal-gui.exe 打开即可完成安装。
 
-界面进程的去留由设置里的“运行方式”决定：`常规` 与 `托盘启动` 会把界面收进托盘常驻，随时点托盘图标唤回；`轻量模式`（默认）在关闭窗口时直接结束 GUI 与托盘，只留后台的 portal-cli daemon 继续认证，常驻内存约 3.7M。带 Tauri 与 WebView2 的界面进程约 80M，只在界面打开时存在。托盘菜单为“打开主窗口”“进入轻量模式”“退出服务”（`轻量模式` 下省去与关窗重复的“进入轻量模式”）：“进入轻量模式”只结束界面进程、后台认证继续，也不会改动已保存的运行方式；需要彻底停止认证时，用“退出服务”。macOS 与 Windows 上左键单击托盘图标唤回主窗口、右键弹出菜单，Linux 按桌面环境原生的 appindicator 行为处理。
+界面进程的去留由设置里的“运行方式”决定：`常规` 与 `托盘启动` 关窗后收进托盘常驻，`轻量模式`（默认）关窗即结束界面与托盘，只留后台的 portal-cli daemon 继续认证，常驻内存约 3.7M。点托盘图标唤回主窗口，右键菜单里的“退出服务”才会彻底停止认证；托盘菜单项、各运行方式的启动与关窗行为等细节见[开发者文档](./docs/developer-guide.md)。
 
 ## 开发者
 
 文档：
 
-- [校园网认证协议与实现](./docs/campus-network-auth.md)：协议解析与代码实现。
+- [校园网认证协议分析](./docs/campus-network-auth.md)：抓包得到的协议事实与判断依据。
+- [校园网认证协议实现](./docs/protocol-implementation.md)：协议在代码里如何落地。
 - [开发者文档](./docs/developer-guide.md)：运行、配置与构建说明。
 - [DeepWiki](https://deepwiki.com/miaoermua/DGCU-Net-Portal)
 
@@ -51,14 +52,21 @@ crates/portal-cli/src/
 ├── lib.rs          # engine library
 ├── controller.rs   # 状态、重试和重拨
 ├── cmcc.rs         # CMCC/Unify Portal
+├── discovery.rs    # 公共 HTTP 探测发现 Portal 入口
 ├── network.rs      # 网卡 IPv4/MAC 和本地网络上下文
+├── traffic.rs      # 由后台计费计数推算速率
+├── diagnose.rs     # 连通性检测
+├── settings.rs     # 设置持久化与凭据存取
+├── service.rs      # 三平台登录启动任务
 ├── logging.rs      # 脱敏日志
 ├── daemon.rs       # daemon IPC 服务
 ├── ipc.rs          # IPC 请求/响应
+├── tests.rs        # Mock 服务端与协议回归测试
 └── bin/portal-cli.rs
 
 crates/portal-gui/
 ├── src/main.rs     # Tauri IPC 客户端和桌面服务控制
+├── src/update.rs   # GitHub Releases 版本检查
 └── frontend/       # Vue + miuix-vue
 ```
 
@@ -68,6 +76,7 @@ crates/portal-gui/
 - **0.2.x** 完成客户端脚手架
 - **0.3.x** 功能完整性优化
 - **0.4.x** 修复使用问题
+- **0.5.x** 掉线自愈、后台服务与更新检查
 
 ## 声明
 
@@ -75,6 +84,6 @@ crates/portal-gui/
 
 此软件不构成“破解“校园网，因此使用该软件时你应该有你的学工账号且办理了校园网套餐确保你有可以登录的前提才能使用。
 
-校园网出现异常，无法连接可能并不是本工具问题，请先尝试手动连接或者询问校园内正常使用的小伙伴判断，如工具问题请携带日志和相关背景发起 issues。如校园网运营商服务商问题请联系他们，而不是提交给我。
+此软件由学生自主维护，暂时无与学校、校园网、运营商、服务商进行相关合作。校园网出现异常，无法连接可能并不是本工具问题，请先尝试手动连接或者询问校园内正常使用的小伙伴判断，如工具问题请携带日志和相关背景发起 issues。如校园网运营商服务商问题请联系他们，而不是提交给我。
 
 本工具尽可能保持更新，如超出本人能力将谢绝解答或停止更新，校园网更新协议可能也导致该软件具有时效性，并非永久可用。
