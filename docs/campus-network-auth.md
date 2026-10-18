@@ -1,6 +1,7 @@
-# 校园网认证协议与实现
+# 校园网认证协议分析
 
-本文合并了脱敏 HAR 的协议解析与客户端程序设计：前半部分解析协议，后半部分说明代码如何解决这些问题。
+> 对应版本：0.5.12。
+> 本文只记录抓包得到的协议事实与判断依据，不描述代码结构；这些协议在代码里如何落地见[校园网认证协议实现](./protocol-implementation.md)，运行、配置与构建见[开发者文档](./developer-guide.md)。
 
 来源文件：
 
@@ -19,7 +20,7 @@ HAR 确实包含了：
 4. 对指定在线会话执行下线；
 5. 下线后再次查询在线会话，在线会话数减少。
 
-它**没有包含完整的“重新通过校园网 Portal 认证上线”过程**。下线之后只看到访问学校官网资源，没有发现新的 Portal 跳转、认证表单提交、认证成功回调、RADIUS Access-Request 或代拨接口请求。因此，代拨流程目前应保留为未采集分支，不能从这份 HAR 直接实现。
+它**没有包含完整的“重新通过校园网 Portal 认证上线”过程**。下线之后只看到访问学校官网资源，没有发现新的 Portal 跳转、认证表单提交、认证成功回调、RADIUS Access-Request 或代拨接口请求。这份 HAR 里没有代拨请求；代拨的 HTTP 轮询出现在第二份 Portal 抓包中，见第二节。
 
 ### 请求时间线与接口含义
 
@@ -278,64 +279,17 @@ GET  /lfradius/libs/portal/unify/portal.php/login/success/success/1
 
 这说明测试环境中可能同时存在旧会话。实现“仅一次会话”时，不能按用户名直接踢线，必须记录登录前的会话集合，登录后只选择新增的 `radacctid`；如果不能唯一确定，就拒绝自动踢线。
 
-### 客户端应如何实现
+### 协议本身对客户端的约束
 
-#### Portal 参数模型
+以下结论来自抓包，与具体实现无关：
 
-```rust
-struct CmccContext {
-    nas_id: String,
-    user_mac: String,
-    user_ip: String,
-    nas_ip: String,
-    access_name: Option<String>,
-    vlan: Option<String>,
-    original_probe_url: Option<String>,
-    portal_version: u8, // 当前抓包为 1
-    auth_mode: AuthMode, // 当前抓包为 PAP
-}
-```
-
-#### 提交策略
-
-- 第一步由 Portal 页面提供 `usrname`、`passwd` 和上下文参数。
-- 第一步响应中的 `cmcc_login_value` 由客户端作为隐藏表单值自动提交。
-- 后续 `l` 由页面脚本或客户端保存为短期内存值。
-- 所有临时载荷只存在于本次流程内，不写入配置和普通日志。
-- 账号、密码、MAC、IP 和 opaque token 不要放入诊断日志。
-
-#### 成功分支
-
-```text
-cmcc_login_result == success
-  ↓
-GET /login/success/
-  ├─ HTTP 200 + “登录成功”
-  │    → 普通上线完成
-  └─ HTTP 302 Location=.../__coa_search_page/
-       → 进入代拨轮询
-```
-
-#### 代拨状态机
-
-```text
-PortalAuthenticating
-  -> PortalAccepted
-  -> Dialing
-  -> PollingDialStatus
-  -> Online                 # __coa_search 返回 success
-  -> DialFailed             # fail/错误文本/超时
-```
-
-建议错误码：
-
-```text
-PORTAL_AUTH_REJECTED
-PORTAL_RESULT_INVALID
-DIAL_POLL_TIMEOUT
-DIAL_POLL_REJECTED
-DIAL_FLOW_NOT_CAPTURED
-```
+- `cmcc_login_value` 与 `l` 都是服务端生成的不透明载荷，只能原样透传；客户端不得自行构造、解码后使用或写入日志。
+- 是否进入代拨分支只能由 `/login/success/` 的响应决定：HTTP 200 且成功页即普通上线，302 到 `__coa_search_page/` 才进入代拨轮询。不能按账号、套餐名或固定等待时间猜测。
+- `__coa_search/` 的判定条件是响应正文严格等于 `success`；其他非空正文在抓包页面里只显示为状态文本，不代表失败，因此只能等到 20 秒倒计时结束才算超时。
+- 代拨轮询请求不带业务表单参数，但依赖 `__coa_search_page/` 那次 GET 建立的会话状态（Cookie）；跳过该 GET 直接轮询没有抓包依据。
+- Portal 表单字段里的 `nasid`、`usrmac`、`usrip`、`basip`、`success`、`fail`、`portal_version`、`portal_papchap` 都来自认证页返回的 HTML，客户端替换的只有本机身份相关的值；`paip` 是 URL 上的 Portal 侧地址，与表单隐藏字段 `basip` 不是同一个东西，不能互相代入。
+- 抓包中的 Portal 版本与认证方式固定为 `portal_version=1`、`portal_papchap=pap`；Portal 2.0 与 CHAP 没有采集样本。
+- 后台“在线”是服务端计费记录的视图，踢线成功不等于 NAS 已经断开，必须再次查询会话列表确认。
 
 ## 三、重要安全事项
 
@@ -349,333 +303,12 @@ DIAL_FLOW_NOT_CAPTURED
 - 只在内存中保存本次会话；启用“仅一次会话”时，下线确认后清除账号、密码、临时载荷和会话缓存。
 - 对 `nasid`、Portal 主机和原始跳转地址做白名单校验，禁止前端拼接任意内网请求。
 
-## 四、总体状态机
+## 四、抓包未覆盖的部分
 
-```mermaid
-stateDiagram-v2
-    [*] --> Starting
-    Starting --> DetectingNetwork
-    DetectingNetwork --> AlreadyOnline: 探测 URL 可访问
-    DetectingNetwork --> PortalRequired: HTTP 被重定向/受限
-    DetectingNetwork --> DialRequired: 检测到代拨需求
-    DetectingNetwork --> NetworkUnavailable: 无网关/DNS/链路
+以下内容在现有 HAR 中没有样本，不能从这份材料推断：
 
-    PortalRequired --> Authenticating: 用户提交账号密码
-    Authenticating --> Online: Portal 返回成功且外网探测成功
-    Authenticating --> AuthRejected: 账号/密码/套餐错误
-    Authenticating --> PortalError: 参数/协议/服务器错误
-
-    AlreadyOnline --> Online
-    DialRequired --> Dialing: DialAdapter 可用
-    DialRequired --> DialNotCaptured: 代拨协议尚未采集
-    Dialing --> PortalRequired: 代拨后仍需 Portal
-    Dialing --> Online: 代拨后探测成功
-
-    Online --> Monitoring
-    Monitoring --> NetworkLost: 网络变化/探测失败
-    Monitoring --> Expired: 账号或套餐到期
-    Monitoring --> Disconnecting: 用户主动下线
-    Disconnecting --> LoggedOut: 会话确认消失
-    Disconnecting --> DisconnectPending: 请求成功但会话仍存在
-    DisconnectPending --> LoggedOut: 后续轮询确认
-    NetworkLost --> DetectingNetwork
-```
-
-## 五、登录、踢线、重新上线流程
-
-### 5.0 本机网络上下文
-
-认证前端现在从用户选择的本机网卡读取当前 IPv4 和 MAC。Rust 的
-`portal_core::network` 使用跨平台接口枚举，在 macOS、Linux、Windows 上提供统一的
-网卡列表；GUI 在设置中显示网卡、IPv4 和 MAC，CLI 可以用 `interfaces` 查看列表并用
-`--interface <名称>` 固定接口。程序不会读取网卡流量计数，流量仍来自后台
-`onlinelog`。
-
-对于 CMCC Portal，程序会将 Portal 入口 URL 的 `wlanuserip`、`clientip`、`clientmac`
-替换为所选网卡当前值，并将 `paip` 固定为 `172.18.100.65`。认证页返回的隐藏
-`basip` 保持服务端值，不用本机 IP 或 `paip` 覆盖。
-
-留空 Portal URL 时，客户端默认先按 DGCU 的 `main/nasid/4/` CMCC 模板构造入口，
-再读取表单；模板失败后才按“认证失败后自动探测”设置回退到公共 HTTP 探测地址。
-
-### 5.1 已确认的后台会话流程
-
-```mermaid
-sequenceDiagram
-    participant UI as Tauri/Vue UI
-    participant Core as Rust Core
-    participant LF as LFRadius HTTP API
-
-    UI->>Core: login(username, password)
-    Core->>LF: POST user_login
-    LF-->>Core: v.success=1/0
-    Core-->>UI: Authenticated/AuthRejected
-
-    UI->>Core: listSessions(username)
-    Core->>LF: GET onlinelog
-    LF-->>Core: session[]
-    Core-->>UI: 展示 radacctid/IP/流量
-
-    UI->>Core: disconnectSession(sessionId)
-    Core->>LF: POST offline
-    LF-->>Core: v.success=1
-    loop 最多 N 次，带退避
-        Core->>LF: GET onlinelog
-        LF-->>Core: session[]
-    end
-    Core-->>UI: LoggedOut 或 DisconnectPending
-```
-
-### 5.2 重新上线流程（当前只定义接口，不假设细节）
-
-```mermaid
-sequenceDiagram
-    participant Core as Rust Core
-    participant OS as 本机网络
-    participant Portal as 校园 Portal/NAS
-
-    Core->>OS: 访问 HTTP 探测地址
-    OS-->>Core: 200 外网 / 30x Portal / DNS 或连接错误
-    alt PortalRequired
-        Core->>Portal: GET/POST，参数由 PortalAdapter 配置
-        Portal-->>Core: 成功页/JSON/跳转
-        Core->>OS: 再次访问 HTTPS 探测地址
-        OS-->>Core: 可访问
-    else DialRequired
-        Core->>OS: DialAdapter.start（占位）
-        Note over Core,OS: 当前 HAR 没有代拨请求，返回 DIAL_FLOW_NOT_CAPTURED
-    end
-```
-
-## 六、Rust 后端实现
-
-### 6.1 推荐目录
-
-```text
-src-tauri/src/
-├── main.rs
-├── app_state.rs
-├── commands.rs              # Tauri command 边界
-├── config.rs                # 版本化配置
-├── error.rs                 # 稳定错误码
-├── network/
-│   ├── mod.rs
-│   ├── interfaces.rs        # 网卡、网关、MAC、IP
-│   ├── captive.rs           # Portal 探测
-│   └── monitor.rs           # 网络变化/休眠恢复
-├── portal/
-│   ├── mod.rs
-│   ├── adapter.rs           # PortalAdapter trait
-│   ├── lfradius.rs          # LFRadius 用户接口
-│   ├── cmcc.rs              # CMCC Portal 参数映射
-│   └── vendor.rs            # 厂商差异
-├── session/
-│   ├── mod.rs
-│   ├── state_machine.rs
-│   └── polling.rs
-├── credentials.rs           # 系统钥匙串
-├── dial/
-│   ├── mod.rs
-│   └── placeholder.rs       # 代拨占位
-└── diagnostics.rs           # 脱敏日志
-```
-
-### 6.2 核心类型
-
-```rust
-#[derive(Clone, Debug, serde::Serialize)]
-pub enum AuthState {
-    Starting,
-    DetectingNetwork,
-    PortalRequired,
-    Authenticating,
-    Online,
-    Monitoring,
-    Disconnecting,
-    LoggedOut,
-    DisconnectPending,
-    DialRequired,
-    DialNotCaptured,
-    NetworkUnavailable,
-    AuthRejected,
-    PortalError,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct OnlineSession {
-    pub radacctid: String,
-    pub username: String,
-    pub acct_start_time: String,
-    pub session_seconds: u64,
-    pub framed_ip: Option<std::net::IpAddr>,
-    pub input_octets: u64,
-    pub output_octets: u64,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct ApiEnvelope<T> {
-    pub v: ApiStatus,
-    pub d: T,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct ApiStatus {
-    pub success: i32,
-    pub msg: String,
-    pub url: String,
-    pub wait_time: u64,
-}
-```
-
-### 6.3 Portal 适配器
-
-```rust
-#[async_trait::async_trait]
-pub trait PortalAdapter: Send + Sync {
-    async fn detect(&self) -> Result<PortalContext, AppError>;
-    async fn authenticate(
-        &self,
-        ctx: &PortalContext,
-        credential: &Credential,
-    ) -> Result<AuthResult, AppError>;
-    async fn logout(&self, ctx: &PortalContext) -> Result<(), AppError>;
-}
-```
-
-`LfradiusAdapter` 负责：
-
-1. 构造 `/home.php?c=user&a=user_login`。
-2. 使用 `application/x-www-form-urlencoded` 编码账号密码。
-3. 解析 `v.success`、`v.msg`、`v.wait_time`。
-4. 将服务端错误映射为稳定错误码。
-5. 登录成功后执行真实外网探测。
-
-`CmccPortalAdapter` 和厂商 API 适配器负责：
-
-1. 解析 `usrmac`、`usrip`、`source-ip`、`nasid` 等参数。
-2. 按配置选择 GET、POST form 或 POST JSON。
-3. 限制重定向次数和允许域名/IP。
-4. 处理成功页、JSON 和失败页。
-5. 永远不把完整密码写入 URL 或日志。
-
-### 6.4 在线会话服务
-
-流量数据只从 LFRadius `onlinelog` 返回的 `acctinputoctets`、`acctoutputoctets` 读取。客户端不读取操作系统网卡统计；“速率”仅在两次后台累计值发生变化时按时间差推算，否则显示“等待后台计费更新”。
-
-```rust
-pub async fn disconnect_and_confirm(
-    client: &reqwest::Client,
-    base_url: &url::Url,
-    session: &OnlineSession,
-) -> Result<(), AppError> {
-    let form = [
-        ("radacctid", session.radacctid.clone()),
-        ("username", session.username.clone()),
-        ("acctstarttime", session.acct_start_time.clone()),
-        ("acctsessiontime", session.session_seconds.to_string()),
-        ("framedipaddress", session.framed_ip.map(|x| x.to_string()).unwrap_or_default()),
-        ("acctinputoctets", session.input_octets.to_string()),
-        ("acctoutputoctets", session.output_octets.to_string()),
-        ("key", session.radacctid.clone()),
-        ("num", "1".to_string()),
-    ];
-
-    let response = client
-        .post(base_url.join("home.php?c=user&a=offline&r=person")?)
-        .form(&form)
-        .send()
-        .await?;
-
-    let result: ApiEnvelope<Vec<serde_json::Value>> = response.json().await?;
-    if result.v.success != 1 {
-        return Err(AppError::RemoteRejected(result.v.msg));
-    }
-
-    confirm_session_absent(client, base_url, &session.radacctid).await
-}
-```
-
-`confirm_session_absent` 应使用 1 秒、2 秒、4 秒等退避，设置最大等待时间。超过最大等待时间返回 `DISCONNECT_PENDING`，不要伪造成功。
-
-## 七、Tauri 前端命令
-
-建议只暴露以下命令：
-
-```text
-get_network_state()
-detect_portal()
-login(username, remember_account)
-list_online_sessions()
-disconnect_session(session_id)
-logout()
-get_auth_state()
-save_settings(settings)
-delete_saved_credential()
-get_diagnostics()
-```
-
-前端状态：
-
-```text
-network: offline | captive | online | unknown
-session: none | authenticating | online | disconnecting | pending
-portal: unknown | lfradius | cmcc | vendor_api
-last_error: stable error code + safe message
-```
-
-实现要求：
-
-- 密码只在 `login` 调用期间存在于内存对象中。
-- 记住密码使用系统钥匙串，默认关闭。
-- 前端不允许直接发任意 HTTP 请求。
-- 前端显示会话 ID 时只显示末尾少量字符。
-- IP、MAC、账号和访问地址在诊断导出中默认掩码。
-
-## 八、代拨占位实现
-
-Portal 认证成功后如果服务端返回 `__coa_search_page/`，说明进入代拨分支；除状态轮询外，代拨的启动、停止与凭据仍没有采集到真实请求，因此先使用明确的未采集结果：
-
-```rust
-pub trait DialAdapter {
-    async fn detect(&self) -> Result<DialContext, AppError>;
-    async fn start(&self, ctx: &DialContext, credential: &Credential)
-        -> Result<DialSession, AppError>;
-    async fn stop(&self, session: &DialSession) -> Result<(), AppError>;
-    async fn status(&self, session: &DialSession) -> Result<DialStatus, AppError>;
-}
-```
-
-第一版 `PlaceholderDialAdapter` 行为：
-
-```text
-detect() -> DialRequired 或 NotRequired
-start()  -> DIAL_FLOW_NOT_CAPTURED
-stop()   -> 无操作并返回 NotSupported
-status() -> Unknown
-```
-
-预留字段：
-
-```text
-DialMode = None | PPPOE | VendorApi | SystemClient | Unknown
-DialEndpoint = 可选地址
-DialUsername = 账号（不得写入普通日志）
-DialState = NotDetected | Required | Starting | Online | Failed
-DialSessionId = 可选
-DialErrorCode = 可选
-```
-
-在采集到真实代拨控制请求之前，`start` 一律返回 `DIAL_FLOW_NOT_CAPTURED`；不要根据“踢下线之后访问官网”推断代拨已完成。
-
-## 九、验收标准
-
-- 能检测当前是离线、Portal 受限还是已在线。
-- 登录错误时显示安全、可读的错误原因。
-- 能列出当前账号的多个在线会话。
-- 只能踢掉用户选中的 `radacctid`。
-- 踢线后能验证目标会话确实消失；异步未完成时显示 Pending。
-- 重新上线必须通过实际外网探测确认。
-- 代拨未采集时显示“暂未支持/尚未采集”，不显示虚假成功。
-- 三平台均能安装、登录、退出、恢复网络和删除凭据。
-- 日志中搜索不到明文密码、Cookie、token、RADIUS 密钥和完整身份证号。
-
+- UDP 侧的 RADIUS Access-Request/Access-Accept 与 Accounting（HTTP HAR 本身也看不到）。
+- 代拨的启动、停止、重拨与凭据下发；抓包只覆盖到代拨状态的 HTTP 轮询。
+- PPPOE 或系统级代拨客户端的任何请求。
+- 后台登录是否还依赖 Cookie 之外的凭证（HAR 未导出 Cookie/Local Storage/CSRF）。
+- Portal 2.0 与 CHAP：抓包里只有 `portal_version=1`、`portal_papchap=pap`。
