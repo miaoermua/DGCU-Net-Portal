@@ -1,0 +1,7 @@
+# pnpm 11 的配置只从这个文件读（package.json 里的 pnpm 字段已失效）。
+# 这里只放依赖解析相关的设置；packages 留空表示本目录就是唯一的项目。
+#
+# source-map-js 是 vue 编译器的传递依赖，1.2.1 有高危 DoS（GHSA-68fv-2mgg-jv7q），
+# 修复版本是 1.2.2。上游 vue 尚未把下限提上去，这里强制锁住修复版本。
+overrides:
+  source-map-js: 1.2.2

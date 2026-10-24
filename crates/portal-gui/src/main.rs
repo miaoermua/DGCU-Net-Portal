@@ -330,7 +330,46 @@ async fn exit_app(app: AppHandle, _state: State<'_, AppState>) -> Result<(), Str
     app.exit(0);
     Ok(())
 }
+/// 关掉窗口后程序还剩什么界面。
+///
+/// 决定 Dock 图标去留：窗口收进托盘后没有可见界面，Dock 里就不该再挂图标；
+/// 轻量模式是直接退进程，图标随进程一起消失，不归这里管。
+#[derive(Debug, PartialEq, Eq)]
+enum OnClose {
+    /// 收进托盘常驻，窗口隐藏。
+    HideToTray,
+    /// 退出 GUI 进程。
+    Exit,
+}
+fn close_action(run_mode: RunMode) -> OnClose {
+    match run_mode {
+        RunMode::Lightweight => OnClose::Exit,
+        RunMode::Standard | RunMode::TrayStartup => OnClose::HideToTray,
+    }
+}
+
+/// macOS 上窗口收起后不留 Dock 图标，唤回时再放回去。
+///
+/// Dock 图标跟着窗口走：窗口收进托盘后，程序仍在运行但没有可见界面，
+/// 这时 Dock 里挂一个点不动的图标只会让人以为程序卡住；而用户想唤回窗口时
+/// 又需要通过 Dock 找回应用。托盘图标不受影响，两者是两套机制。
+///
+/// 非 macOS 平台没有 Dock，这个调用是空操作。
+fn set_dock_visible(app: &AppHandle, visible: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.set_dock_visibility(visible);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, visible);
+    }
+}
+
+/// 唤回主窗口。Dock 图标要先恢复再显示窗口：顺序反了的话，
+/// macOS 会把刚显示的窗口当成后台应用的一部分，点了图标窗口却起不来。
 fn show(app: &AppHandle) {
+    set_dock_visible(app, true);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -396,18 +435,24 @@ fn main() {
                 if let Some(w) = app.get_webview_window("main") {
                     w.hide()?;
                 }
+                // 启动就没有可见界面，Dock 图标同样不该出现；托盘点击唤回时再放回。
+                set_dock_visible(app.handle(), false);
             }
             Ok(())
         })
         // 关窗口的含义由运行方式决定：轻量模式退出界面（daemon 是独立进程，认证不受影响），
         // 其余模式收进托盘常驻。每次都重读设置，保存后即时生效、无需重启。
+        // 收进托盘时一并撤掉 Dock 图标：程序还在跑但没有可见界面，Dock 里留个
+        // 点不动的图标会让人以为卡住；托盘图标不受影响，照常唤回。
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if Settings::load().run_mode == RunMode::Lightweight {
-                    window.app_handle().exit(0);
-                } else {
-                    api.prevent_close();
-                    let _ = window.hide();
+                match close_action(Settings::load().run_mode) {
+                    OnClose::Exit => window.app_handle().exit(0),
+                    OnClose::HideToTray => {
+                        api.prevent_close();
+                        let _ = window.hide();
+                        set_dock_visible(window.app_handle(), false);
+                    }
                 }
             }
         })
@@ -456,5 +501,11 @@ mod tests {
         assert_eq!(TRAY_SHOW, ("show", "打开主窗口"));
         assert_eq!(TRAY_LIGHTWEIGHT, ("lightweight", "进入轻量模式"));
         assert_eq!(TRAY_STOP, ("stop", "退出服务"));
+    }
+    #[test]
+    fn closing_the_window_exits_only_in_lightweight_mode() {
+        assert_eq!(close_action(RunMode::Lightweight), OnClose::Exit);
+        assert_eq!(close_action(RunMode::Standard), OnClose::HideToTray);
+        assert_eq!(close_action(RunMode::TrayStartup), OnClose::HideToTray);
     }
 }

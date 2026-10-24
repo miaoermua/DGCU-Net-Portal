@@ -44,7 +44,7 @@ pub enum AppError {
     NetworkInterface(String),
     #[error("认证页探测请求超时。后台地址可达不代表外部探测站点可达；可粘贴浏览器弹出的完整 Portal URL 后再试")]
     DiscoveryTimeout,
-    #[error("探测未发现校园网认证页：可能已经联网或探测域名被放行。可使用“仅登录后台”管理会话，或粘贴当前 Portal URL")]
+    #[error("探测未发现校园网认证页：可能已经联网或探测域名被放行。可使用“登录后台或重新绑定会话”管理会话，或粘贴当前 Portal URL")]
     DiscoveryNotFound,
     #[error(
         "发现了认证跳转，但地址不属于配置的认证服务器；请检查服务器地址，不会向该地址发送账号密码"

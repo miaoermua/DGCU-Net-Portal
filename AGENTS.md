@@ -1,6 +1,6 @@
 # AGENTS.md
 
-在仓库内工作的代理与开发者的操作约定。以下内容都对照当前代码（0.5.12）核实过；改代码前先看「工作区」「命令」，改文档前必读「文档保真」。
+在仓库内工作的代理与开发者的操作约定。以下内容都对照当前代码（0.5.13）核实过；改代码前先看「工作区」「命令」，改文档前必读「文档保真」。
 
 ## 工作区
 
@@ -21,7 +21,7 @@ pnpm --dir crates/portal-gui/frontend install --frozen-lockfile
 pnpm --dir crates/portal-gui/frontend test     # vitest
 pnpm --dir crates/portal-gui/frontend build    # vue-tsc --noEmit && vite build
 
-cargo test --workspace                          # 74 个 portal-cli + 5 个 portal-gui 测试
+cargo test --workspace                          # 74 个 portal-cli + 6 个 portal-gui 测试
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check                      # 仓库无 rustfmt.toml，用默认风格
 

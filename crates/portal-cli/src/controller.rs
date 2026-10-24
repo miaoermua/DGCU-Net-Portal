@@ -83,7 +83,7 @@ impl Controller {
             latest_rates: HashMap::new(),
             paused: true,
             status: "idle".into(),
-            message: "输入账号后上线，或仅登录后台查询会话".into(),
+            message: "输入账号后上线，或登录后台或重新绑定会话来查询会话".into(),
             missing: 0,
             attempts: 0,
             network_attempts: 0,
