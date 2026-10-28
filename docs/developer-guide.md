@@ -248,7 +248,9 @@ WebView2 运行时是 Tauri 界面的前提。安装器只检测并提示（读 
 
 ## Linux 发行版包
 
-`scripts/package_linux.py --format deb|rpm` 只做安装布局，**不重新编译**：复用 `linux` job 产出的 `linux-bin-<arch>`，摆进 FHS 目录再压成发行版格式，和 Arch 那套 `PKGBUILD` 同构。CI 里由 `linuxpkgs` job 按架构矩阵一次产出两种包。
+`scripts/package_linux.py --format deb|rpm` 只做安装布局，**不重新编译**：复用 `linux` job 产出的 `linux-bin-<arch>`，摆进 FHS 目录再压成发行版格式，和 Arch 那套 `PKGBUILD` 同构。CI 里 `linuxpkgs` 的每条矩阵腿产出该架构的 deb 与 rpm；x86_64 那条腿顺带跑 Arch（`if: matrix.arch == 'x86_64'`），因为 Arch Linux ARM 是另一个发行版，源与包都不同，不能拿 aarch64 的二进制塞进 x86_64 的 `PKGBUILD`。
+
+Arch 的 `makepkg` 必须跑在 Arch 自己的 rootfs 里（Ubuntu 上没有 `pacman` 与 `base-devel`），所以它用 `docker run archlinux:latest`，而不是把整个 job 换成容器 runner —— 换容器 runner 会让 apt 装 `rpm` 那步失效。三种包的产物都进同一个 `linux-pkg-<arch>` artifact，上传步骤带 `if: always()`：某一步失败时已经打好的包不会跟着白扔。
 
 架构：`linux` 与 `linuxpkgs` 都跑 `x86_64` 与 `aarch64` 两条腿。arm64 用的是 GitHub 原生的 `ubuntu-24.04-arm` runner，**不交叉编译** —— Tauri 的 AppImage 依赖 linuxdeploy，而它不支持交叉编译（linuxdeploy#258），arm 包只能在 arm 机器上出。该 runner 仅对**公开仓库**免费提供，私有仓库会直接失败。
 
@@ -257,6 +259,8 @@ WebView2 运行时是 Tauri 界面的前提。安装器只检测并提示（读 
 安装布局（与 `packaging/arch/PKGBUILD` 一致）：`/usr/bin/portal-gui`、`/usr/bin/portal-cli`、`/usr/share/applications/dgcu-portal.desktop`、`/usr/share/icons/hicolor/256x256/apps/portal-gui.png`、`/usr/share/licenses/dgcu-net-portal/LICENSE`。desktop 文件在 `packaging/linux/`，三个发行版共用一份。
 
 deb 由 Python 直接拼 ar 归档（`debian-binary` / `control.tar.gz` / `data.tar.gz`），**不依赖 `dpkg-deb`**，因此在 macOS 上也能构建与验证。rpm 需要 PATH 里有 `rpmbuild`（Ubuntu 上 `apt install rpm`）。
+
+rpm 的 `%files` 与 `%install` 必须一起改：文件清单里声明了、`%install` 却没装进 buildroot 的路径，rpmbuild 要等到最后打包阶段才报 `File not found`，一次 CI 就白跑。`package_linux.py` 在调用 `rpmbuild` 之前会先解析 spec 比对两段（只认整行就是段标记的行，注释里的字样不算），不一致就直接退出并指出缺哪一条——因此在没有 `rpmbuild` 的机器上也能验证 spec 自洽。
 
 依赖声明要照顾发行版差异，这是手写包最容易翻车的地方：
 

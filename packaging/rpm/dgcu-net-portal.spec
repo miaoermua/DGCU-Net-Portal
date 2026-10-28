@@ -31,6 +31,9 @@ install -Dm755 %{stagedir}/usr/bin/portal-gui %{buildroot}/usr/bin/portal-gui
 install -Dm755 %{stagedir}/usr/bin/portal-cli %{buildroot}/usr/bin/portal-cli
 install -Dm644 %{stagedir}/usr/share/applications/dgcu-portal.desktop %{buildroot}/usr/share/applications/dgcu-portal.desktop
 install -Dm644 %{stagedir}/usr/share/icons/hicolor/256x256/apps/portal-gui.png %{buildroot}/usr/share/icons/hicolor/256x256/apps/portal-gui.png
+# 文件清单里声明了它，这里就必须真的装进 buildroot：rpmbuild 要到最后打包
+# 阶段才发现漏装（File not found），而且报错位置与 ARCH 无关。
+install -Dm644 %{stagedir}/usr/share/licenses/dgcu-net-portal/LICENSE %{buildroot}/usr/share/licenses/dgcu-net-portal/LICENSE
 
 %files
 /usr/bin/portal-gui
