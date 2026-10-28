@@ -1,5 +1,5 @@
 use crate::{
-    controller::Controller,
+    controller::{Controller, Snapshot},
     ipc::{Request, Response, SOCKET_NAME},
     logging::LogBuffer,
     settings::Settings,
@@ -9,16 +9,82 @@ use interprocess::local_socket::{
     tokio::{prelude::*, Listener, Stream},
     GenericNamespaced, ListenerOptions,
 };
-use std::sync::Arc;
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    sync::Mutex,
+    sync::{watch, Mutex, MutexGuard},
 };
 
-/// 所有 IPC 命令与后台 worker 共用这一把异步锁。`Controller` 的每次操作都在整个
+/// daemon 的共享状态：权威控制器，加上它最近一次完整投影的快照。
+///
+/// `Controller` 仍是唯一可写的状态源，快照只是它的只读副本，不参与任何业务判断。
+/// 所有 IPC 命令与后台 worker 共用同一把异步锁：`Controller` 的每次操作都在整个
 /// `await` 期间独占 `&mut Controller`，因此 `connect()` 期间不会插入 `select`、
 /// `disconnect` 等用户操作；`ReconnectCheckpoint` 的回滚不会覆盖并发状态变化。
-type Shared = Arc<Mutex<Controller>>;
+pub(crate) struct State {
+    controller: Mutex<Controller>,
+    latest: watch::Sender<Snapshot>,
+    latest_rx: watch::Receiver<Snapshot>,
+}
+
+impl State {
+    /// 用刚构造好的控制器初始化快照槽。初始快照在做任何操作之前发布，`Status`
+    /// 不必等第一次解锁就能读到完整状态。
+    pub(crate) fn new(mut controller: Controller) -> Self {
+        let (latest, latest_rx) = watch::channel(controller.snapshot());
+        Self {
+            controller: Mutex::new(controller),
+            latest,
+            latest_rx,
+        }
+    }
+
+    /// 取控制器锁。返回的 [`Locked`] 在释放锁之前发布一次完整快照，调用方不需要
+    /// （也不能）自己记得发布。
+    pub(crate) async fn lock(&self) -> Locked<'_> {
+        Locked {
+            controller: self.controller.lock().await,
+            latest: &self.latest,
+        }
+    }
+
+    /// 读最近一次发布的快照。同步读取，不等待控制器锁。
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        self.latest_rx.borrow().clone()
+    }
+}
+
+/// 持有控制器锁的守卫，析构时把当前状态的完整投影写进快照槽。
+///
+/// 字段声明顺序有意义：`Drop::drop` 在字段析构之前运行，所以发布时控制器锁仍然
+/// 被持有，发布出去的一定是同一次持锁区间的完整状态；随后字段析构才释放锁。
+pub(crate) struct Locked<'a> {
+    controller: MutexGuard<'a, Controller>,
+    latest: &'a watch::Sender<Snapshot>,
+}
+
+impl Deref for Locked<'_> {
+    type Target = Controller;
+
+    fn deref(&self) -> &Controller {
+        &self.controller
+    }
+}
+
+impl DerefMut for Locked<'_> {
+    fn deref_mut(&mut self) -> &mut Controller {
+        &mut self.controller
+    }
+}
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        let _ = self.latest.send_replace(self.controller.snapshot());
+    }
+}
 
 /// 探测端点时的等待上限。连接成功就说明确实有进程占着端点；它可能只是暂时忙
 /// （例如控制器锁正被一次登录持有），所以这个上限只用来判定“活着但不回话”。
@@ -83,8 +149,7 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let settings = Settings::load();
     logs.set_enabled(settings.log_enabled);
     let auto_settings = settings.clone();
-    let state: Shared = Arc::new(Mutex::new(Controller::with_logs(settings, logs.clone())));
-    let worker_state = state.clone();
+    let state = Arc::new(State::new(Controller::with_logs(settings, logs.clone())));
     if auto_settings.credential_store != crate::settings::CredentialStore::Memory {
         let password = match auto_settings.credential_store {
             crate::settings::CredentialStore::System => crate::settings::password(),
@@ -104,7 +169,19 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             });
         }
     }
-    let redial_state = state.clone();
+    serve_on(listener, state, logs).await
+}
+
+/// 在已经绑定的端点上服务：先起两个后台 worker，再进入 accept 循环。
+///
+/// `serve()` 只负责绑定端点、读取设置和启动自动登录；测试用临时端点直接进这里，
+/// 不去读本机设置。两个入口走的是同一份服务逻辑，没有测试专用分支。
+pub(crate) async fn serve_on(
+    listener: Listener,
+    state: Arc<State>,
+    logs: LogBuffer,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let worker_state = state.clone();
     tokio::spawn(async move {
         loop {
             let settings = worker_state.lock().await.settings.clone();
@@ -116,6 +193,7 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             worker_state.lock().await.tick().await;
         }
     });
+    let redial_state = state.clone();
     tokio::spawn(async move {
         loop {
             let settings = redial_state.lock().await.settings.clone();
@@ -139,7 +217,7 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 async fn handle(
     stream: Stream,
-    state: Shared,
+    state: Arc<State>,
     logs: LogBuffer,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (reader, mut writer) = tokio::io::split(stream);
@@ -158,10 +236,12 @@ async fn handle(
     };
     let should_shutdown = matches!(&request, Request::Shutdown);
     let mut response = match request {
+        // 读最近一次发布的快照，不取控制器锁：`Up`/`Down`/自动重拨持锁期间
+        // 查询照常返回，代价是可能比控制器落后一个进行中的操作。
         Request::Status => Response {
             ok: true,
             message: "daemon 正在运行".into(),
-            snapshot: Some(state.lock().await.snapshot()),
+            snapshot: Some(state.snapshot()),
             ..Default::default()
         },
         Request::Shutdown => Response {
