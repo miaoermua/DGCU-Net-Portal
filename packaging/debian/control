@@ -1,0 +1,15 @@
+Package: dgcu-net-portal
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: miaoermua <miaoermua@gmail.com>
+Installed-Size: @INSTALLED_SIZE@
+Depends: libgtk-3-0 | libgtk-3-0t64, libwebkit2gtk-4.1-0, libayatana-appindicator3-1, libsecret-1-0
+Section: net
+Priority: optional
+Homepage: https://github.com/miaoermua/DGCU-Net-Portal
+Description: DGCU 校园网 Portal 客户端
+ 自动完成东莞城市学院 lfradius portal 的校园网登录，支持掉线重拨与
+ 后台常驻认证。
+ .
+ 包含图形界面 portal-gui 与命令行/守护进程 portal-cli，两者需装在同一
+ 目录下（GUI 沿自身路径查找同包的 portal-cli）。

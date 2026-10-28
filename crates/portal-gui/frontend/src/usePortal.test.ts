@@ -67,6 +67,36 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     expect(state.primaryLabel.value).toBe('上线')
     state.dispose()
   })
+  it('asks for a session choice exactly when authenticated without a bound session', async () => {
+    const state=createPortalState();await state.initialize()
+    // 未认证：没有可管理的会话，不该提示选择。
+    state.snapshot.value={...emptySnapshot(),authenticated:false}
+    expect(state.needsSelection.value).toBe(false)
+    // 已认证但会计系统还没上报会话：仍要露出会话区，让用户看到"正在等待"。
+    state.snapshot.value={...emptySnapshot(),authenticated:true,selected_id:null,sessions:[]}
+    expect(state.needsSelection.value).toBe(true)
+    // 已认证、多条会话都没绑定：需要用户自己选，且流量不得伪造。
+    state.snapshot.value={...emptySnapshot(),authenticated:true,selected_id:null,sessions:[row('A'),row('B')]}
+    expect(state.needsSelection.value).toBe(true)
+    expect(state.selected.value).toBeUndefined()
+    expect(state.rate.value).toBeUndefined()
+    // 绑定之后不再提示，流量按所选会话取。
+    state.snapshot.value={...emptySnapshot(),authenticated:true,selected_id:'A',sessions:[row('A'),row('B')],rates:{A:{upload_bps:1024,download_bps:2048,sample_seconds:60}}}
+    expect(state.needsSelection.value).toBe(false)
+    expect(state.selected.value?.radacctid).toBe('A')
+    expect(state.rate.value?.download_bps).toBe(2048)
+    state.dispose()
+  })
+  it('stops asking for a session choice once the user has gone offline', async () => {
+    const state=createPortalState();await state.initialize()
+    // 系统凭证模式下确认下线只清 `selected`，后台客户端还在，authenticated 仍为 true；
+    // 此时不能反过来提示“认证已成功，请选择会话”。
+    state.snapshot.value={...emptySnapshot(),status:'offline',authenticated:true,selected_id:null,sessions:[row('A'),row('B')]}
+    expect(state.needsSelection.value).toBe(false)
+    expect(state.selected.value).toBeUndefined()
+    expect(state.rate.value).toBeUndefined()
+    state.dispose()
+  })
   it('primary action disconnects while online and never chooses an ambiguous session', async () => {
     vi.useFakeTimers()
     const state=createPortalState();await state.initialize()

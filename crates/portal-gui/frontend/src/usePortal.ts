@@ -30,7 +30,7 @@ const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps
 const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet_direct: 'reachable', internet: 'reachable', internet_latency_ms: 38 }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.5.13')
+  const version = ref('0.5.15')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
@@ -50,6 +50,15 @@ export function createPortalState(bridge?: DesktopBridge) {
     return keys.some(key=>value[key]!==saved.value[key])
   })
   const rate = computed(() => selected.value ? snapshot.value.rates[selected.value.radacctid] : undefined)
+  // 已认证、但还没确定要管理哪条会话。后端遇到"多条新增会话"时会放弃自动绑定
+  // （挑错会让流量显示成别人的，还会把别人的掉线误判成本机掉线去重连），
+  // 这时 selected_id 为空、流量没有数据，列表必须有入口，否则用户无路可走。
+  // 会计系统还没来得及上报会话（sessions 为空）也算在内：此时该显示"等待更新"
+  // 而不是让会话区整个消失，否则用户只能盯着一条让他去列表选的提示。
+  //
+  // 唯独 `offline` 例外：系统凭证模式下确认下线只清 `selected`，后台客户端还在，
+  // `authenticated` 仍为 true；用户刚主动下线，不能反过来提示"认证已成功，请选择会话"。
+  const needsSelection = computed(() => snapshot.value.authenticated && !snapshot.value.selected_id && snapshot.value.status !== 'offline')
   const isOnline = computed(() => ['accepted', 'session_online'].includes(snapshot.value.status))
   const serviceRunning = computed(() => !!phase.value || snapshot.value.authenticated || ['authenticating', 'accepted', 'session_online', 'backend'].includes(snapshot.value.status))
   const disconnectIntent = computed(() => isOnline.value || !!selected.value || (snapshot.value.status === 'unknown' && snapshot.value.authenticated))
@@ -307,6 +316,6 @@ export function createPortalState(bridge?: DesktopBridge) {
   // 进入关于页（page 2）时自动检查一次更新。
   const stopUpdateWatch = watch(page, value => { if (value === 2) void checkUpdate() })
   function dispose() { disposed = true; stopLogWatch(); stopUpdateWatch(); if (logTimer) clearInterval(logTimer); if (snapshotTimer) clearInterval(snapshotTimer); logEpoch++; logEntries.value = []; unlisteners.splice(0).forEach(stop => stop()); clearFields(); answer(false) }
-  return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, serviceRunning, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, openUrl, updatePhase, updateInfo, updateError, checkUpdate, openUpdate, refreshInterfaces, hasUnsavedConnectionSettings }
+  return { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, needsSelection, isOnline, serviceRunning, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, disconnect, forget, save, openSite, close, simulateUpdate, initialize, dispose, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, readLogs, clearLogs, updatePreferences, version, openRepository, openUrl, updatePhase, updateInfo, updateError, checkUpdate, openUpdate, refreshInterfaces, hasUnsavedConnectionSettings }
 }
 export function usePortal() { const state = createPortalState(window.__TAURI__); onMounted(state.initialize); onUnmounted(state.dispose); return state }

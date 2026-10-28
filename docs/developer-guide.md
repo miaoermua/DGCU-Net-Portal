@@ -1,6 +1,6 @@
 # 开发者文档
 
-> 对应版本：0.5.13。运行、配置与构建说明。
+> 对应版本：0.5.15。运行、配置与构建说明。
 > 协议事实与抓包依据见[校园网认证协议分析](./campus-network-auth.md)，代码如何实现这些协议（含状态、错误、时序常量与算法）见[校园网认证协议实现](./protocol-implementation.md)。
 
 DGCU 校园网客户端。当前工作区只保留两个 Rust package：
@@ -118,7 +118,7 @@ traffic_enabled = false        # 后台流量速率
 poll_jitter     = low          # ±5%，同时作用于上面两个间隔与重拨退避
 ```
 
-GUI 桌面配置可以开启后台流量展示；OpenWrt/无 GUI 运行默认不计算流量。后台刷新是一个开关，开启后按服务端约 1 分钟更新；掉线重拨独立按 5 秒检测。掉线重拨模式可以选择禁用、新建后上线或终止后重上。认证设置中的轮询频率抖动可以选择低（±5%）、中（±10%）、高（±20%）或禁用（0%），分别作用于 5 秒掉线检测和 1 分钟后台刷新，重拨退避也使用该等级。两个轮询由 daemon 的两个独立 worker 驱动，时序常量与退避算法见[协议实现·第八节](./protocol-implementation.md#八掉线检测重拨与网络自愈)。
+GUI 桌面配置可以开启后台流量展示；OpenWrt/无 GUI 运行默认不计算流量。后台刷新是一个开关，开启后按服务端约 1 分钟更新；掉线重拨独立按 5 秒检测。掉线重拨模式可以选择禁用、新建后上线或终止后重上。会话监测挂在 5 秒 worker 上，与是否开启重拨无关：重拨关闭或暂停时仍会每 5 秒检查所选会话是否还在后台列表里，并按证据分级提示“会话丢失”或“疑似被挤下线”。认证设置中的轮询频率抖动可以选择低（±5%）、中（±10%）、高（±20%）或禁用（0%），分别作用于 5 秒掉线检测和 1 分钟后台刷新，重拨退避也使用该等级。两个轮询由 daemon 的两个独立 worker 驱动，时序常量与退避算法见[协议实现·第八节](./protocol-implementation.md#八掉线检测重拨与网络自愈)。
 
 轮询抖动也可以通过 CLI 设置：
 
@@ -150,7 +150,7 @@ cargo run -p portal-gui
 
 前端只有 8 个源文件、没有组件目录：三个页面（网络、设置、关于）都在 `App.vue` 里，状态与动作集中在 `usePortal.ts`，类型在 `types.ts`，另有 `licenses.ts`、`compact.css`、`main.ts`、`miuix-icons.d.ts` 与 `usePortal.test.ts`。
 
-`crates/portal-gui/src/main.rs:459-478` 注册的 Tauri 命令共 18 个：
+`crates/portal-gui/src/main.rs:465-484` 注册的 Tauri 命令共 18 个：
 
 ```text
 initial          connect         refresh          snapshot
@@ -170,11 +170,11 @@ GUI 负责账号、网卡、刷新、流量展示、日志查看、托盘和桌�
 | `tray_startup`（托盘启动） | 隐藏窗口 | 收进托盘常驻 |
 | `lightweight`（轻量模式，默认） | 显示窗口 | 直接退出 GUI 并释放托盘，只留独立的后台服务 |
 
-daemon 是独立进程、认证不受影响，任何模式下都不会因为关掉窗口而中断。运行方式每次关闭窗口时重读设置，保存后即时生效、无需重启（`main.rs:447-458`）；保存时若运行方式变了会重建托盘菜单，免得切到轻量模式后仍留着重复项（`main.rs:287-294`）。关窗后的去向由纯函数 `close_action` 决定（`main.rs:344-349`），只有 `lightweight` 退进程，其余收进托盘。
+daemon 是独立进程、认证不受影响，任何模式下都不会因为关掉窗口而中断。运行方式每次关闭窗口时重读设置，保存后即时生效、无需重启（`main.rs:453-464`）；保存时若运行方式变了会重建托盘菜单，免得切到轻量模式后仍留着重复项（`main.rs:287-294`）。关窗后的去向由纯函数 `close_action` 决定（`main.rs:344-349`），只有 `lightweight` 退进程，其余收进托盘。
 
-收进托盘时 macOS 上会一并撤掉 Dock 图标（`main.rs:358-369`）：程序还在跑但没有可见界面，Dock 里挂个点不动的图标只会让人以为卡住；托盘图标不受影响，两者是两套机制。托盘唤回窗口时先把 Dock 图标放回去再显示窗口（`main.rs:371-377`），顺序反了 macOS 会把刚显示的窗口当成后台应用的一部分。非 macOS 平台没有 Dock，`set_dock_visible` 是空操作。`tray_startup` 启动时窗口就是隐藏的，因此启动即撤掉 Dock 图标（`main.rs:434-440`）。
+收进托盘时 macOS 上会一并撤掉 Dock 图标（`main.rs:358-368`）：程序还在跑但没有可见界面，Dock 里挂个点不动的图标只会让人以为卡住；托盘图标不受影响，两者是两套机制。托盘唤回窗口时先把 Dock 图标放回去再显示窗口（`main.rs:371-380`），顺序反了 macOS 会把刚显示的窗口当成后台应用的一部分。非 macOS 平台没有 Dock，`set_dock_visible` 是空操作。`tray_startup` 启动时窗口就是隐藏的，因此启动即撤掉 Dock 图标（`main.rs:439-446`）。
 
-托盘菜单固定三项：“打开主窗口”“进入轻量模式”“退出服务”；`lightweight` 下“进入轻量模式”与关窗重复，菜单中不展示该项（`main.rs:22-35`）。“进入轻量模式”只调用 `app.exit(0)` 结束 GUI 进程，daemon 与认证不受影响，且不会写回 `run_mode`——托盘的一次点击不改变用户保存的运行方式（`main.rs:423-425`）；只有“退出服务”会发 `Request::Shutdown`、按需停止登录启动任务，并由前端确认后再退（`main.rs:325-332`、`main.rs:426-429`）。左键单击托盘图标唤回主窗口、右键弹出菜单；Linux 的 appindicator 不支持这个区分，按桌面环境原生行为处理（`main.rs:403-420`）。
+托盘菜单固定三项：“打开主窗口”“进入轻量模式”“退出服务”；`lightweight` 下“进入轻量模式”与关窗重复，菜单中不展示该项（`main.rs:22-35`）。“进入轻量模式”只调用 `app.exit(0)` 结束 GUI 进程，daemon 与认证不受影响，且不会写回 `run_mode`——托盘的一次点击不改变用户保存的运行方式（`main.rs:426-428`）；只有“退出服务”会发 `Request::Shutdown`、按需停止登录启动任务，并由前端确认后再退（`main.rs:325-332`、`main.rs:429-435`）。确认框在前端，所以“退出服务”必须先把窗口唤回再发事件——收在托盘里、或 `tray_startup` 启动时窗口是隐藏的，只发事件会让用户点了菜单却看不到任何反应。左键单击托盘图标唤回主窗口、右键弹出菜单；Linux 的 appindicator 不支持这个区分，按桌面环境原生行为处理（`main.rs:411-423`）。唤回窗口时除了 `show()` 还会 `unminimize()`：最小化状态下 `show()` 只恢复可见性，窗口仍缩在程序坞/任务栏里，看起来同样像没反应。
 
 轻量模式关掉窗口后留下的后台 `portal-cli daemon` 常驻内存约 3.7M；带 Tauri 与 WebView2 的界面进程约 80M，只在界面打开时存在。
 
@@ -212,6 +212,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release -p portal-cli -p portal-gui --features portal-gui/custom-protocol --locked
 python3 scripts/package_macos.py --output target/packages
+python3 scripts/package_windows.py --arch x86_64 --output target/packages
+python3 scripts/package_linux.py --format deb --arch x86_64 --output target/packages
+python3 scripts/package_linux.py --format rpm --arch x86_64 --output target/packages
 ```
 
 macOS 包中包含：
@@ -223,4 +226,57 @@ portal-cli
 
 GUI 在运行时会沿自身可执行文件的祖先目录查找同包内的 `portal-cli`（`crates/portal-gui/src/main.rs:47-57`），因此打包必须让两者处于同一目录或父子目录关系。
 
-版本号以 `Cargo.toml` 的 workspace `version` 为准，`crates/portal-gui/tauri.conf.json` 与 `crates/portal-gui/frontend/package.json` 需要同步；`scripts/package_macos.py` 与 `scripts/package_portable.py` 从 `tauri.conf.json` 读取版本，`.github/workflows/build.yml` 同样按它生成产物名并回填 `packaging/arch/PKGBUILD` 的 `pkgver`。
+## Windows 安装器
+
+`scripts/package_windows.py` 调用 `makensis` 编译 `packaging/windows/installer.nsi`，产出 `DGCU-Net-Portal-<version>-windows-<arch>-setup.exe`。NSIS 由 runner 自带（`windows-2022` 与 `windows-11-arm` 都是 3.10），CI 不额外安装；本机编译需要 `brew install nsis` 或 `choco install nsis`，或用 `--makensis` 指定路径。
+
+安装器是**当前用户级**的，不提权：装到 `%LOCALAPPDATA%\Programs\DGCU-Net-Portal`，注册表写 `HKCU`，与后台服务「当前用户登录启动任务」的权限层级一致（`crates/portal-cli/src/service.rs:192` 的 `TASK`）。装完在「应用和功能」里可见，可静默卸载（`uninstall.exe /S`）。
+
+页面顺序：欢迎 → 许可协议（`MUI_PAGE_LICENSE`，内容就是随包分发的 `LICENSE` 正文，编译时嵌入；静默安装跳过）→ 组件 → 目录 → 安装 → 完成。
+
+快捷方式：开始菜单建一个 `DGCU-Net-Portal` 文件夹，内含程序与卸载两项（必装）；桌面快捷方式在组件页里作选装项，**默认不勾选**（程序常驻托盘，开始菜单已经够用）。要让桌面项默认勾选，把 `Section /o` 的 `/o` 去掉即可。
+
+升级时靠 `InstallDirRegKey` 读回上次的安装位置（`packaging/windows/installer.nsi` 写入 `HKCU\Software\DGCU\DGCU-Net-Portal` 的 `InstallLocation`），不需要用户重选目录。
+
+覆盖文件前会先关闭正在运行的进程：`FileInUse` 用 Restart Manager 判断「谁持有这个文件」，比按镜像名 `taskkill` 更准，没有窗口的 `portal-cli daemon` 也能识别；确认后由 `RestartManager_ShutdownFile` 强制关闭。静默安装（`/S`）跳过确认直接关。
+
+卸载会删除 `DGCU-Portal` 登录启动任务（`crates/portal-cli/src/service.rs:192`），否则任务指向的 exe 被删后每次登录都会报错；该任务可能建在系统任务库里、普通权限删不掉，被拒时会再请求一次提权。设置与凭据**不**由卸载器删除。
+
+WebView2 运行时是 Tauri 界面的前提。安装器只检测并提示（读 `EdgeUpdate\Clients` 的 `pv`），不静默下载执行别的程序；缺失时提示用户去官方页面安装。
+
+高分屏：脚本声明 `ManifestDPIAware true` + `ManifestDPIAwareness "PerMonitorV2,System"`，否则 Windows 会把整个向导当位图拉伸、中文发虚。`PerMonitorV2` 要 Win10 1703+，更老的系统按列表里的 `System` 回落；`ManifestDPIAwareness` 需要 NSIS 3.03+（runner 的 3.10 满足）。本安装器没有自定义位图，所以不会踩 NSIS 用最近邻缩放位图导致糊图的老问题。
+
+## Linux 发行版包
+
+`scripts/package_linux.py --format deb|rpm` 只做安装布局，**不重新编译**：复用 `linux` job 产出的 `linux-bin-<arch>`，摆进 FHS 目录再压成发行版格式，和 Arch 那套 `PKGBUILD` 同构。CI 里由 `linuxpkgs` job 按架构矩阵一次产出两种包。
+
+架构：`linux` 与 `linuxpkgs` 都跑 `x86_64` 与 `aarch64` 两条腿。arm64 用的是 GitHub 原生的 `ubuntu-24.04-arm` runner，**不交叉编译** —— Tauri 的 AppImage 依赖 linuxdeploy，而它不支持交叉编译（linuxdeploy#258），arm 包只能在 arm 机器上出。该 runner 仅对**公开仓库**免费提供，私有仓库会直接失败。
+
+同样的原因，AppImage 的 glibc 底线由构建机决定：现在两条腿都建在 24.04 上，产出的 AppImage 需要 glibc 2.39，老发行版跑不起来。真要照顾老系统，得把基线降到 Ubuntu 22.04（`ubuntu-22.04` / `ubuntu-22.04-arm`）。
+
+安装布局（与 `packaging/arch/PKGBUILD` 一致）：`/usr/bin/portal-gui`、`/usr/bin/portal-cli`、`/usr/share/applications/dgcu-portal.desktop`、`/usr/share/icons/hicolor/256x256/apps/portal-gui.png`、`/usr/share/licenses/dgcu-net-portal/LICENSE`。desktop 文件在 `packaging/linux/`，三个发行版共用一份。
+
+deb 由 Python 直接拼 ar 归档（`debian-binary` / `control.tar.gz` / `data.tar.gz`），**不依赖 `dpkg-deb`**，因此在 macOS 上也能构建与验证。rpm 需要 PATH 里有 `rpmbuild`（Ubuntu 上 `apt install rpm`）。
+
+依赖声明要照顾发行版差异，这是手写包最容易翻车的地方：
+
+- deb 的 `Depends` 里 GTK3 写成 `libgtk-3-0 | libgtk-3-0t64`：Ubuntu 24.04 做了时间戳转换，写死 `libgtk-3-0` 会装不上（`packaging/debian/control`）。
+- rpm 用 rich dependency 兜住 Fedora 与 openSUSE 的不同命名，例如 `(webkit2gtk4.1 or libwebkit2gtk-4_1-0)`；同时 `AutoReqProv: no`，避免在 Ubuntu 上扫描出目标机器并不存在的 soname（`packaging/rpm/dgcu-net-portal.spec`）。
+
+两种包的 tar/ar 条目都固定 uid、gid 与 mtime，同样的输入连打两次哈希一致。
+
+版本号以 `Cargo.toml` 的 workspace `version` 为准，`crates/portal-gui/tauri.conf.json` 与 `crates/portal-gui/frontend/package.json` 需要同步；`scripts/package_macos.py`、`scripts/package_portable.py`、`scripts/package_windows.py` 与 `scripts/package_linux.py` 从 `tauri.conf.json` 读取版本，`.github/workflows/build.yml` 同样按它生成产物名并回填 `packaging/arch/PKGBUILD` 的 `pkgver`。
+
+## Release 说明
+
+`scripts/release_notes.py` 扫 `release/` 目录生成「快捷下载」表，由 `release` job 在发布前调用。链接用**当前 tag** 拼（`releases/download/<tag>/<文件名>`），不用 `latest`：资产名里带版本号，用 `latest` 会让下载链接和页面上的版本对不上。
+
+传给 `softprops/action-gh-release` 时用 `body_path` 加 `generate_release_notes: true`，官方行为是把 body **拼在**自动生成的更新说明前面，所以表格在上、提交历史在下，两者都保留。
+
+表格只列 `RULES` 里认得的文件名，认不出的一律跳过 —— 某个产物没打出来时，说明里不会出现指向不存在文件的死链。新增产物格式时在 `RULES` 里加一条即可。这里的「便携版」指 Linux 的 AppImage（单文件直接运行）。
+
+`SKIP` 里的文件仍会上传到 Release，只是不进表格，需要的人仍能在资产列表里找到：
+
+- `-windows-aarch64-setup.exe`、`-windows-aarch64.zip`：Windows on ARM 用的人少，列出来只是多两行。
+- `-macos-x86_64.dmg`：Apple Silicon 占绝大多数，表里并列两行只会让人多犹豫一次。
+- `-linux-*.tar.gz`、`*.deb`、`*.rpm`：同类已由 AppImage 与 Arch 包覆盖，全列出来表格会长一倍。
