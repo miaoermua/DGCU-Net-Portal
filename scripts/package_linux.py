@@ -18,6 +18,7 @@ import gzip
 import hashlib
 import io
 import json
+import re
 import shutil
 import subprocess
 import tarfile
@@ -155,14 +156,64 @@ def build_deb(staging: Path) -> Path:
     return archive
 
 
+SECTION_MARKERS = (
+    '%description', '%prep', '%build', '%install', '%files', '%changelog', '%pre', '%post',
+)
+
+
+def spec_section(spec: str, name: str) -> list:
+    """取出某个段的行。只认整行就是段标记的行，注释里的字样不算。
+
+    用字符串 split 切段会在注释出现 `%files` 时错位，所以这里逐行判断。
+    """
+    lines = spec.splitlines()
+    collected: list = []
+    inside = False
+    for line in lines:
+        marker = line.strip()
+        if marker == name:
+            inside = True
+            continue
+        if inside and marker in SECTION_MARKERS:
+            break
+        if inside:
+            collected.append(line)
+    return collected
+
+
+def spec_install_gaps(spec: str) -> list:
+    """找出文件清单声明了、但 %install 没装进 buildroot 的路径。
+
+    rpmbuild 要走到最后的打包阶段才报 `File not found`，一次 CI 白跑几分钟；
+    这里在起 rpmbuild 之前就点出来。返回空列表表示两者一致。
+    """
+    install = '\n'.join(spec_section(spec, '%install'))
+    installed = set(re.findall(r'%\{buildroot\}(/\S+)', install))
+    declared = set()
+    for line in spec_section(spec, '%files'):
+        marker = line.strip()
+        if not marker or marker.startswith('#'):
+            continue
+        path = marker.removeprefix('%license').strip()
+        if path.startswith('/'):
+            declared.add(path)
+    return sorted(declared - installed)
+
+
 def build_rpm(staging: Path) -> Path:
+    spec = (root / 'packaging/rpm/dgcu-net-portal.spec').read_text(encoding='utf-8')
+    # 先查 spec 自身是否自洽，再查工具链：这样没有 rpmbuild 的机器也能验证。
+    gaps = spec_install_gaps(spec)
+    if gaps:
+        raise SystemExit(
+            'spec 的文件清单声明了未被 %install 安装的路径：' + '、'.join(gaps)
+        )
     if not shutil.which(args.rpmbuild):
         raise SystemExit(f'找不到 {args.rpmbuild}（Ubuntu 上 apt install rpm）')
     topdir = Path(tempfile.mkdtemp(prefix='dgcu-rpm-'))
     try:
         for name in ('SPECS', 'SOURCES', 'BUILD', 'BUILDROOT', 'RPMS', 'SRPMS'):
             (topdir / name).mkdir()
-        spec = (root / 'packaging/rpm/dgcu-net-portal.spec').read_text(encoding='utf-8')
         (topdir / 'SPECS/dgcu-net-portal.spec').write_text(
             spec.replace('@VERSION@', version), encoding='utf-8')
 

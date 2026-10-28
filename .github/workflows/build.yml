@@ -199,52 +199,8 @@ jobs:
             target/release/portal-gui
             target/release/portal-cli
           retention-days: 1
-  archlinux:
-    name: Arch Linux 包
-    needs: [frontend, linux]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: linux-bin-x86_64
-          path: target/release
-      - name: 准备 makepkg 工作目录
-        run: |
-          version=$(jq -r .version crates/portal-gui/tauri.conf.json)
-          mkdir -p target/arch
-          cp target/release/portal-gui target/arch/portal-gui
-          cp target/release/portal-cli target/arch/portal-cli
-          cp crates/portal-gui/icons/icon.png target/arch/portal-gui.png
-          cp packaging/linux/dgcu-portal.desktop packaging/arch/PKGBUILD target/arch/
-          cp LICENSE target/arch/LICENSE
-          sed -i "s/^pkgver=.*/pkgver=${version}/" target/arch/PKGBUILD
-          chmod 777 target/arch
-      - name: makepkg（Arch 容器）
-        run: |
-          docker run --rm -v "$PWD/target/arch:/work" -w /work archlinux:latest bash -c '
-            set -euo pipefail
-            pacman -Syu --noconfirm --needed \
-              base-devel gtk3 webkit2gtk-4.1 libayatana-appindicator libsecret
-            useradd -m builder
-            chown -R builder /work
-            su builder -c "makepkg -f --noconfirm"
-          '
-      - name: 生成 SHA-256
-        run: |
-          cd target/arch
-          pkg=$(ls dgcu-net-portal-*.pkg.tar.zst)
-          sha256sum "$pkg" > "$pkg.sha256"
-          cat "$pkg.sha256"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: archlinux-x86_64
-          path: target/arch/dgcu-net-portal-*.pkg.tar.zst*
-
-  # deb 与 rpm 都用已经编好的二进制重新摆布局，不重新编译；两者同一个 job，
-  # 因为它们只需 ubuntu runner 与 rpmbuild，不像 Arch 那样要进容器。
   linuxpkgs:
-    name: Debian / RPM 包 ${{ matrix.arch }}
+    name: Linux 安装包 ${{ matrix.arch }}
     needs: [frontend, linux]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -271,18 +227,57 @@ jobs:
         run: >-
           python3 scripts/package_linux.py --format rpm --arch ${{ matrix.arch }}
           --output target/packages --binary-dir target/release
+      # Arch 只有 x86_64：Arch Linux ARM 是另一个发行版，源与包都不同，
+      # 不能拿 aarch64 的二进制硬塞进 x86_64 的 PKGBUILD。
+      # makepkg 必须跑在 Arch 自己的 rootfs 里（Ubuntu 上没有 pacman/base-devel），
+      # 所以这里用 docker 起官方镜像，而不是把整个 job 换成容器 runner。
+      - name: 准备 makepkg 工作目录
+        if: matrix.arch == 'x86_64'
+        run: |
+          version=$(jq -r .version crates/portal-gui/tauri.conf.json)
+          mkdir -p target/arch
+          cp target/release/portal-gui target/arch/portal-gui
+          cp target/release/portal-cli target/arch/portal-cli
+          cp crates/portal-gui/icons/icon.png target/arch/portal-gui.png
+          cp packaging/linux/dgcu-portal.desktop packaging/arch/PKGBUILD target/arch/
+          cp LICENSE target/arch/LICENSE
+          sed -i "s/^pkgver=.*/pkgver=${version}/" target/arch/PKGBUILD
+          chmod 777 target/arch
+      - name: makepkg（Arch 容器）
+        if: matrix.arch == 'x86_64'
+        run: |
+          docker run --rm -v "$PWD/target/arch:/work" -w /work archlinux:latest bash -c '
+            set -euo pipefail
+            pacman -Syu --noconfirm --needed \
+              base-devel gtk3 webkit2gtk-4.1 libayatana-appindicator libsecret
+            useradd -m builder
+            chown -R builder /work
+            su builder -c "makepkg -f --noconfirm"
+          '
+      - name: Arch 包 SHA-256
+        if: matrix.arch == 'x86_64'
+        run: |
+          cd target/arch
+          pkg=$(ls dgcu-net-portal-*.pkg.tar.zst)
+          sha256sum "$pkg" > "$pkg.sha256"
+          cat "$pkg.sha256"
+      # 某一步失败也要把已经打好的包传上去：否则 deb 成功了、rpm 失败，
+      # 整轮 CI 白跑一次（0.5.15 就踩过这个）。
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: linux-pkg-${{ matrix.arch }}
+          if-no-files-found: warn
           path: |
             target/packages/*.deb
             target/packages/*.rpm
             target/packages/*.sha256
+            target/arch/*.pkg.tar.zst*
 
   release:
     name: 发布 Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [macos, windows, linux, archlinux, linuxpkgs]
+    needs: [macos, windows, linux, linuxpkgs]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -307,13 +302,7 @@ jobs:
           path: release
           merge-multiple: true
           pattern: 'linux-dist-*'
-      - name: 下载发行包（Arch Linux）
-        uses: actions/download-artifact@v8
-        with:
-          path: release
-          merge-multiple: true
-          pattern: 'archlinux-*'
-      - name: 下载发行包（deb / rpm）
+      - name: 下载发行包（deb / rpm / Arch）
         uses: actions/download-artifact@v8
         with:
           path: release
