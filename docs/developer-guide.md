@@ -92,7 +92,7 @@ cargo run -p portal-cli -- service enable
 | `probe_enabled` | `true` | 只在 DGCU 模板表单不可用时才回退公共探测 |
 | `refresh_policy` | `one_minute` | `one_minute` / `disabled`（`settings.rs:31-37`） |
 | `poll_jitter` | `low` | `low` ±5% / `medium` ±10% / `high` ±20% / `disabled` 0%；旧配置的 `enabled` 会被读成 `low`（`settings.rs:39-48`、`settings.rs:88-96`） |
-| `traffic_enabled` | `false` | 关闭时清空速率基线（`controller.rs:440-447`） |
+| `traffic_enabled` | `false` | 关闭时清空速率基线（`controller/session.rs` 的 `update_rates()`） |
 | `interface_name` | 空 | 空表示自动选第一个非 internal、同时有 IPv4 与 MAC 的网卡（`network.rs:120-128`） |
 | `bypass_proxy` | `true` | 为 `true` 时 HTTP 客户端 `no_proxy()`（`lib.rs:334-336`） |
 | `credential_store` | `system` | `system` / `file` / `memory`（`settings.rs:50-57`） |
