@@ -7,7 +7,7 @@ import { usePortal, formatBytes, formatRate, formatDuration, mask } from './useP
 import { licenseGroups, licenseNotice } from './licenses'
 import appIcon from '../../icons/icon.png'
 
-const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, isOnline, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, updatePhase, updateInfo, updateError, checkUpdate, openUpdate, refreshInterfaces, close, hasUnsavedConnectionSettings, serviceRunning } = usePortal()
+const { demo, busy, ready, page, draft, saved, snapshot, username, password, portalUrl, networkInterfaces, selected, rate, needsSelection, isOnline, title, phase, notice, confirmation, answer, connect, refresh, diagnose, diagnostic, diagnosing, select, forget, save, openSite, simulateUpdate, preferencesBusy, logEntries, logsOpen, sessionPickerOpen, primaryLabel, primaryAction, selectForDisconnect, openLogs, clearLogs, updatePreferences, version, openRepository, openUrl, updatePhase, updateInfo, updateError, checkUpdate, openUpdate, refreshInterfaces, close, hasUnsavedConnectionSettings, serviceRunning } = usePortal()
 watch(() => saved.value.theme_mode, value => setThemeMode(value), { immediate: true })
 const styleNonce = document.querySelector<HTMLStyleElement>('#motion-csp')?.nonce || undefined
 const locked = computed(() => busy.value || !ready.value)
@@ -164,10 +164,10 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate(tru
           <div class="connection-actions"><MiuixButton type="primary" :disabled="locked" @click="primaryAction">{{ primaryLabel }}</MiuixButton><MiuixIconButton class="shutdown-icon" :disabled="locked" aria-label="退出并停止后台服务" title="退出并停止后台服务" @click="close"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton><MiuixButton class="auth-site-icon" :disabled="locked" aria-label="打开认证后台" title="打开认证后台" @click="openSite"><MiuixIcon :icon="Forward" :size="18" /></MiuixButton></div>
         </MiuixCard>
         <div class="traffic-grid" aria-label="后台计费流量">
-          <MiuixCard class="metric"><span class="metric-label">↓ 累计下载</span><strong>{{ saved.traffic_enabled && selected ? formatBytes(selected.acctoutputoctets) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '所选后台会话' : '设置中开启后台流量统计' }}</span></MiuixCard>
-          <MiuixCard class="metric"><span class="metric-label">↑ 累计上传</span><strong>{{ saved.traffic_enabled && selected ? formatBytes(selected.acctinputoctets) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '所选后台会话' : '设置中开启后台流量统计' }}</span></MiuixCard>
-          <MiuixCard class="metric"><span class="metric-label">↓ 区间下载速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.download_bps == null }">{{ saved.traffic_enabled ? formatRate(rate?.download_bps) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? (rate?.sample_seconds ? `最近 ${rate.sample_seconds} 秒平均` : '等待后台计费更新') : '设置中开启后台流量统计' }}</span></MiuixCard>
-          <MiuixCard class="metric"><span class="metric-label">↑ 区间上传速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.upload_bps == null }">{{ saved.traffic_enabled ? formatRate(rate?.upload_bps) : '已关闭' }}</strong><span class="metric-note">{{ saved.traffic_enabled ? '按后台计费时间计算' : '设置中开启后台流量统计' }}</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">↓ 累计下载</span><strong>{{ !saved.traffic_enabled ? '已关闭' : selected ? formatBytes(selected.acctoutputoctets) : '未选择会话' }}</strong><span class="metric-note">{{ !saved.traffic_enabled ? '设置中开启后台流量统计' : selected ? '所选后台会话' : '认证后需选择一个会话' }}</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">↑ 累计上传</span><strong>{{ !saved.traffic_enabled ? '已关闭' : selected ? formatBytes(selected.acctinputoctets) : '未选择会话' }}</strong><span class="metric-note">{{ !saved.traffic_enabled ? '设置中开启后台流量统计' : selected ? '所选后台会话' : '认证后需选择一个会话' }}</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">↓ 区间下载速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.download_bps == null }">{{ !saved.traffic_enabled ? '已关闭' : selected ? formatRate(rate?.download_bps) : '未选择会话' }}</strong><span class="metric-note">{{ !saved.traffic_enabled ? '设置中开启后台流量统计' : !selected ? '认证后需选择一个会话' : rate?.sample_seconds ? `最近 ${rate.sample_seconds} 秒平均` : '等待后台计费更新' }}</span></MiuixCard>
+          <MiuixCard class="metric"><span class="metric-label">↑ 区间上传速率</span><strong :class="{ waiting: !saved.traffic_enabled || rate?.upload_bps == null }">{{ !saved.traffic_enabled ? '已关闭' : selected ? formatRate(rate?.upload_bps) : '未选择会话' }}</strong><span class="metric-note">{{ !saved.traffic_enabled ? '设置中开启后台流量统计' : selected ? '按后台计费时间计算' : '认证后需选择一个会话' }}</span></MiuixCard>
         </div>
         <div class="account-grid" aria-label="账号、设备与网络检测">
           <MiuixCard class="metric"><span class="metric-label">套餐</span><strong :class="{ waiting: !account?.bandwidth && !account?.unpurchased }">{{ accountPlan }}</strong><span class="metric-note">{{ accountPlanNote }}</span></MiuixCard>
@@ -176,9 +176,12 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate(tru
           <MiuixCard class="metric clickable" role="button" tabindex="0" :aria-busy="diagnosing" :aria-label="`外网延迟：${diagnosing ? '正在检测' : diagnoseStatus.value}，点击检测一次连通性`" @click="diagnose" @keydown.enter.prevent="diagnose" @keydown.space.prevent="diagnose"><span class="metric-label">外网延迟</span><strong :class="{ waiting: diagnoseStatus.waiting }">{{ diagnosing ? '检测中' : diagnoseStatus.value }}</strong><span class="metric-note">{{ diagnosing ? '正在检测认证服务器与外网' : diagnoseStatus.note }}</span></MiuixCard>
         </div>
         <!-- 清除本地会话挪到刷新旁边，只留图标：鼠标驻留由 title 给出说明，点击即清除（无二次确认）。 -->
-        <div v-if="saved.show_sessions" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixIconButton class="backend-login-icon" :disabled="locked" aria-label="登录后台或重新绑定会话" title="登录后台或重新绑定会话" @click="connect(true)"><MiuixIcon :icon="SearchDevice" :size="18" /></MiuixIconButton><MiuixIconButton class="clear-session-icon" :disabled="locked" aria-label="清除本地会话" title="清除本地会话" @click="forget"><MiuixIcon :icon="Clear" :size="18" /></MiuixIconButton><MiuixIconButton class="refresh-icon" :disabled="locked || !snapshot.authenticated" aria-label="刷新会话" title="刷新会话" @click="refresh"><MiuixIcon :icon="Refresh" :size="18" /></MiuixIconButton></div></div>
-        <MiuixCard v-if="saved.show_sessions" class="session-list">
-          <div v-if="!snapshot.sessions.length" class="empty-state"><strong>暂无在线会话</strong><span>上线或登录后台后，即可查看和管理连接。</span><MiuixButton :disabled="locked" @click="page = 1">填写登录信息</MiuixButton></div>
+        <div v-if="saved.show_sessions || needsSelection" class="section-heading"><h3>管理会话 <span class="count">{{ snapshot.sessions.length }}</span></h3><div class="row-actions"><MiuixIconButton class="backend-login-icon" :disabled="locked" aria-label="登录后台或重新绑定会话" title="登录后台或重新绑定会话" @click="connect(true)"><MiuixIcon :icon="SearchDevice" :size="18" /></MiuixIconButton><MiuixIconButton class="clear-session-icon" :disabled="locked" aria-label="清除本地会话" title="清除本地会话" @click="forget"><MiuixIcon :icon="Clear" :size="18" /></MiuixIconButton><MiuixIconButton class="refresh-icon" :disabled="locked || !snapshot.authenticated" aria-label="刷新会话" title="刷新会话" @click="refresh"><MiuixIcon :icon="Refresh" :size="18" /></MiuixIconButton></div></div>
+        <!-- 认证成功但没绑上会话时（多条新增、或会计系统还没上报），必须把"要你选"
+             这件事说清楚：否则用户看到"已认证"配上空白流量，无从下手。 -->
+        <p v-if="needsSelection" class="inline-note">{{ snapshot.sessions.length > 1 ? '检测到多条在线会话，请选择本机对应的那一条；选择前不显示流量数据。' : snapshot.sessions.length ? '认证已成功，请选择要管理的会话。' : '认证已成功，正在等待后台上报会话。' }}</p>
+        <MiuixCard v-if="saved.show_sessions || needsSelection" class="session-list">
+          <div v-if="!snapshot.sessions.length" class="empty-state"><strong>{{ snapshot.authenticated ? '正在等待后台会话' : '暂无在线会话' }}</strong><span>{{ snapshot.authenticated ? '认证已成功，但会计系统还没上报会话；稍后会自动重试，也可以手动刷新。' : '上线或登录后台后，即可查看和管理连接。' }}</span><MiuixButton v-if="!snapshot.authenticated" :disabled="locked" @click="page = 1">填写登录信息</MiuixButton><MiuixButton v-else :disabled="locked" @click="refresh">刷新会话</MiuixButton></div>
           <!-- 会话卡片：一行两张，只有一张时占满整行（见 compact.css 的 :only-child 规则）。
                选中态由 miuix 主题色填充表达，取代了原来的 radio 圆点和“已选择”角标；
                若觉得圆点更直观，可换回 label.session-row + input[type=radio]（旧结构见 0.4.11）。 -->
@@ -186,7 +189,9 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate(tru
             <MiuixCard v-for="row in snapshot.sessions" :key="row.radacctid" class="session-card" :class="{ selected: row.radacctid === snapshot.selected_id }" press-feedback="sink" show-indication role="button" tabindex="0" :aria-pressed="row.radacctid === snapshot.selected_id" :aria-label="`选择会话 ${row.radacctid}`" @click="pickSession(row.radacctid)" @keydown.enter.prevent="pickSession(row.radacctid)" @keydown.space.prevent="pickSession(row.radacctid)"><div class="session-identity"><strong>{{ mask(row.username) }}</strong><span>{{ row.framedipaddress || 'IP 未上报' }} · #{{ row.radacctid }}</span></div><span class="session-duration">{{ formatDuration(row.acctsessiontime) }}</span></MiuixCard>
           </div>
         </MiuixCard>
-        <div class="overview-footer"><span v-if="demo">模拟数据 · 不连接校园网</span><div class="row-actions"><MiuixButton v-if="demo" :disabled="locked || !snapshot.sessions.length" @click="simulateUpdate">模拟流量更新</MiuixButton><MiuixButton v-if="!snapshot.authenticated" :disabled="locked" @click="page = 1">登录设置</MiuixButton></div></div>
+        <!-- 开启会话管理后，会话列表的空状态里已经有「填写登录信息」入口，
+             右下角这个「登录设置」重复，未登录时不再显示。 -->
+        <div class="overview-footer"><span v-if="demo">模拟数据 · 不连接校园网</span><div class="row-actions"><MiuixButton v-if="demo" :disabled="locked || !snapshot.sessions.length" @click="simulateUpdate">模拟流量更新</MiuixButton><MiuixButton v-if="!snapshot.authenticated && !saved.show_sessions" :disabled="locked" @click="page = 1">登录设置</MiuixButton></div></div>
       </section>
 
       <section v-else-if="page === 1" class="settings-page" aria-label="偏好设置">
@@ -227,7 +232,7 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate(tru
       <section v-else class="about-page" aria-label="关于">
         <!-- 品牌区上下堆叠、水平居中；留白与垂直位置全部由 .about-brand 自己的 flex 承担
              （上方留白多于下方），模板里不再额外包一层容器。 -->
-        <header class="about-brand"><img :src="appIcon" alt="小薇" class="about-logo"><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '测试版' }}</p></header>
+        <header class="about-brand"><img :src="appIcon" alt="小薇" class="about-logo"><h2>DGCU-Net-Portal</h2><p>v{{ version }} · {{ demo ? '演示模式' : '正式版' }}</p></header>
         <MiuixCard class="about-card">
           <!-- 更新提示：进入本页自动查一次 GitHub Releases。检测中沿用状态卡的 miuix 无限转圈；
                左侧图标固定是 Update，不再随检测结果换成 Refresh；右侧按钮固定是「刷新」，一按就重新查

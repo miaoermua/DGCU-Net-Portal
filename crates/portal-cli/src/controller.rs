@@ -334,10 +334,18 @@ impl Controller {
             "backend"
         }
         .into();
+        // 认证成功和"绑定到哪一条会话"是两件独立的事：多会话时 bind_new_session
+        // 会放弃自动绑定以免挑错，但认证本身仍然成功。此时提示必须同时说清这两点，
+        // 否则用户看到"已确认成功"、流量却是空的，没有任何线索知道要自己选。
+        let bound = self.selected.is_some();
         self.message = match outcome {
-            Some(PortalLoginOutcome::Dialed) => "Portal 与代拨均已确认成功",
-            Some(_) => "Portal 已确认成功",
-            None if self.selected.is_some() => "已登录后台并恢复本机对应的在线会话",
+            Some(PortalLoginOutcome::Dialed) if bound => "Portal 与代拨均已确认成功",
+            Some(PortalLoginOutcome::Dialed) => {
+                "Portal 与代拨均已确认成功，但尚未绑定管理会话；请在会话列表中选择"
+            }
+            Some(_) if bound => "Portal 已确认成功",
+            Some(_) => "Portal 已确认成功，但尚未绑定管理会话；请在会话列表中选择",
+            None if bound => "已登录后台并恢复本机对应的在线会话",
             None => "已登录用户后台；请选择要管理的会话",
         }
         .into();

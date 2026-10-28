@@ -1,6 +1,6 @@
 # AGENTS.md
 
-在仓库内工作的代理与开发者的操作约定。以下内容都对照当前代码（0.5.13）核实过；改代码前先看「工作区」「命令」，改文档前必读「文档保真」。
+在仓库内工作的代理与开发者的操作约定。以下内容都对照当前代码（0.5.14）核实过；改代码前先看「工作区」「命令」，改文档前必读「文档保真」。
 
 ## 工作区
 
@@ -27,11 +27,15 @@ cargo fmt --all -- --check                      # 仓库无 rustfmt.toml，用�
 
 cargo build --release --locked -p portal-gui -p portal-cli --features portal-gui/custom-protocol
 python3 scripts/package_macos.py --output target/packages --dmg
+python3 scripts/package_windows.py --arch x86_64 --output target/packages   # 需 makensis
 python3 scripts/package_portable.py --platform linux --arch x86_64 --output target/packages
+python3 scripts/package_linux.py --format deb --arch x86_64 --output target/packages
+python3 scripts/package_linux.py --format rpm --arch x86_64 --output target/packages  # 需 rpmbuild
+python3 scripts/release_notes.py --assets target/packages --repo <owner/name> --tag v0.0.0
 ```
 
 - `.github/workflows/build.yml` 只在 `frontend` job 跑 `pnpm test`；Rust 侧只有 `cargo build`，**没有** `cargo test`/`clippy`/`fmt` 步骤，推送前必须本地跑一遍上面三条。
-- 打包脚本不代编译，先 `cargo build --release` 再运行；`bundle.active` 为 `false`，正式产物由脚本产出，只有 AppImage 那一步用 `tauri build`。
+- 打包脚本不代编译，先 `cargo build --release` 再运行；`bundle.active` 为 `false`，正式产物由脚本产出，只有 AppImage 那一步用 `tauri build`。Windows 安装器走 `makensis` 编译 `packaging/windows/installer.nsi`，Linux 的 deb/rpm 由 `package_linux.py` 自己拼装（deb 不依赖 dpkg-deb），三者都不经过 tauri bundler。
 - GUI 运行时沿自身可执行文件的祖先目录找同包内的 `portal-cli`，打包必须让两者处于同一目录或父子目录关系。
 - 界面调试需要先产出 `crates/portal-gui/frontend/dist`（`tauri.conf.json` 的 `build.frontendDist`）。`--demo` 启动或可执行文件名是 `dgcu-portal-demo` 时进 Demo 模式，不联网、不写系统设置。
 

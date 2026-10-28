@@ -1,6 +1,6 @@
 {
   "name": "dgcu-portal-ui",
-  "version": "0.5.13",
+  "version": "0.5.14",
   "private": true,
   "type": "module",
   "engines": { "node": ">=24.0.0" },
@@ -13,8 +13,8 @@
   },
   "dependencies": {
     "miuix-vue": "0.1.1",
-    "motion-v": "^2.2.1",
-    "vue": "^3.5.35"
+    "motion-v": "^2.8.0",
+    "vue": "^3.5.44"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.10",

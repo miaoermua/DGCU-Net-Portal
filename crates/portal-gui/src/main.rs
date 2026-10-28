@@ -372,6 +372,9 @@ fn show(app: &AppHandle) {
     set_dock_visible(app, true);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
+        // 最小化时 show() 只恢复可见性，窗口仍缩在程序坞/任务栏里，
+        // 不 unminimize 的话点了「打开主窗口」看起来还是没反应。
+        let _ = window.unminimize();
         let _ = window.set_focus();
     }
 }
@@ -423,8 +426,11 @@ fn main() {
                     // 只退界面，daemon 是独立进程、照旧在跑；不写回 run_mode，
                     // 托盘的一次点击不改变用户保存的运行方式。
                     "lightweight" => app.exit(0),
-                    // 停服务会断掉认证，交给前端确认后再退。
+                    // 停服务会断掉认证，交给前端确认后再退。确认框在前端，
+                    // 所以窗口必须先可见：收在托盘里（或托盘启动模式）时
+                    // 窗口是隐藏的，只发事件会让用户点了菜单却什么也看不到。
                     "stop" => {
+                        show(app);
                         let _ = app.emit("quit-request", ());
                     }
                     _ => {}

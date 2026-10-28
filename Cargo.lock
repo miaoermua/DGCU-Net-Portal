@@ -3053,7 +3053,7 @@ dependencies = [
 
 [[package]]
 name = "portal-cli"
-version = "0.5.13"
+version = "0.5.14"
 dependencies = [
  "clap",
  "directories",
@@ -3075,7 +3075,7 @@ dependencies = [
 
 [[package]]
 name = "portal-gui"
-version = "0.5.13"
+version = "0.5.14"
 dependencies = [
  "directories",
  "portal-cli",

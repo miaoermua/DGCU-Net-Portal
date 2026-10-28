@@ -121,17 +121,32 @@ jobs:
           python scripts/package_portable.py --platform windows
           --arch ${{ matrix.arch }} --output target/packages
           --binary-dir target/${{ matrix.target }}/release
+      # runner 自带 NSIS（windows-2022 与 windows-11-arm 都是 3.10），不额外装。
+      - name: 打包 NSIS 安装器 / SHA-256
+        run: >-
+          python scripts/package_windows.py --arch ${{ matrix.arch }}
+          --output target/packages
+          --binary-dir target/${{ matrix.target }}/release
       - uses: actions/upload-artifact@v7
         with:
           name: windows-${{ matrix.arch }}
           path: |
             target/packages/*.zip
+            target/packages/*-setup.exe
             target/packages/*.sha256
 
   linux:
-    name: Linux x86_64
+    name: Linux ${{ matrix.arch }}
     needs: frontend
-    runs-on: ubuntu-24.04
+    # arm64 用 GitHub 的原生 arm runner（公开仓库免费）：Tauri 的 AppImage 依赖
+    # linuxdeploy，而它不支持交叉编译（linuxdeploy#258），arm 包只能在 arm 机器上出。
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
     env:
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
@@ -146,7 +161,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: linux-x86_64
+          key: linux-${{ matrix.arch }}
       - uses: actions/download-artifact@v8
         with:
           name: frontend-dist
@@ -158,7 +173,7 @@ jobs:
       - name: 打包 tar.gz / SHA-256
         run: >-
           python3 scripts/package_portable.py --platform linux
-          --arch x86_64 --output target/packages
+          --arch ${{ matrix.arch }} --output target/packages
       - name: 打包 AppImage
         run: |
           npm install --global @tauri-apps/cli@^2
@@ -167,19 +182,19 @@ jobs:
           (cd crates/portal-gui && tauri build --config /tmp/tauri.ci.json)
           src=$(find target/release/bundle/appimage -name '*.AppImage' | head -n 1)
           test -n "$src"
-          name="DGCU-Net-Portal-${version}-linux-x86_64.AppImage"
+          name="DGCU-Net-Portal-${version}-linux-${{ matrix.arch }}.AppImage"
           cp "$src" "target/packages/$name"
           (cd target/packages && sha256sum "$name" > "$name.sha256")
       - uses: actions/upload-artifact@v7
         with:
-          name: linux-x86_64
+          name: linux-dist-${{ matrix.arch }}
           path: |
             target/packages/*.tar.gz
             target/packages/*.AppImage
             target/packages/*.sha256
       - uses: actions/upload-artifact@v7
         with:
-          name: linux-binaries
+          name: linux-bin-${{ matrix.arch }}
           path: |
             target/release/portal-gui
             target/release/portal-cli
@@ -192,7 +207,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: linux-binaries
+          name: linux-bin-x86_64
           path: target/release
       - name: 准备 makepkg 工作目录
         run: |
@@ -201,7 +216,7 @@ jobs:
           cp target/release/portal-gui target/arch/portal-gui
           cp target/release/portal-cli target/arch/portal-cli
           cp crates/portal-gui/icons/icon.png target/arch/portal-gui.png
-          cp packaging/arch/dgcu-portal.desktop packaging/arch/PKGBUILD target/arch/
+          cp packaging/linux/dgcu-portal.desktop packaging/arch/PKGBUILD target/arch/
           cp LICENSE target/arch/LICENSE
           sed -i "s/^pkgver=.*/pkgver=${version}/" target/arch/PKGBUILD
           chmod 777 target/arch
@@ -226,15 +241,53 @@ jobs:
           name: archlinux-x86_64
           path: target/arch/dgcu-net-portal-*.pkg.tar.zst*
 
+  # deb 与 rpm 都用已经编好的二进制重新摆布局，不重新编译；两者同一个 job，
+  # 因为它们只需 ubuntu runner 与 rpmbuild，不像 Arch 那样要进容器。
+  linuxpkgs:
+    name: Debian / RPM 包 ${{ matrix.arch }}
+    needs: [frontend, linux]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-bin-${{ matrix.arch }}
+          path: target/release
+      - name: 安装 rpmbuild
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rpm
+      - name: 打包 deb / SHA-256
+        run: >-
+          python3 scripts/package_linux.py --format deb --arch ${{ matrix.arch }}
+          --output target/packages --binary-dir target/release
+      - name: 打包 rpm / SHA-256
+        run: >-
+          python3 scripts/package_linux.py --format rpm --arch ${{ matrix.arch }}
+          --output target/packages --binary-dir target/release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-pkg-${{ matrix.arch }}
+          path: |
+            target/packages/*.deb
+            target/packages/*.rpm
+            target/packages/*.sha256
+
   release:
     name: 发布 Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [macos, windows, linux, archlinux]
+    needs: [macos, windows, linux, archlinux, linuxpkgs]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      # 只取各平台的发行包，避免把 frontend-dist（js/css/png）与 linux-binaries（裸二进制）带进 Release。
+      # 只取各平台的发行包，避免把 frontend-dist（js/css/png）与 linux-bin-*（裸二进制）带进 Release。
       # macOS 只取 dmg：zip 以 macos-zip-* 单独留在 Actions 存档里，不进 Release。
       - name: 下载发行包（macOS DMG）
         uses: actions/download-artifact@v8
@@ -253,13 +306,19 @@ jobs:
         with:
           path: release
           merge-multiple: true
-          pattern: 'linux-x86_64'
+          pattern: 'linux-dist-*'
       - name: 下载发行包（Arch Linux）
         uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true
           pattern: 'archlinux-*'
+      - name: 下载发行包（deb / rpm）
+        uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+          pattern: 'linux-pkg-*'
       - name: 汇总 SHA256SUMS.txt
         run: |
           cd release
@@ -268,7 +327,15 @@ jobs:
           find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -printf '%f\n' \
             | sort | xargs sha256sum > SHA256SUMS.txt
           cat SHA256SUMS.txt
+      # 链接用当前 tag 拼，不用 latest：资产名里带版本号，用 latest 会和页面上的版本对不上。
+      # 这个 body 会被 softprops 拼在自动生成的更新说明前面。
+      - name: 生成快捷下载表
+        run: >-
+          python3 scripts/release_notes.py --assets release
+          --repo "${{ github.repository }}" --tag "${{ github.ref_name }}"
+          --output release-notes.md
       - uses: softprops/action-gh-release@v2
         with:
           files: release/**
+          body_path: release-notes.md
           generate_release_notes: true
