@@ -30,7 +30,7 @@ const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps
 const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet_direct: 'reachable', internet: 'reachable', internet_latency_ms: 38 }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.5.14')
+  const version = ref('0.5.15')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
@@ -55,7 +55,10 @@ export function createPortalState(bridge?: DesktopBridge) {
   // 这时 selected_id 为空、流量没有数据，列表必须有入口，否则用户无路可走。
   // 会计系统还没来得及上报会话（sessions 为空）也算在内：此时该显示"等待更新"
   // 而不是让会话区整个消失，否则用户只能盯着一条让他去列表选的提示。
-  const needsSelection = computed(() => snapshot.value.authenticated && !snapshot.value.selected_id)
+  //
+  // 唯独 `offline` 例外：系统凭证模式下确认下线只清 `selected`，后台客户端还在，
+  // `authenticated` 仍为 true；用户刚主动下线，不能反过来提示"认证已成功，请选择会话"。
+  const needsSelection = computed(() => snapshot.value.authenticated && !snapshot.value.selected_id && snapshot.value.status !== 'offline')
   const isOnline = computed(() => ['accepted', 'session_online'].includes(snapshot.value.status))
   const serviceRunning = computed(() => !!phase.value || snapshot.value.authenticated || ['authenticating', 'accepted', 'session_online', 'backend'].includes(snapshot.value.status))
   const disconnectIntent = computed(() => isOnline.value || !!selected.value || (snapshot.value.status === 'unknown' && snapshot.value.authenticated))

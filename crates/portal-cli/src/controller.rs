@@ -186,8 +186,13 @@ impl Controller {
     /// 本机 IPv4 是否还在这次成功返回的在线列表里。
     ///
     /// 解析不到网卡地址时返回 `None`：证据不足，不能据此判抢占。
+    /// 同理，若后台一条会话都没上报地址，也只能说"不知道"——把字段缺失
+    /// 当成"不在列表"，会让「后台数据不全 + 恰有一次请求失败」误报成抢占。
     fn local_ip_in(&self, rows: &[OnlineSession]) -> Option<bool> {
         let ip = self.current_network.as_ref()?.ipv4.parse::<IpAddr>().ok()?;
+        if rows.iter().all(|row| row.framedipaddress.is_none()) {
+            return None;
+        }
         Some(rows.iter().any(|row| row.framedipaddress == Some(ip)))
     }
     /// 记录/更新会话丢失结论。同一个目标只写一次日志，等级变化时补一条。
@@ -329,6 +334,11 @@ impl Controller {
                 self.missing = 0;
                 self.status = "session_online".into();
                 self.message = "已恢复本机对应的在线会话".into();
+                // 自动重拨走的也是 connect，但不会先 `clear()`；这里是成功恢复
+                // 的分支，旧的"会话丢失/疑似被挤"结论必须一起失效，否则
+                // `snapshot()` 会继续把旧告警压在"已恢复"之上。
+                self.loss = None;
+                self.redial_hold = false;
                 self.paused = self.settings.reconnect_mode == ReconnectMode::Disabled;
                 // 凭据只存在控制器内存里；只要开了重连就保留，与密码是否落盘无关。
                 if self.settings.reconnect_mode != ReconnectMode::Disabled {
@@ -629,7 +639,15 @@ impl Controller {
         self.missing = 0;
         // 用户显式选了一条，旧目标丢失的告警到此为止。
         self.loss = None;
-        self.redial_hold = false;
+        // 但「疑似被挤下线」期间的重拨保护不跟着解除：选择只换了管理目标，
+        // 不代表本机已经安全上线。随手点中的那条很可能是挤掉本机的设备，
+        // 此时恢复自动重拨会用本机账号再认证一次，反而可能把对方挤下去。
+        // 想恢复自动重拨必须走一次显式 connect（它会先 clear）。
+        self.message = if self.redial_hold {
+            "已切换管理会话；疑似被挤下线期间暂停的自动重拨仍未恢复，需要时请手动重新连接".into()
+        } else {
+            "已切换管理会话".into()
+        };
         Ok(self.snapshot())
     }
     fn bind_new_session(&mut self) {
@@ -1458,6 +1476,111 @@ mod tests {
         assert_eq!(snap.status, "session_online");
         assert_eq!(snap.message, "已恢复本机对应的在线会话");
     }
+    /// 自动重拨（`reconnecting = true`）不会走 `clear()`；成功恢复本机会话时
+    /// 上一轮的丢失结论必须一起失效，不能让旧告警盖住"已恢复"。
+    #[tokio::test]
+    async fn restored_local_session_clears_the_previous_loss() {
+        let mock = crate::tests::Mock::new("direct");
+        mock.script_sessions(vec![vec![crate::tests::session_json("local", "127.0.0.1")]]);
+        let mut c = Controller {
+            settings: Settings {
+                server: mock.base.clone(),
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            reconnecting: true,
+            loss: Some(SessionLoss {
+                id: "local".into(),
+                kind: LossKind::Unclear,
+            }),
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("127.0.0.1"))));
+        let snap = c
+            .connect(
+                Credential::new("test-user".into(), "test-password".into()),
+                "",
+                false,
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert!(c.loss.is_none(), "成功恢复后旧告警不能残留");
+        assert!(!c.redial_hold, "恢复连接后不应继续压着重拨");
+        assert_eq!(
+            snap.message, "已恢复本机对应的在线会话",
+            "快照不能被上一轮的丢失文案盖住"
+        );
+    }
+    /// 认证后按本机 IP 认出了会话，同时后台又多出一条别的会话：
+    /// 新增的不止一条，不能把"本次认证产生的会话"猜成新增的那条。
+    #[tokio::test]
+    async fn restored_local_session_survives_an_extra_new_session() {
+        let mock = crate::tests::Mock::new("direct");
+        mock.script_sessions(vec![
+            vec![],
+            vec![
+                crate::tests::session_json("local", "127.0.0.1"),
+                crate::tests::session_json("other", "192.0.2.9"),
+            ],
+        ]);
+        let mut c = Controller {
+            settings: Settings {
+                server: mock.base.clone(),
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("127.0.0.1"))));
+        let snap = c
+            .connect(
+                Credential::new("test-user".into(), "test-password".into()),
+                "",
+                false,
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(snap.selected_id.as_deref(), Some("local"));
+        assert_eq!(snap.status, "accepted");
+        assert_eq!(snap.message, "Portal 已确认成功");
+        assert_eq!(c.missing, 0);
+    }
+    /// 没有选中会话时，即使 `missing` 已被其他路径推高，也不能自动重拨：
+    /// 空值不能被解释成"任选一条会话"。
+    #[tokio::test]
+    async fn unbound_controller_never_redials() {
+        let mock = crate::tests::Mock::new("direct");
+        let api = PortalClient::new(&mock.base).unwrap();
+        api.login("test-user", "test-password").await.unwrap();
+        let mut c = Controller {
+            settings: Settings {
+                server: mock.base.clone(),
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            api: Some(api),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            selected: None,
+            missing: 3,
+            paused: false,
+            bound_network: Some(context("127.0.0.1")),
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("127.0.0.1"))));
+        c.redial_tick(|_| {}).await;
+        assert_eq!(c.attempts, 0, "没有选中会话就不该发起重拨");
+        assert!(c.credential.is_some(), "更不能消费凭据去重连");
+        assert!(
+            mock.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|request| !request.contains("cmcc_login_value")),
+            "未绑定会话时不得走 Portal 认证"
+        );
+    }
     /// 没有绑定会话时，后台列表怎么变都不算"本机会话掉线"。
     #[test]
     fn unbound_controller_never_reports_a_drop() {
@@ -1532,6 +1655,62 @@ mod tests {
             c.message
         );
         assert!(c.message.contains("自动重拨已暂停"), "{}", c.message);
+    }
+    /// 「连接异常」的证据只有两分钟时效：更早的失败不能再当作抢线依据。
+    ///
+    /// 这一项用 `Instant` 而非墙上时钟，所以窗口判断不会被系统时间调整影响。
+    #[test]
+    fn poll_failure_evidence_expires_after_two_minutes() {
+        let mut stale = observing(crowded_elsewhere(), "mine");
+        stale.settings.reconnect_mode = ReconnectMode::NewSession;
+        stale.last_poll_failure = Some(Instant::now() - Duration::from_secs(121));
+        stale.update_session_status();
+        assert_eq!(
+            stale.loss.as_ref().map(|loss| loss.kind),
+            Some(LossKind::Unclear),
+            "超过两分钟的历史失败不能升级成疑似被挤下线"
+        );
+        assert!(!stale.redial_hold, "证据过期就不该停掉重拨");
+
+        let mut fresh = observing(crowded_elsewhere(), "mine");
+        fresh.settings.reconnect_mode = ReconnectMode::NewSession;
+        fresh.last_poll_failure = Some(Instant::now() - Duration::from_secs(119));
+        fresh.update_session_status();
+        assert_eq!(
+            fresh.loss.as_ref().map(|loss| loss.kind),
+            Some(LossKind::SuspectedEviction),
+            "窗口内的失败仍算证据"
+        );
+        assert!(fresh.redial_hold);
+    }
+    /// 后台一条会话都没上报地址时，不能断言"本机 IP 不在列表里"。
+    ///
+    /// 那只是数据不全（`framedipaddress` 可以缺失），不是被挤下线的证据；
+    /// 把它当成 `Some(false)` 会让「地址缺失 + 后台抖动」这种无关组合误报抢占。
+    #[test]
+    fn sessions_without_reported_addresses_are_not_eviction_evidence() {
+        let rows: Vec<OnlineSession> = ["other-1", "other-2", "other-3"]
+            .iter()
+            .map(|id| OnlineSession {
+                radacctid: (*id).into(),
+                username: "test-user".into(),
+                acctstarttime: String::new(),
+                acctsessiontime: 60,
+                framedipaddress: None,
+                acctinputoctets: 0,
+                acctoutputoctets: 0,
+            })
+            .collect();
+        let mut c = observing(rows, "mine");
+        c.settings.reconnect_mode = ReconnectMode::NewSession;
+        c.last_poll_failure = Some(Instant::now());
+        c.update_session_status();
+        assert_eq!(
+            c.loss.as_ref().map(|loss| loss.kind),
+            Some(LossKind::Unclear),
+            "地址缺失只能算证据不足，不能升级成疑似被挤下线"
+        );
+        assert!(!c.redial_hold, "证据不足时不该停掉自动重拨");
     }
     /// 同样的丢失，但只剩两条会话：不能升级成多设备抢占。
     #[test]
@@ -1824,6 +2003,35 @@ mod tests {
         .unwrap();
         assert!(c.loss.is_none(), "旧结论不能残留到新连接");
         assert!(!c.redial_hold, "手动重连后应恢复正常的重拨逻辑");
+    }
+    /// 选择会话只是换了管理目标，不等于本机已经安全上线。
+    ///
+    /// 「疑似被挤下线」期间的自动重拨保护不能被一次普通 UI 选择解除：用户
+    /// 随手点中的那条很可能是挤掉本机的设备，恢复重拨会用本机账号再认证一次，
+    /// 反而可能把对方挤下去。要恢复只能显式重新连接。
+    #[test]
+    fn selecting_a_session_does_not_lift_the_eviction_hold() {
+        let mut c = Controller {
+            settings: Settings {
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            rows: crowded_elsewhere(),
+            selected: Some("mine".into()),
+            current_network: Some(context("192.0.2.1")),
+            last_poll_failure: Some(Instant::now()),
+            ..Default::default()
+        };
+        c.update_session_status();
+        assert_eq!(
+            c.loss.as_ref().map(|loss| loss.kind),
+            Some(LossKind::SuspectedEviction),
+            "前置条件：应当已判定为疑似被挤下线"
+        );
+        assert!(c.redial_hold);
+        c.select("other-1").unwrap();
+        assert!(c.loss.is_none(), "换目标后旧目标的告警应当消失");
+        assert!(c.redial_hold, "选择会话不得解除疑似被挤下线期间的重拨保护");
     }
     /// 低频刷新也要判定，但不能替代 5 秒 worker 的缺失计数。
     #[tokio::test]

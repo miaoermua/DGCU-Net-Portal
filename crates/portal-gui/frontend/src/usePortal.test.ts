@@ -87,6 +87,16 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     expect(state.rate.value?.download_bps).toBe(2048)
     state.dispose()
   })
+  it('stops asking for a session choice once the user has gone offline', async () => {
+    const state=createPortalState();await state.initialize()
+    // 系统凭证模式下确认下线只清 `selected`，后台客户端还在，authenticated 仍为 true；
+    // 此时不能反过来提示“认证已成功，请选择会话”。
+    state.snapshot.value={...emptySnapshot(),status:'offline',authenticated:true,selected_id:null,sessions:[row('A'),row('B')]}
+    expect(state.needsSelection.value).toBe(false)
+    expect(state.selected.value).toBeUndefined()
+    expect(state.rate.value).toBeUndefined()
+    state.dispose()
+  })
   it('primary action disconnects while online and never chooses an ambiguous session', async () => {
     vi.useFakeTimers()
     const state=createPortalState();await state.initialize()
