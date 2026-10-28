@@ -48,6 +48,8 @@ pub enum Event {
     ResponseError,
     Timeout,
     SessionMissing,
+    SessionLost,
+    SessionEvictedSuspected,
     DisconnectPending,
     RefreshOneMinute,
     RefreshDisabled,
@@ -166,6 +168,16 @@ impl Event {
             Self::ResponseError => ("error", "response.error", "响应或跳转不符合预期"),
             Self::Timeout => ("error", "auth.timeout", "认证或代拨等待超时"),
             Self::SessionMissing => ("warn", "session.missing", "无法确定目标会话，请手动选择"),
+            Self::SessionLost => (
+                "warn",
+                "session.lost",
+                "所选会话已从后台在线列表消失，原因无法确认",
+            ),
+            Self::SessionEvictedSuspected => (
+                "warn",
+                "session.evicted_suspected",
+                "在线设备数超过 2 台且本机会话消失，疑似被其他设备挤下线，自动重拨已暂停",
+            ),
             Self::DisconnectPending => (
                 "warn",
                 "session.pending",

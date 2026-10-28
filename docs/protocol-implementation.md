@@ -139,9 +139,9 @@ Portal 认证与后台自助是两套会话，代码里刻意分开（`lib.rs:1`
 | `idle` | 尚未连接 | 初始化 `controller.rs:85`；`forget` 清除本地会话 `controller.rs:113` |
 | `authenticating` | 正在认证 | `connect` 开始 `controller.rs:201` |
 | `accepted` | 认证成功 | Portal 已确认 `controller.rs:332`；Portal 成功但后台登录失败 `controller.rs:293` |
-| `session_online` | 所选会话在线 | baseline 里已恢复本机会话 `controller.rs:225`；轮询确认所选会话仍在 `controller.rs:459` |
-| `backend` | 已登录后台 | 只登录了后台、未选中会话 `controller.rs:334` |
-| `offline` | 已下线 | 所选会话从列表消失 `controller.rs:452`；下线已确认 `controller.rs:530` |
+| `session_online` | 所选会话在线 | baseline 里已恢复本机会话 `controller.rs:330`；轮询确认所选会话仍在 `controller.rs:588` |
+| `backend` | 已登录后台 | 只登录了后台、未选中会话 `controller.rs:400` |
+| `offline` | 已下线 | 所选会话从列表消失 `controller.rs:608`；下线已确认 `controller.rs:698` |
 | `error` | 连接失败 | `fail()` `controller.rs:129` |
 | `unknown` | 下线待确认 | 下线请求失败或未确认 `controller.rs:519` |
 
@@ -172,6 +172,7 @@ portal.probe.untrusted   portal.probe.loop
 dial.wait                dial.poll
 sessions.read            account.read         session.select
 session.disconnect       session.disconnected session.missing   session.pending
+session.lost             session.evicted_suspected
 local.clear
 reconnect.start          reconnect.paused
 network.retry            network.rebind       network.rebind_failed
@@ -216,11 +217,26 @@ daemon 跑两个独立 worker（`daemon.rs:104-125`）：
 
 ### 掉线检测
 
-`update_session_status` 只看所选会话是否还在列表里：不在就 `missing += 1` 并置 `offline`，在就 `missing` 归零并置 `session_online`（`controller.rs:448-463`）。重拨关闭时由 `refresh` 调用（`controller.rs:435-437`），重拨开启时由 `redial_tick` 调用（`controller.rs:566`）。
+`redial_tick` 只要还持有后台客户端就轮询会话，不再以 `paused` 或 `reconnect_mode` 为前提（`controller.rs:720-726`）：backend-only 登录会置 `paused = true`，重拨关闭时旧实现根本不会查列表。查询失败只记 `last_poll_failure` 并走网络自愈，不推进缺失计数（`controller.rs:741-752`）；只有成功返回的列表才参与判定，请求失败不会被当成“所有会话都消失”。
+
+`observe_session` 先判定再清理（`controller.rs:582-617`）：原 `radacctid` 还在就归零 `missing`、置 `session_online`、清掉旧告警；消失就 `missing += 1`、置 `offline`，并在 `drops_state_on_loss()` 释放本地态之前留下 `loss { id, kind }`。`refresh` 也调用它，但 `count = false`（`controller.rs:550-567`），避免 1 分钟刷新与 5 秒 worker 把缺失次数算两遍。
+
+分级只看能拿到的证据（`controller.rs:582-611`）：
+
+| 结论 | 条件 |
+|---|---|
+| 高疑似被挤下线 | 原会话消失、本机 IPv4 不匹配任何 `framedipaddress`、在线会话数 > 2、最近 120 秒内有过轮询失败（`controller.rs:182-192`） |
+| 会话丢失、原因不明 | 原会话消失，但不满足上面的组合 |
+
+在线会话数超过 2 只是风险信号：原会话仍在、或列表里还能找到本机 IP 时都不判定。解析不到本机地址时不把“IP 不在列表”当证据（`controller.rs:189-192`）。结论只升级不降级，同一目标只在首次或等级变化时写一次日志（`controller.rs:194-221`）。
+
+`snapshot.message` 在 `loss` 存在时优先返回告警文案（`controller.rs:236-239`），普通刷新不会把它冲掉；`background_paused` 同时反映 `paused || redial_hold`。高疑似时置上 `redial_hold` 并清掉 `awaiting_session`（`controller.rs:207-212`），`bind_new_session` 在有 `loss` 时直接放弃自动认领（`controller.rs:635-640`）——新出现的那条更可能属于挤掉本机的设备。
+
+恢复只走显式路径：原 id 重新出现（`controller.rs:588-593`）、`select`（`controller.rs:631-632`）、`disconnect`（`controller.rs:674-675`）或一次成功连接（`controller.rs:464-465`）都会清掉 `loss` 与 `redial_hold`。
 
 ### 重拨
 
-`redial_tick` 的前置条件是没有后台会话、重拨被禁用或已暂停时直接返回（`controller.rs:549-555`），每次轮询前先确认网卡绑定（`controller.rs:556-557`）。真正发起重拨要同时满足：未暂停、模式不是 `Disabled`、`missing >= 3`、`attempts < 3`、距上次尝试已超过退避窗口（`controller.rs:580-592`）。退避是 `30 秒 × 2^attempts` 叠加抖动（`controller.rs:423-428`）。
+`redial_tick` 每次轮询前先确认网卡绑定（`controller.rs:727-729`），会话监测本身不受暂停影响。真正发起重拨要同时满足：未被 `paused` 或 `redial_hold` 挡住、模式不是 `Disabled`、仍有选中会话、`missing >= 3`、`attempts < 3`、距上次尝试已超过退避窗口（`controller.rs:756-766`）。退避是 `30 秒 × 2^attempts` 叠加抖动（`controller.rs:470-475`）。
 
 两种模式的差别（`controller.rs:598-621`）：
 
@@ -266,7 +282,7 @@ daemon 跑两个独立 worker（`daemon.rs:104-125`）：
 
 - 只要 `reconnect_mode != Disabled` 就保留在 `Controller` 内存里，重拨才有账号可用（`controller.rs:228-231`、`controller.rs:349-351`）。
 - 关闭重拨后这份凭据没有后续用途，立即丢弃（`controller.rs:397-400`）。
-- `Memory` + 重拨关闭时，任何失败或会话丢失都会整体 `clear()`（`controller.rs:116-128`、`controller.rs:454-456`）；`Memory` + 重拨开启时凭据必须留到下一次重拨（`controller.rs:116-119`）。
+- `Memory` + 重拨关闭时，任何失败都会整体 `clear()`（`controller.rs:152-158`）；会话丢失走 `release()`（`controller.rs:130-151`），只释放连接与会话，`loss` 留着给界面提示。`Memory` + 重拨开启时凭据必须留到下一次重拨（`controller.rs:463-468`）。
 - 手动下线与 `forget` 是无条件释放路径（`controller.rs:506-509`、`controller.rs:110-115`）。
 - 重拨暂停不等于释放，凭据留着供手动重试（`controller.rs:648-651`）。
 

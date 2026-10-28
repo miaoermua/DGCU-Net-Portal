@@ -20,10 +20,29 @@ pub(crate) fn row(id: &str, time: u64, up: u64, down: u64) -> OnlineSession {
         acctoutputoctets: down,
     }
 }
+/// 与 `onlinelog` 返回结构一致的会话 JSON，供 `Mock::script_sessions` 使用。
+/// `ip` 决定这条会话能否被 `unique_local_session` 按本机地址认领。
+pub(crate) fn session_json(id: &str, ip: &str) -> serde_json::Value {
+    serde_json::json!({
+        "radacctid": id,
+        "username": "test-user",
+        "acctstarttime": "2026-01-01 00:00:00",
+        "acctsessiontime": 60,
+        "framedipaddress": ip,
+        "acctinputoctets": 1024,
+        "acctoutputoctets": 2048,
+    })
+}
 pub(crate) struct Mock {
     pub(crate) base: String,
     stop: Arc<AtomicBool>,
     pub(crate) requests: Arc<Mutex<Vec<String>>>,
+    /// `onlinelog` 依次返回的会话集合，用完后一直返回最后一组。
+    ///
+    /// 认证流程会查两次会话：登录后台后取 baseline、Portal 认证后再取一次。
+    /// 要复现「认证才产生新会话」，这两次必须给出不同结果，所以这里是个队列
+    /// 而不是单个集合。留空时和真实环境「还没有任何在线会话」一致。
+    sessions: Arc<Mutex<Vec<Vec<serde_json::Value>>>>,
     handle: Option<thread::JoinHandle<()>>,
 }
 impl Drop for Mock {
@@ -45,7 +64,10 @@ impl Mock {
         let stop2 = stop.clone();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let req2 = requests.clone();
+        let sessions: Arc<Mutex<Vec<Vec<serde_json::Value>>>> = Arc::new(Mutex::new(Vec::new()));
+        let sessions2 = sessions.clone();
         let handle = thread::spawn(move || {
+            let mut onlinelog_calls = 0usize;
             while !stop2.load(Ordering::Relaxed) {
                 let Ok((mut stream, _)) = listener.accept() else {
                     thread::sleep(Duration::from_millis(2));
@@ -156,7 +178,18 @@ impl Mock {
                     r#"{"v":{"success":1},"d":[]}"#.into()
                 } else if path.contains("onlinelog") {
                     if request.contains("backend=synthetic") {
-                        r#"{"v":{"success":1},"d":{"data":[],"total":"0"}}"#.into()
+                        let script = sessions2.lock().unwrap();
+                        let rows = match script.as_slice() {
+                            [] => Vec::new(),
+                            queued => queued[onlinelog_calls.min(queued.len() - 1)].clone(),
+                        };
+                        drop(script);
+                        onlinelog_calls += 1;
+                        let total = rows.len();
+                        format!(
+                            r#"{{"v":{{"success":1}},"d":{{"data":{},"total":"{total}"}}}}"#,
+                            serde_json::Value::Array(rows)
+                        )
                     } else {
                         r#"{"v":{"success":0},"d":[]}"#.into()
                     }
@@ -179,8 +212,14 @@ impl Mock {
             base,
             stop,
             requests,
+            sessions,
             handle: Some(handle),
         }
+    }
+    /// 安排 `onlinelog` 依次返回的会话快照。认证流程查两次，通常传
+    /// `[认证前, 认证后]` 两组。传空（默认）表示始终没有在线会话。
+    pub(crate) fn script_sessions(&self, snapshots: Vec<Vec<serde_json::Value>>) {
+        *self.sessions.lock().unwrap() = snapshots;
     }
     pub(crate) fn context(&self) -> CmccContext {
         CmccContext::from_portal_url(&format!(
