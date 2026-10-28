@@ -58,6 +58,7 @@ pub struct Controller {
     status: String,
     message: String,
     missing: u32,
+    /// 会话掉线重拨的连续失败次数；成功绑定会话或显式释放后归零。
     attempts: u32,
     /// 网络层恢复的独立退避计数；与 `attempts`（会话掉线重拨）互不干扰。
     network_attempts: u32,
@@ -80,6 +81,134 @@ pub struct Controller {
 }
 type NetworkResolver =
     Arc<dyn Fn(&str) -> Result<Option<network::NetworkContext>, String> + Send + Sync>;
+/// 一次自动重连尝试开始前的会话可见状态，用于失败时整体退回。
+///
+/// 只保存 `connect()` 在返回 `Err` 之前可能改写、且失败后必须退回的字段。刻意不保存：
+///
+/// - `credential` / `attempts` / `last_attempt` / `network_attempts`：重试调度由调用方
+///   在 `connect()` 返回后决定（是否归还凭据、是否清零计数），快照恢复会覆盖这些决策；
+/// - `reconnecting`：调用方在 `connect()` 前后自行置位与清理；
+/// - `current_network` / `last_poll_failure`：失败后必须保留的新证据。回滚它们会把
+///   “刚解析到的网卡地址”“刚刚发生过传输层失败”抹掉；
+/// - `settings` / `logs` / `resolve_network`：配置、审计与外部环境，不属于一次连接事务。
+///
+/// 恢复只改内存，不能撤销已经发出的 HTTP 请求、已完成的 Portal 认证或服务端会话变化。
+///
+/// 并发约束：`daemon` 用 `Arc<tokio::sync::Mutex<Controller>>` 串行化所有入口，且
+/// `connect()` 在整个 `await` 期间持有 `&mut Controller`，因此快照存续期间不会插入
+/// `select` / `disconnect` 等用户操作，`restore` 不会覆盖异步期间的新状态。
+struct ReconnectCheckpoint {
+    api: Option<PortalClient>,
+    account: Option<AccountInfo>,
+    rows: Vec<OnlineSession>,
+    selected: Option<String>,
+    awaiting_session: Option<HashSet<String>>,
+    accounting: AccountingRates,
+    latest_rates: HashMap<String, Rate>,
+    paused: bool,
+    status: String,
+    message: String,
+    missing: u32,
+    loss: Option<SessionLoss>,
+    redial_hold: bool,
+    bound_network: Option<network::NetworkContext>,
+}
+impl ReconnectCheckpoint {
+    /// 对 `Controller` 做穷尽解构：新增字段时必须在这里显式选择“恢复/保留”，
+    /// 不会因为用了 `..` 而悄悄漏掉。
+    fn capture(c: &Controller) -> Self {
+        let Controller {
+            settings: _,
+            logs: _,
+            api,
+            credential: _,
+            account,
+            rows,
+            selected,
+            accounting,
+            latest_rates,
+            paused,
+            status,
+            message,
+            missing,
+            attempts: _,
+            network_attempts: _,
+            last_attempt: _,
+            awaiting_session,
+            reconnecting: _,
+            loss,
+            redial_hold,
+            current_network: _,
+            last_poll_failure: _,
+            bound_network,
+            resolve_network: _,
+        } = c;
+        Self {
+            api: api.clone(),
+            account: account.clone(),
+            rows: rows.clone(),
+            selected: selected.clone(),
+            awaiting_session: awaiting_session.clone(),
+            accounting: accounting.clone(),
+            latest_rates: latest_rates.clone(),
+            paused: *paused,
+            status: status.clone(),
+            message: message.clone(),
+            missing: *missing,
+            loss: loss.clone(),
+            redial_hold: *redial_hold,
+            bound_network: bound_network.clone(),
+        }
+    }
+    /// 瞬时失败（网络/超时）后把本地连接状态退回尝试前。只改内存：已经发出的
+    /// HTTP 请求或服务端认证副作用撤销不了；调度字段与失败提示由调用方另写。
+    fn restore(self, c: &mut Controller) {
+        c.api = self.api;
+        c.account = self.account;
+        c.rows = self.rows;
+        c.selected = self.selected;
+        c.awaiting_session = self.awaiting_session;
+        c.accounting = self.accounting;
+        c.latest_rates = self.latest_rates;
+        c.paused = self.paused;
+        c.status = self.status;
+        c.message = self.message;
+        c.missing = self.missing;
+        c.loss = self.loss;
+        c.redial_hold = self.redial_hold;
+        c.bound_network = self.bound_network;
+    }
+    /// 认证被拒后的部分回滚：调用方要把 `status` / `message` / `paused` 改成
+    /// “已停止自动尝试”，这些新决策必须保留；但旧连接仍在手上，`api`、会话列表
+    /// 与 `bound_network`、`account` 不能停留在半途换过、随后又被丢弃的新连接上。
+    fn restore_connection(self, c: &mut Controller) {
+        let Self {
+            api,
+            account,
+            rows,
+            selected,
+            awaiting_session,
+            accounting,
+            latest_rates,
+            missing,
+            bound_network,
+            paused: _,
+            status: _,
+            message: _,
+            loss: _,
+            redial_hold: _,
+        } = self;
+        c.api = api;
+        c.account = account;
+        c.rows = rows;
+        c.selected = selected;
+        c.awaiting_session = awaiting_session;
+        c.accounting = accounting;
+        c.latest_rates = latest_rates;
+        c.missing = missing;
+        c.bound_network = bound_network;
+    }
+}
 impl Default for Controller {
     fn default() -> Self {
         Self::new(Settings::default())
@@ -594,7 +723,7 @@ impl Controller {
             self.bound_network = None;
         }
     }
-    /// 自动重拨与网络恢复共用的退避：30 秒 × 2^attempts，并叠加抖动。
+    /// 自动重拨的退避：30 秒 × 2^attempts（连续失败次数），并叠加抖动。
     fn retry_backoff(&self) -> Duration {
         self.settings
             .poll_jitter
@@ -846,18 +975,10 @@ impl Controller {
         let retry_credential =
             Credential::new(credential.username.clone(), credential.password.clone());
         let terminate_first = self.settings.reconnect_mode == ReconnectMode::TerminateAndReconnect;
-        let old_status = self.status.clone();
-        let old_message = self.message.clone();
-        let old_api = self.api.clone();
-        let old_account = self.account.clone();
-        let old_rows = self.rows.clone();
-        let old_selected = self.selected.clone();
-        let old_accounting = self.accounting.clone();
-        let old_rates = self.latest_rates.clone();
-        let old_paused = self.paused;
-        let old_missing = self.missing;
-        let old_loss = self.loss.clone();
-        let old_hold = self.redial_hold;
+        // 先拍快照再 `clear()`：TerminateAndReconnect 会立刻丢掉旧连接，网络
+        // 抖动时要把这份状态整体退回去；NewSession 不 `clear()`，但 `connect()`
+        // 仍可能改写 `bound_network` / `account`，失败后同样不能留在半途。
+        let checkpoint = ReconnectCheckpoint::capture(self);
         if terminate_first {
             self.clear();
         }
@@ -872,37 +993,49 @@ impl Controller {
         self.attempts = attempts;
         self.last_attempt = last;
         match result {
-            Ok(_) if self.selected.is_some() => {}
+            Ok(_) if self.selected.is_some() => {
+                // `selected` 在 NewSession 下可能只是重拨前遗留的目标：只有它
+                // 真的出现在本轮会话列表里，才算"已绑定有效会话"。这时清零
+                // 连续失败计数，下一次掉线才能重新从 30 秒退避开始，而不是被
+                // 历次成功重拨累加到 3 次上限后永久挡住。
+                if self
+                    .selected
+                    .as_ref()
+                    .is_some_and(|id| self.rows.iter().any(|row| &row.radacctid == id))
+                {
+                    self.attempts = 0;
+                }
+            }
             Ok(_) => {
                 self.logs.record(crate::logging::Event::RetryPaused);
                 self.paused = true;
                 self.message = "自动重拨未完成或无法绑定新会话，已暂停；请手动检查".into();
             }
-            Err(error) if Self::transient_reconnect_error(&error) => {
+            // 与 `retry_after_failure` 使用同一分类：网卡暂时消失
+            // （`NetworkInterface`）是环境问题，不能落进下面的"认证被拒"分支。
+            Err(error) if Self::retryable_connection_error(&error) => {
                 self.credential = Some(retry_credential);
                 self.attempts = 0;
-                if terminate_first {
-                    self.api = old_api;
-                    self.account = old_account;
-                    self.rows = old_rows;
-                    self.selected = old_selected;
-                    self.accounting = old_accounting;
-                    self.latest_rates = old_rates;
-                    self.paused = old_paused;
-                    self.missing = old_missing;
-                    self.loss = old_loss;
-                    self.redial_hold = old_hold;
-                }
-                self.status = old_status;
+                // 恢复快照里的本地连接状态；它只改内存，不会撤销已经发出的
+                // HTTP 请求或服务端认证副作用。`terminate_first` 与 `NewSession`
+                // 在这里语义相同：失败都不该改变已有会话。
+                checkpoint.restore(self);
                 self.message = format!(
                     "{}；网络暂时不可用，保留当前会话并等待下一次掉线检测",
-                    old_message
+                    self.message
                 );
             }
             Err(_) => {
                 // 暂停只是停止自动尝试；凭据仍留在进程内，供用户手动重试。
                 self.credential = Some(retry_credential);
                 self.logs.record(crate::logging::Event::RetryPaused);
+                // 认证被拒：`paused` / `status` / `message` 是新的决策，不能回滚；
+                // 但 `TerminateAndReconnect` 已经 `clear()`，保留清空后的状态。
+                // `NewSession` 的旧连接还在，`api`/`account`/`bound_network` 必须
+                // 退回去，否则它们会指向一个认证失败后被丢弃的新连接。
+                if !terminate_first {
+                    checkpoint.restore_connection(self);
+                }
                 self.paused = true;
                 self.message = "自动重拨被认证系统拒绝，已暂停；请手动检查".into();
             }
@@ -976,17 +1109,10 @@ impl Controller {
         };
         let retry_credential =
             Credential::new(credential.username.clone(), credential.password.clone());
-        let old_status = self.status.clone();
-        let old_message = self.message.clone();
-        let old_api = self.api.clone();
-        let old_account = self.account.clone();
-        let old_rows = self.rows.clone();
-        let old_selected = self.selected.clone();
-        let old_accounting = self.accounting.clone();
-        let old_rates = self.latest_rates.clone();
-        let old_paused = self.paused;
-        let old_missing = self.missing;
-        let old_bound = self.bound_network.clone();
+        // 失败自愈不 `clear()`，但 `connect()` 仍可能改写 `bound_network` / `account`
+        // 等字段；失败时用同一份快照退回。`last_poll_failure`（刚发生的失败证据）
+        // 不在快照里，会原样保留。
+        let checkpoint = ReconnectCheckpoint::capture(self);
         self.last_attempt = Some(Instant::now());
         self.logs.record(crate::logging::Event::NetworkRetry);
         self.reconnecting = true;
@@ -999,22 +1125,16 @@ impl Controller {
             Err(error) if Self::retryable_connection_error(&error) => {
                 self.network_attempts = self.network_attempts.saturating_add(1);
                 self.credential = Some(retry_credential);
-                self.api = old_api;
-                self.account = old_account;
-                self.rows = old_rows;
-                self.selected = old_selected;
-                self.accounting = old_accounting;
-                self.latest_rates = old_rates;
-                self.paused = old_paused;
-                self.missing = old_missing;
-                self.bound_network = old_bound;
-                self.status = old_status;
-                self.message = format!("{}；网络或网卡暂不可用，正在按退避自动重连", old_message);
+                checkpoint.restore(self);
+                self.message = format!("{}；网络或网卡暂不可用，正在按退避自动重连", self.message);
             }
             Err(_) => {
                 // 保留凭据：暂停只是"不再自动尝试"，不该顺手把用户保存的账号丢掉。
                 self.credential = Some(retry_credential);
                 self.logs.record(crate::logging::Event::RetryPaused);
+                // 与 `redial_tick` 相同：认证被拒的新决策（paused/status/message）
+                // 保留；旧连接仍有效，`api`/`account`/`bound_network` 退回尝试前。
+                checkpoint.restore_connection(self);
                 self.paused = true;
                 self.message = "自动重连被认证系统拒绝，已暂停；请手动检查账号和网络".into();
             }
@@ -2410,5 +2530,374 @@ mod tests {
         assert!(c.last_poll_failure.is_none(), "成功轮询后旧证据必须失效");
         assert_eq!(c.missing, 0);
         assert_eq!(c.status, "session_online");
+    }
+    fn account(plan: &str) -> AccountInfo {
+        AccountInfo {
+            plan: plan.into(),
+            bandwidth: None,
+            expires_on: None,
+            unpurchased: false,
+        }
+    }
+    /// 快照只回滚“连接相关”的状态；失败证据、重试计数、凭据与 `reconnecting`
+    /// 必须保持调用方在 `connect()` 返回后写入的新值。
+    #[test]
+    fn reconnect_checkpoint_restores_connection_state_and_keeps_new_evidence() {
+        let mut c = Controller {
+            api: Some(PortalClient::new("http://127.0.0.1:9/lfradius/").unwrap()),
+            credential: Some(Credential::new("old-user".into(), "old-pass".into())),
+            account: Some(account("旧套餐")),
+            rows: vec![row("mine", 60, 1, 2)],
+            selected: Some("mine".into()),
+            awaiting_session: Some(["mine".to_owned()].into_iter().collect()),
+            latest_rates: HashMap::from([(
+                "mine".to_owned(),
+                Rate {
+                    upload_bps: Some(1.0),
+                    download_bps: Some(2.0),
+                    sample_seconds: Some(5),
+                },
+            )]),
+            paused: false,
+            status: "session_online".into(),
+            message: "旧提示".into(),
+            missing: 2,
+            loss: Some(SessionLoss {
+                id: "mine".into(),
+                kind: LossKind::Unclear,
+            }),
+            redial_hold: true,
+            bound_network: Some(context("192.0.2.1")),
+            current_network: Some(context("192.0.2.1")),
+            last_poll_failure: Some(Instant::now()),
+            attempts: 2,
+            network_attempts: 3,
+            ..Default::default()
+        };
+        let checkpoint = ReconnectCheckpoint::capture(&c);
+        let evidence = Instant::now();
+        c.api = None;
+        c.account = Some(account("被丢弃的新套餐"));
+        c.rows.clear();
+        c.selected = Some("other".into());
+        c.awaiting_session = None;
+        c.latest_rates.clear();
+        c.paused = true;
+        c.status = "error".into();
+        c.message = "新提示".into();
+        c.missing = 9;
+        c.loss = None;
+        c.redial_hold = false;
+        c.bound_network = Some(context("192.0.2.9"));
+        // 以下属于“失败后必须保留的新证据/新决策”，快照不应覆盖。
+        c.current_network = Some(context("192.0.2.9"));
+        c.last_poll_failure = Some(evidence);
+        c.attempts = 0;
+        c.network_attempts = 4;
+        c.credential = None;
+        c.reconnecting = true;
+        checkpoint.restore(&mut c);
+        assert!(c.api.is_some(), "旧 client 必须退回");
+        assert_eq!(c.account.as_ref().map(|a| a.plan.as_str()), Some("旧套餐"));
+        assert_eq!(c.rows.len(), 1);
+        assert_eq!(c.selected.as_deref(), Some("mine"));
+        assert!(c.awaiting_session.is_some());
+        assert_eq!(c.latest_rates.len(), 1);
+        assert!(!c.paused);
+        assert_eq!(c.status, "session_online");
+        assert_eq!(c.message, "旧提示");
+        assert_eq!(c.missing, 2);
+        assert!(c.loss.is_some());
+        assert!(c.redial_hold, "全量回滚不能顺手解除保护");
+        assert_eq!(
+            c.bound_network.as_ref().map(|n| n.ipv4.as_str()),
+            Some("192.0.2.1")
+        );
+        // 失败证据与调度字段保持“新值”。
+        assert_eq!(
+            c.current_network.as_ref().map(|n| n.ipv4.as_str()),
+            Some("192.0.2.9"),
+            "新解析到的网卡地址不能回滚"
+        );
+        assert_eq!(c.last_poll_failure, Some(evidence));
+        assert_eq!(c.attempts, 0);
+        assert_eq!(c.network_attempts, 4);
+        assert!(c.credential.is_none());
+        assert!(c.reconnecting);
+    }
+    /// 认证被拒后的部分回滚：旧连接相关字段退回，`paused`/`status`/`message`
+    /// 与新的 `loss` 结论保留，不能被旧快照盖掉。
+    #[test]
+    fn reconnect_checkpoint_connection_restore_keeps_the_rejected_decision() {
+        let mut c = Controller {
+            api: Some(PortalClient::new("http://127.0.0.1:9/lfradius/").unwrap()),
+            account: Some(account("旧套餐")),
+            rows: vec![row("mine", 60, 0, 0)],
+            selected: Some("mine".into()),
+            bound_network: Some(context("192.0.2.1")),
+            loss: Some(SessionLoss {
+                id: "mine".into(),
+                kind: LossKind::SuspectedEviction,
+            }),
+            ..Default::default()
+        };
+        let checkpoint = ReconnectCheckpoint::capture(&c);
+        c.api = None;
+        c.account = None;
+        c.rows.clear();
+        c.selected = Some("other".into());
+        c.bound_network = Some(context("192.0.2.9"));
+        c.status = "error".into();
+        c.message = "认证被拒".into();
+        c.paused = true;
+        c.loss = None;
+        checkpoint.restore_connection(&mut c);
+        assert!(c.api.is_some(), "新连接已被丢弃，旧 client 必须退回");
+        assert_eq!(c.account.as_ref().map(|a| a.plan.as_str()), Some("旧套餐"));
+        assert_eq!(c.selected.as_deref(), Some("mine"));
+        assert_eq!(
+            c.bound_network.as_ref().map(|n| n.ipv4.as_str()),
+            Some("192.0.2.1"),
+            "绑定地址不能指向被丢弃的新连接"
+        );
+        assert_eq!(c.status, "error");
+        assert_eq!(c.message, "认证被拒");
+        assert!(c.paused);
+        assert!(c.loss.is_none(), "新的失败结论不能被旧快照恢复");
+    }
+    /// 保护期间根本不会拍快照（准入在 `capture` 之前）；即便拍到 `true`，
+    /// 恢复也不能把它改成 `false`。
+    #[test]
+    fn reconnect_checkpoint_never_lifts_the_protection() {
+        let mut c = Controller {
+            selected: Some("mine".into()),
+            redial_hold: true,
+            ..Default::default()
+        };
+        let checkpoint = ReconnectCheckpoint::capture(&c);
+        c.redial_hold = false;
+        c.selected = Some("other".into());
+        checkpoint.restore(&mut c);
+        assert!(c.redial_hold);
+        assert_eq!(c.selected.as_deref(), Some("mine"));
+    }
+    /// `TerminateAndReconnect` 只在本地 `clear()`，不会终止服务端会话；网络
+    /// 失败时旧 client、会话、账号必须整体退回，且不得重新认证。
+    #[tokio::test]
+    async fn redial_tick_rolls_back_a_failed_redial_after_local_clear() {
+        let mock = crate::tests::Mock::new("direct");
+        mock.script_sessions(vec![vec![crate::tests::session_json(
+            "other",
+            "203.0.113.11",
+        )]]);
+        let api = PortalClient::new(&mock.base).unwrap();
+        api.login("test-user", "test-password").await.unwrap();
+        let mut c = Controller {
+            settings: Settings {
+                // 打不通的本地端口：connect 必然以传输层错误失败。
+                server: "http://127.0.0.1:9/lfradius/".into(),
+                reconnect_mode: ReconnectMode::TerminateAndReconnect,
+                ..Default::default()
+            },
+            api: Some(api),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            account: Some(account("旧套餐")),
+            selected: Some("mine".into()),
+            missing: 2,
+            paused: false,
+            bound_network: Some(context("192.0.2.1")),
+            current_network: Some(context("192.0.2.1")),
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("192.0.2.1"))));
+        c.redial_tick(|_| {}).await;
+        assert_eq!(c.attempts, 0, "瞬时失败要清零重试计数");
+        assert!(c.credential.is_some(), "凭据必须退回");
+        assert!(c.api.is_some(), "旧后台 client 必须退回");
+        assert_eq!(
+            c.account.as_ref().map(|a| a.plan.as_str()),
+            Some("旧套餐"),
+            "账号信息不能被 clear 永久丢掉"
+        );
+        assert_eq!(c.selected.as_deref(), Some("mine"), "旧选中目标必须退回");
+        assert_eq!(c.status, "offline", "轮询得出的会话状态要保留");
+        assert!(
+            c.loss.is_some(),
+            "快照拍在轮询之后，这一轮得到的丢失结论不能被回滚抹掉"
+        );
+        assert!(
+            c.message.contains("网络暂时不可用"),
+            "回滚后的提示要说明失败原因：{}",
+            c.message
+        );
+        assert_eq!(portal_auth_requests(&mock), 1, "只允许测试夹具的登录");
+        assert!(
+            mock.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|request| !request.contains("cmcc_login_value")),
+            "失败的重拨不得发起 Portal 认证"
+        );
+    }
+    /// 网卡解析失败属于环境问题，不能落进"认证被拒"分支：本地 clear 后必须
+    /// 按快照整体退回，不得永久暂停，也不得发出 Portal 认证请求。
+    #[tokio::test]
+    async fn redial_tick_treats_interface_failure_as_retryable() {
+        let mock = crate::tests::Mock::new("direct");
+        mock.script_sessions(vec![vec![crate::tests::session_json(
+            "other",
+            "203.0.113.11",
+        )]]);
+        let api = PortalClient::new(&mock.base).unwrap();
+        api.login("test-user", "test-password").await.unwrap();
+        let mut c = Controller {
+            settings: Settings {
+                // 与快照里的旧 client 同源：任何意外发出的重连请求都会记在
+                // 这个 Mock 上，便于断言"没有发起认证"。
+                server: mock.base.clone(),
+                reconnect_mode: ReconnectMode::TerminateAndReconnect,
+                probe_enabled: false,
+                ..Default::default()
+            },
+            api: Some(api),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            account: Some(account("旧套餐")),
+            selected: Some("mine".into()),
+            missing: 2,
+            paused: false,
+            bound_network: Some(context("192.0.2.1")),
+            current_network: Some(context("192.0.2.1")),
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Err("没有找到带 IPv4 和 MAC 的活动网卡".into()));
+        c.redial_tick(|_| {}).await;
+        assert!(!c.paused, "网卡暂时不可用不能暂停自动重拨");
+        assert_eq!(c.attempts, 0, "可重试失败要清零连续失败计数");
+        assert!(c.api.is_some(), "本地 clear 后必须退回旧后台 client");
+        assert_eq!(c.selected.as_deref(), Some("mine"), "旧选中目标必须退回");
+        assert_eq!(c.rows.len(), 1, "旧会话列表必须退回");
+        assert_eq!(
+            c.account.as_ref().map(|a| a.plan.as_str()),
+            Some("旧套餐"),
+            "账号信息不能被 clear 永久丢掉"
+        );
+        assert_eq!(c.status, "offline", "不能留下 connect() 的 error 状态");
+        assert!(
+            c.message.contains("网络暂时不可用"),
+            "应说明是环境问题而不是认证被拒：{}",
+            c.message
+        );
+        assert!(
+            !c.message.contains("认证系统拒绝"),
+            "网卡解析失败被误报成认证拒绝：{}",
+            c.message
+        );
+        assert_eq!(portal_auth_requests(&mock), 1, "只允许测试夹具的登录");
+        assert!(
+            mock.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|request| !request.contains("cmcc_login_value")),
+            "解析不到网卡时不得发起 Portal 认证"
+        );
+    }
+    /// 成功绑定会话必须结束这一轮连续失败计数：否则三次成功后 `attempts`
+    /// 停在 3，下一次掉线会被 `attempts >= 3` 永久挡住。
+    #[tokio::test]
+    async fn successful_redial_resets_attempts_for_the_next_drop() {
+        let mock = crate::tests::Mock::new("direct");
+        // 解析出的源地址必须是本机真实可绑定的地址，`connect()` 才能在
+        // 认证后用同一地址认领这条会话。
+        mock.script_sessions(vec![vec![crate::tests::session_json("mine", "127.0.0.1")]]);
+        let api = PortalClient::new(&mock.base).unwrap();
+        api.login("test-user", "test-password").await.unwrap();
+        let mut c = Controller {
+            settings: Settings {
+                server: mock.base.clone(),
+                reconnect_mode: ReconnectMode::NewSession,
+                probe_enabled: false,
+                ..Default::default()
+            },
+            api: Some(api),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            selected: Some("gone".into()),
+            missing: 3,
+            paused: false,
+            bound_network: Some(context("127.0.0.1")),
+            current_network: Some(context("127.0.0.1")),
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("127.0.0.1"))));
+        // 三轮"旧会话消失 → 重拨并按本机地址绑定"：旧实现每次成功都保留
+        // 计数，第三次成功后 `attempts` 停在 3。
+        for round in 1..=3 {
+            c.selected = Some("gone".into());
+            c.missing = 3;
+            c.last_attempt = None;
+            c.redial_tick(|_| {}).await;
+            assert_eq!(
+                c.selected.as_deref(),
+                Some("mine"),
+                "第 {round} 轮应绑定到本机对应的新会话"
+            );
+            assert_eq!(c.attempts, 0, "第 {round} 轮成功后连续失败计数必须归零");
+        }
+        assert!(!c.paused);
+
+        // 第四次掉线换成一个打不通的后台：必须真的发起重拨并走可重试分支，
+        // 而不是在 `attempts >= 3` 处静默返回。
+        c.settings.server = "http://127.0.0.1:9/lfradius/".into();
+        c.selected = Some("gone".into());
+        c.missing = 3;
+        c.last_attempt = None;
+        c.redial_tick(|_| {}).await;
+        assert_eq!(c.attempts, 0, "瞬时失败同样归零");
+        assert!(c.credential.is_some(), "凭据必须退回");
+        assert!(!c.paused, "瞬时失败不暂停");
+        assert!(
+            c.message.contains("网络暂时不可用"),
+            "新的失败序列必须真的发起重拨：{}",
+            c.message
+        );
+    }
+    /// 网络自愈失败后的回滚不能抹掉刚发生的轮询失败证据，也不能吞掉旧会话。
+    #[tokio::test]
+    async fn retry_after_failure_restores_state_and_keeps_the_poll_failure_evidence() {
+        let mut c = Controller {
+            settings: Settings {
+                server: "http://127.0.0.1:9/lfradius/".into(),
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            api: Some(PortalClient::new("http://127.0.0.1:9/lfradius/").unwrap()),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            account: Some(account("旧套餐")),
+            rows: vec![row("mine", 60, 0, 0)],
+            selected: Some("mine".into()),
+            paused: false,
+            bound_network: Some(context("192.0.2.1")),
+            current_network: Some(context("192.0.2.1")),
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("192.0.2.1"))));
+        c.redial_tick(|_| {}).await;
+        assert_eq!(c.network_attempts, 1, "可重试失败要记一次自愈尝试");
+        assert!(
+            c.last_poll_failure.is_some(),
+            "刚发生的传输层失败是证据，回滚不能抹掉"
+        );
+        assert!(c.api.is_some());
+        assert_eq!(c.rows.len(), 1, "旧会话列表必须退回");
+        assert_eq!(c.selected.as_deref(), Some("mine"));
+        assert_eq!(c.account.as_ref().map(|a| a.plan.as_str()), Some("旧套餐"));
+        assert!(c.credential.is_some());
+        assert!(!c.paused);
+        assert!(
+            c.message.contains("正在按退避自动重连"),
+            "失败提示不能被回滚成旧文案：{}",
+            c.message
+        );
     }
 }

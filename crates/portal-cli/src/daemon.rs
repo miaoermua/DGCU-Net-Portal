@@ -15,6 +15,9 @@ use tokio::{
     sync::Mutex,
 };
 
+/// 所有 IPC 命令与后台 worker 共用这一把异步锁。`Controller` 的每次操作都在整个
+/// `await` 期间独占 `&mut Controller`，因此 `connect()` 期间不会插入 `select`、
+/// `disconnect` 等用户操作；`ReconnectCheckpoint` 的回滚不会覆盖并发状态变化。
 type Shared = Arc<Mutex<Controller>>;
 
 /// 探测端点时的等待上限。连接成功就说明确实有进程占着端点；它可能只是暂时忙
