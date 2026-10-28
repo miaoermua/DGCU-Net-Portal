@@ -144,6 +144,15 @@ impl Controller {
         self.release();
         // 显式清理（手动下线、忘记会话、重新登录）没有"谁的会话丢了"可言。
         self.loss = None;
+        self.lift_eviction_protection();
+    }
+    /// 解除「疑似被挤下线」期间的重拨保护。
+    ///
+    /// 只有用户显式恢复（手动连接、手动下线、忘记会话）才允许调用。普通轮询
+    /// 成功、切换选中会话、自动重试都只说明"后台这一轮还有响应"，不能证明本机
+    /// 已安全上线：保护若被这些事件解除，新选中的会话一消失就会立刻自动认证，
+    /// 可能把对方再挤下去。
+    fn lift_eviction_protection(&mut self) {
         self.redial_hold = false;
     }
     pub fn forget(&mut self) {
@@ -171,8 +180,14 @@ impl Controller {
                 .into()
             }
             LossKind::Unclear => {
-                "所选会话已从后台在线列表消失，当前无法确认是否被其他设备挤下线，请检查网络或重新绑定会话。"
-                    .into()
+                let base = "所选会话已从后台在线列表消失，当前无法确认是否被其他设备挤下线，请检查网络或重新绑定会话。";
+                if self.redial_hold {
+                    // 保护仍生效时必须说出来：否则界面只显示"会话消失"，
+                    // 用户无从知道自动重拨其实还压着。
+                    format!("{base}疑似被挤下线期间暂停的自动重拨仍未恢复，需要时请手动重新连接。")
+                } else {
+                    base.into()
+                }
             }
         }
     }
@@ -183,17 +198,39 @@ impl Controller {
         self.last_poll_failure
             .is_some_and(|at| at.elapsed() <= Duration::from_secs(120))
     }
+    /// 轮询失败是否属于本机连接异常（传输层失败或超时）。
+    ///
+    /// 只有这一类才能当"本机连接异常"的证据：HTTP 5xx、Cookie 失效/业务拒绝、
+    /// 响应解析失败分别说明后台、登录态或协议出了问题，把它们算进来会让一次
+    /// 后台维护或接口变更把一个仍然在线的会话误判成被挤下线。
+    fn poll_failure_is_network(error: &AppError) -> bool {
+        matches!(error, AppError::Network(_) | AppError::Timeout(_))
+    }
     /// 本机 IPv4 是否还在这次成功返回的在线列表里。
     ///
-    /// 解析不到网卡地址时返回 `None`：证据不足，不能据此判抢占。
-    /// 同理，若后台一条会话都没上报地址，也只能说"不知道"——把字段缺失
-    /// 当成"不在列表"，会让「后台数据不全 + 恰有一次请求失败」误报成抢占。
+    /// 三态，宁可"不知道"也不猜：
+    /// - 任一已知地址与本机匹配 → `Some(true)`；
+    /// - 所有会话地址都已知且都不匹配 → `Some(false)`；
+    /// - 没有匹配项，但至少一条会话缺地址 → `None`（证据不完整）。
+    ///
+    /// 解析不到网卡地址同样是 `None`。把缺失字段当成"不在列表"，会让
+    /// 「后台数据不全 + 恰有一次请求失败」误报成抢占。
     fn local_ip_in(&self, rows: &[OnlineSession]) -> Option<bool> {
         let ip = self.current_network.as_ref()?.ipv4.parse::<IpAddr>().ok()?;
-        if rows.iter().all(|row| row.framedipaddress.is_none()) {
-            return None;
+        let mut unknown = false;
+        for row in rows {
+            match row.framedipaddress {
+                Some(address) if address == ip => return Some(true),
+                Some(_) => {}
+                None => unknown = true,
+            }
         }
-        Some(rows.iter().any(|row| row.framedipaddress == Some(ip)))
+        if unknown {
+            None
+        } else {
+            // 空列表同样落在这里：没有任何会话，也就谈不上"本机地址还在"。
+            Some(false)
+        }
     }
     /// 记录/更新会话丢失结论。同一个目标只写一次日志，等级变化时补一条。
     fn record_loss(&mut self, id: &str, kind: LossKind) {
@@ -335,10 +372,13 @@ impl Controller {
                 self.status = "session_online".into();
                 self.message = "已恢复本机对应的在线会话".into();
                 // 自动重拨走的也是 connect，但不会先 `clear()`；这里是成功恢复
-                // 的分支，旧的"会话丢失/疑似被挤"结论必须一起失效，否则
-                // `snapshot()` 会继续把旧告警压在"已恢复"之上。
+                // 的分支，旧的"会话丢失"结论必须失效，否则 `snapshot()` 会继续
+                // 把旧告警压在"已恢复"之上。抢占保护则只由显式恢复解除：
+                // 自动路径在保护期间根本不会走到这里。
                 self.loss = None;
-                self.redial_hold = false;
+                if !self.reconnecting {
+                    self.lift_eviction_protection();
+                }
                 self.paused = self.settings.reconnect_mode == ReconnectMode::Disabled;
                 // 凭据只存在控制器内存里；只要开了重连就保留，与密码是否落盘无关。
                 if self.settings.reconnect_mode != ReconnectMode::Disabled {
@@ -469,10 +509,13 @@ impl Controller {
                 .push_str("；后台会话查询暂不可用，稍后自动重试");
         }
         self.paused = self.settings.reconnect_mode == ReconnectMode::Disabled || outcome.is_none();
-        // 手动或自动连接成功都算一次新的开始：旧的"疑似被挤下线"结论必须失效，
-        // 否则它会一直压在后续提示上面。
+        // 连接成功是新开始：旧的"会话已消失"事实结论失效，不再压住后续提示。
         self.loss = None;
-        self.redial_hold = false;
+        // 抢占保护仍只由用户显式恢复解除。自动恢复（`reconnecting`）成功只说明
+        // 后台这次登录通过，不足以证明本机不会再被挤，不能顺手放开自动重拨。
+        if !self.reconnecting {
+            self.lift_eviction_protection();
+        }
         if self.settings.reconnect_mode != ReconnectMode::Disabled {
             self.credential = Some(credential);
         }
@@ -564,7 +607,11 @@ impl Controller {
             Ok(rows) => rows,
             Err(error) => {
                 // 拿不到列表就不动会话状态：请求失败不等于会话消失。
-                self.last_poll_failure = Some(Instant::now());
+                // 只有传输层失败/超时才算"本机连接异常"的证据，后台 5xx、
+                // 登录态失效或解析失败不能反推本机网络有问题。
+                if Self::poll_failure_is_network(&error) {
+                    self.last_poll_failure = Some(Instant::now());
+                }
                 return Err(error);
             }
         };
@@ -596,10 +643,15 @@ impl Controller {
         if self.rows.iter().any(|row| row.radacctid == id) {
             self.missing = 0;
             self.status = "session_online".into();
-            self.message = "所选会话在后台在线列表中".into();
-            // 原会话回来了（或用户已重新绑定）：旧的告警不能永久残留。
+            // 原会话回来了（或用户已重新绑定）：旧目标丢失的告警不能永久残留。
+            // 但「疑似被挤下线」的重拨保护是策略，不是"这一轮列表里有没有它"
+            // 的事实——普通轮询成功、切换会话都不能解除它，只有显式恢复才行。
             self.loss = None;
-            self.redial_hold = false;
+            self.message = if self.redial_hold {
+                "所选会话在后台在线列表中；疑似被挤下线期间暂停的自动重拨仍未恢复，需要时请手动重新连接".into()
+            } else {
+                "所选会话在后台在线列表中".into()
+            };
             return;
         }
         if count {
@@ -690,7 +742,8 @@ impl Controller {
     pub async fn disconnect(&mut self, id: &str) -> Result<Snapshot, AppError> {
         self.paused = true;
         self.loss = None;
-        self.redial_hold = false;
+        // 用户显式下线：本地已不再持有会话，保护没有继续压着的理由。
+        self.lift_eviction_protection();
         // 手动下线是显式释放路径：重连凭据在这里必须作废，任何保存方式都一样。
         self.credential = None;
         let result = match &self.api {
@@ -757,8 +810,11 @@ impl Controller {
                 self.last_poll_failure = None;
             }
             Err(error) => {
-                // 请求失败只算"连接异常"的证据，不能据此断言任何会话消失。
-                self.last_poll_failure = Some(Instant::now());
+                // 请求失败只算"连接异常"的证据，不能据此断言任何会话消失；
+                // 而且只有传输层失败/超时算本机异常，后台错误与解析失败不算。
+                if Self::poll_failure_is_network(&error) {
+                    self.last_poll_failure = Some(Instant::now());
+                }
                 self.logs.error(&error);
                 if self.loss.is_none() {
                     self.message = error.to_string();
@@ -771,9 +827,7 @@ impl Controller {
                 return;
             }
         }
-        if self.redial_hold
-            || self.paused
-            || self.settings.reconnect_mode == ReconnectMode::Disabled
+        if !self.auto_auth_allowed()
             || self.missing < 3
             || self.attempts >= 3
             || self.selected.is_none()
@@ -855,6 +909,16 @@ impl Controller {
         }
     }
 
+    /// 后台自动认证的统一准入：自动重拨与轮询失败后的自愈都必须先过这里。
+    ///
+    /// "可以继续查询"不等于"可以重新认证"：`redial_hold` 期间只允许轮询、
+    /// 状态判定和日志，任何自动 Portal 登录都要挡住，否则一次可恢复的轮询
+    /// 错误（网络错误或 `Rejected`）就能绕过「疑似被挤下线」的保护。
+    /// 手动连接不走这里——那是用户显式恢复，允许解除保护。
+    fn auto_auth_allowed(&self) -> bool {
+        !self.redial_hold && !self.paused && self.settings.reconnect_mode != ReconnectMode::Disabled
+    }
+
     fn transient_reconnect_error(error: &AppError) -> bool {
         matches!(
             error,
@@ -896,7 +960,9 @@ impl Controller {
     /// 事务性：只有 `connect` 成功才替换现有会话与 client；失败时回滚到调用前
     /// 的状态，保留凭据等待下一个退避窗口，直到网络恢复为止。
     async fn retry_after_failure<F: Fn(Phase)>(&mut self, progress: F) {
-        if self.paused || self.settings.reconnect_mode == ReconnectMode::Disabled {
+        // 保护期间监测照常，但失败自愈不得顺手重新认证。这里挡的是全部
+        // 可恢复错误（网络、超时、5xx、`Rejected`），不做错误类型特判。
+        if !self.auto_auth_allowed() {
             return;
         }
         if self
@@ -2077,5 +2143,272 @@ mod tests {
         };
         c.bind_new_session();
         assert!(c.selected.is_none(), "多条新增时必须让用户自己选");
+    }
+    fn portal_auth_requests(mock: &crate::tests::Mock) -> usize {
+        mock.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request.contains("user_login") || request.contains("cmcc_login_value")
+            })
+            .count()
+    }
+    /// 保护不是"这一轮列表里还有选中会话"就能解除的。
+    ///
+    /// 从原会话丢失 → 改选另一条在线会话 → 成功轮询若干次 → 新目标也消失，
+    /// 全程都不允许自动重拨，也不允许出现一次 Portal 认证请求。
+    #[tokio::test]
+    async fn eviction_hold_survives_polls_and_a_second_loss() {
+        let mock = crate::tests::Mock::new("direct");
+        let crowded = vec![
+            crate::tests::session_json("other-1", "203.0.113.11"),
+            crate::tests::session_json("other-2", "203.0.113.12"),
+        ];
+        mock.script_sessions(vec![
+            crowded.clone(),
+            crowded,
+            vec![crate::tests::session_json("other-2", "203.0.113.12")],
+        ]);
+        let api = PortalClient::new(&mock.base).unwrap();
+        api.login("test-user", "test-password").await.unwrap();
+        let auth_before = portal_auth_requests(&mock);
+        let mut c = Controller {
+            settings: Settings {
+                server: mock.base.clone(),
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            api: Some(api),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            selected: Some("mine".into()),
+            loss: Some(SessionLoss {
+                id: "mine".into(),
+                kind: LossKind::SuspectedEviction,
+            }),
+            redial_hold: true,
+            paused: false,
+            bound_network: Some(context("192.0.2.1")),
+            current_network: Some(context("192.0.2.1")),
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("192.0.2.1"))));
+        c.redial_tick(|_| {}).await;
+        assert!(c.redial_hold, "原会话仍缺失时保护不能被轮询清掉");
+        c.select("other-1").unwrap();
+        assert!(c.redial_hold, "切换会话不能解除保护");
+        c.redial_tick(|_| {}).await;
+        assert_eq!(c.status, "session_online");
+        assert!(c.redial_hold, "成功轮询看到选中会话在线也不能解除保护");
+        let snap = c.snapshot();
+        assert!(snap.background_paused, "保护生效时后台必须保持暂停");
+        assert!(
+            snap.message.contains("自动重拨仍未恢复"),
+            "提示必须说明保护仍在：{}",
+            snap.message
+        );
+        for _ in 0..4 {
+            c.redial_tick(|_| {}).await;
+        }
+        assert!(c.missing >= 3, "前置条件：新目标也应累计到重拨阈值");
+        assert!(c.redial_hold);
+        assert_eq!(c.attempts, 0, "保护期间不得自动重拨");
+        assert!(c.credential.is_some(), "凭据不能被消费");
+        assert!(c.api.is_some(), "监测不能停");
+        assert_eq!(
+            portal_auth_requests(&mock),
+            auth_before,
+            "保护期间不得发起任何 Portal 认证"
+        );
+    }
+    /// 保护期间遇到真实传输层失败：监测继续，失败自愈不得重新认证。
+    #[tokio::test]
+    async fn eviction_hold_blocks_recovery_after_network_poll_failure() {
+        let mock = crate::tests::Mock::new("direct");
+        let mut c = Controller {
+            settings: Settings {
+                server: mock.base.clone(),
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            // 打不通的本地端口：模拟传输层失败，不依赖外部 Portal。
+            api: Some(PortalClient::new("http://127.0.0.1:9/lfradius/").unwrap()),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            selected: Some("mine".into()),
+            loss: Some(SessionLoss {
+                id: "mine".into(),
+                kind: LossKind::SuspectedEviction,
+            }),
+            redial_hold: true,
+            paused: false,
+            bound_network: Some(context("192.0.2.1")),
+            current_network: Some(context("192.0.2.1")),
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("192.0.2.1"))));
+        c.redial_tick(|_| {}).await;
+        assert!(c.api.is_some(), "保护期间监测不能停");
+        assert!(!c.paused, "保护期间不能把后台监测关掉");
+        assert_eq!(c.attempts, 0, "失败自愈不得发起重拨");
+        assert_eq!(c.network_attempts, 0, "失败自愈根本不应启动");
+        assert!(c.credential.is_some(), "凭据不能被消费");
+        assert!(c.redial_hold, "错误不应解除保护");
+        assert!(
+            c.last_poll_failure.is_some(),
+            "传输层失败仍应作为本机连接异常的证据"
+        );
+        assert_eq!(portal_auth_requests(&mock), 0, "不得发起 Portal 认证");
+        assert!(
+            mock.requests.lock().unwrap().is_empty(),
+            "保护期间不应向后台发送任何请求"
+        );
+    }
+    /// 保护期间遇到后台拒绝（Cookie 失效）同样不能借自愈重新认证；
+    /// 这类错误也不能记成本机连接异常。
+    #[tokio::test]
+    async fn eviction_hold_blocks_recovery_after_rejected_poll() {
+        let mock = crate::tests::Mock::new("direct");
+        // 不登录：onlinelog 返回 success:0，客户端映射为 Rejected。
+        let api = PortalClient::new(&mock.base).unwrap();
+        let mut c = Controller {
+            settings: Settings {
+                server: mock.base.clone(),
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            api: Some(api),
+            credential: Some(Credential::new("test-user".into(), "test-password".into())),
+            selected: Some("mine".into()),
+            loss: None,
+            redial_hold: true,
+            paused: false,
+            bound_network: Some(context("192.0.2.1")),
+            current_network: Some(context("192.0.2.1")),
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("192.0.2.1"))));
+        c.redial_tick(|_| {}).await;
+        assert!(c.api.is_some(), "保护期间监测不能停");
+        assert!(!c.paused, "保护期间不能把后台监测关掉");
+        assert_eq!(c.attempts, 0);
+        assert!(c.credential.is_some(), "凭据不能被消费");
+        assert!(c.redial_hold);
+        assert!(
+            c.last_poll_failure.is_none(),
+            "业务拒绝不能当成本机网络异常的证据"
+        );
+        assert_eq!(portal_auth_requests(&mock), 0, "不得发起 Portal 认证");
+        assert!(
+            mock.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|request| request.contains("onlinelog")),
+            "只允许继续查询会话"
+        );
+    }
+    /// 本机地址判定必须是保守三态：未知不等于不匹配。
+    #[test]
+    fn local_ip_lookup_is_tri_state() {
+        let c = Controller {
+            current_network: Some(context("192.0.2.1")),
+            ..Default::default()
+        };
+        let unknown = |id: &str| {
+            let mut row = session(id, "203.0.113.99");
+            row.framedipaddress = None;
+            row
+        };
+        assert_eq!(c.local_ip_in(&[session("a", "192.0.2.1")]), Some(true));
+        assert_eq!(c.local_ip_in(&crowded_elsewhere()), Some(false));
+        assert_eq!(c.local_ip_in(&[unknown("a"), unknown("b")]), None);
+        assert_eq!(
+            c.local_ip_in(&[session("a", "203.0.113.11"), unknown("b")]),
+            None,
+            "存在未知地址时不能断言本机不在列表"
+        );
+        assert_eq!(
+            c.local_ip_in(&[unknown("a"), session("b", "192.0.2.1")]),
+            Some(true),
+            "命中优先于未知"
+        );
+        assert_eq!(c.local_ip_in(&[]), Some(false), "空列表没有任何未知项");
+    }
+    /// 部分会话缺地址时，「本机 IP 不在列表」不成立，只能降级成原因不明。
+    #[test]
+    fn partial_unknown_addresses_downgrade_eviction_to_unclear() {
+        let mut c = observing(
+            vec![
+                session("other-1", "203.0.113.11"),
+                session("other-2", "203.0.113.12"),
+                {
+                    let mut row = session("other-3", "203.0.113.13");
+                    row.framedipaddress = None;
+                    row
+                },
+            ],
+            "mine",
+        );
+        c.settings.reconnect_mode = ReconnectMode::NewSession;
+        c.last_poll_failure = Some(Instant::now());
+        c.update_session_status();
+        assert_eq!(
+            c.loss.as_ref().map(|loss| loss.kind),
+            Some(LossKind::Unclear),
+            "证据不完整时不能判成疑似被挤下线"
+        );
+        assert!(!c.redial_hold, "原因不明时不应停掉自动重拨");
+    }
+    /// 只有传输层失败/超时能当作本机连接异常；后台、登录态、解析错误都不算。
+    #[test]
+    fn only_transport_failures_are_connection_evidence() {
+        assert!(Controller::poll_failure_is_network(&AppError::Network(
+            crate::NetworkFault::Connect
+        )));
+        assert!(Controller::poll_failure_is_network(&AppError::Network(
+            crate::NetworkFault::Timeout
+        )));
+        assert!(Controller::poll_failure_is_network(&AppError::Timeout(
+            "下线确认"
+        )));
+        for error in [
+            AppError::Http(500),
+            AppError::Http(503),
+            AppError::Rejected,
+            AppError::InvalidResponse("后台会话列表缺少字段"),
+            AppError::Redirect,
+        ] {
+            assert!(
+                !Controller::poll_failure_is_network(&error),
+                "{error:?} 不能当作本机连接异常"
+            );
+        }
+    }
+    /// 成功轮询后，之前的失败证据要清掉，不能继续留着升级下一次判定。
+    #[tokio::test]
+    async fn successful_poll_clears_the_failure_evidence() {
+        let mock = crate::tests::Mock::new("direct");
+        mock.script_sessions(vec![vec![crate::tests::session_json("mine", "192.0.2.1")]]);
+        let api = PortalClient::new(&mock.base).unwrap();
+        api.login("test-user", "test-password").await.unwrap();
+        let mut c = Controller {
+            settings: Settings {
+                server: mock.base.clone(),
+                reconnect_mode: ReconnectMode::NewSession,
+                ..Default::default()
+            },
+            api: Some(api),
+            selected: Some("mine".into()),
+            last_poll_failure: Some(Instant::now()),
+            paused: false,
+            bound_network: Some(context("192.0.2.1")),
+            current_network: Some(context("192.0.2.1")),
+            ..Default::default()
+        };
+        c.resolve_network = Arc::new(|_| Ok(Some(context("192.0.2.1"))));
+        c.redial_tick(|_| {}).await;
+        assert!(c.last_poll_failure.is_none(), "成功轮询后旧证据必须失效");
+        assert_eq!(c.missing, 0);
+        assert_eq!(c.status, "session_online");
     }
 }

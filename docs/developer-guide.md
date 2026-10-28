@@ -275,6 +275,8 @@ rpm 的 `%files` 与 `%install` 必须一起改：文件清单里声明了、`%i
 
 `scripts/release_notes.py` 扫 `release/` 目录生成「快捷下载」表，由 `release` job 在发布前调用。链接用**当前 tag** 拼（`releases/download/<tag>/<文件名>`），不用 `latest`：资产名里带版本号，用 `latest` 会让下载链接和页面上的版本对不上。
 
+因为要跑仓库里的这个脚本，`release` job **必须 `checkout`**。它以前只做「下载 artifact + 发 Release」，工作区是空的，加这一步时漏了 checkout 就会直接报找不到脚本文件（0.5.15 就这么挂的）。
+
 传给 `softprops/action-gh-release` 时用 `body_path` 加 `generate_release_notes: true`，官方行为是把 body **拼在**自动生成的更新说明前面，所以表格在上、提交历史在下，两者都保留。
 
 表格只列 `RULES` 里认得的文件名，认不出的一律跳过 —— 某个产物没打出来时，说明里不会出现指向不存在文件的死链。新增产物格式时在 `RULES` 里加一条即可。这里的「便携版」指 Linux 的 AppImage（单文件直接运行）。

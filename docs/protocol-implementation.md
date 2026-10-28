@@ -217,33 +217,33 @@ daemon 跑两个独立 worker（`daemon.rs:104-125`）：
 
 ### 掉线检测
 
-`redial_tick` 只要还持有后台客户端就轮询会话，不再以 `paused` 或 `reconnect_mode` 为前提（`controller.rs:720-726`）：backend-only 登录会置 `paused = true`，重拨关闭时旧实现根本不会查列表。查询失败只记 `last_poll_failure` 并走网络自愈，不推进缺失计数（`controller.rs:741-752`）；只有成功返回的列表才参与判定，请求失败不会被当成“所有会话都消失”。
+`redial_tick` 只要还持有后台客户端就轮询会话，不再以 `paused` 或 `reconnect_mode` 为前提（`controller.rs:791-799`）：backend-only 登录会置 `paused = true`，重拨关闭时旧实现根本不会查列表。查询失败不推进缺失计数，只有传输层失败或超时才记入 `last_poll_failure`（`controller.rs:812-827`，见 `poll_failure_is_network`）并走网络自愈；后台 5xx、Cookie 失效、业务拒绝与解析失败只记日志，不能反推本机网络有问题。只有成功返回的列表才参与判定，请求失败不会被当成“所有会话都消失”。
 
-`observe_session` 先判定再清理（`controller.rs:582-617`）：原 `radacctid` 还在就归零 `missing`、置 `session_online`、清掉旧告警；消失就 `missing += 1`、置 `offline`，并在 `drops_state_on_loss()` 释放本地态之前留下 `loss { id, kind }`。`refresh` 也调用它，但 `count = false`（`controller.rs:550-567`），避免 1 分钟刷新与 5 秒 worker 把缺失次数算两遍。
+`observe_session` 先判定再清理（`controller.rs:639-679`）：原 `radacctid` 还在就归零 `missing`、置 `session_online`、清掉 `loss`，但**不解除** `redial_hold`；消失就 `missing += 1`、置 `offline`，并在 `drops_state_on_loss()` 释放本地态之前留下 `loss { id, kind }`。`refresh` 也调用它，但 `count = false`（`controller.rs:603-625`），避免 1 分钟刷新与 5 秒 worker 把缺失次数算两遍。
 
-分级只看能拿到的证据（`controller.rs:582-611`）：
+分级只看能拿到的证据（`controller.rs:643-667`）：
 
 | 结论 | 条件 |
 |---|---|
-| 高疑似被挤下线 | 原会话消失、本机 IPv4 不匹配任何 `framedipaddress`、在线会话数 > 2、最近 120 秒内有过轮询失败（`controller.rs:182-192`） |
+| 高疑似被挤下线 | 原会话消失、本机 IPv4 确定不在任何 `framedipaddress` 里、在线会话数 > 2、最近 120 秒内有过传输层失败或超时（`controller.rs:197-233`） |
 | 会话丢失、原因不明 | 原会话消失，但不满足上面的组合 |
 
-在线会话数超过 2 只是风险信号：原会话仍在、或列表里还能找到本机 IP 时都不判定。解析不到本机地址时不把“IP 不在列表”当证据（`controller.rs:189-192`）。结论只升级不降级，同一目标只在首次或等级变化时写一次日志（`controller.rs:194-221`）。
+在线会话数超过 2 只是风险信号：原会话仍在、或列表里还能找到本机 IP 时都不判定。`local_ip_in` 是保守三态（`controller.rs:218-233`）：任一已知地址匹配 → `Some(true)`；全部地址已知且都不匹配 → `Some(false)`；没有匹配但至少一条会话缺地址、或解析不到本机地址 → `None`。空列表没有任何未知项，按 `Some(false)` 处理。结论只升级不降级，同一目标只在首次或等级变化时写一次日志（`controller.rs:236-265`）。
 
-`snapshot.message` 在 `loss` 存在时优先返回告警文案（`controller.rs:236-239`），普通刷新不会把它冲掉；`background_paused` 同时反映 `paused || redial_hold`。高疑似时置上 `redial_hold` 并清掉 `awaiting_session`（`controller.rs:207-212`），`bind_new_session` 在有 `loss` 时直接放弃自动认领（`controller.rs:635-640`）——新出现的那条更可能属于挤掉本机的设备。
+`snapshot.message` 在 `loss` 存在时优先返回告警文案（`controller.rs:275-291`），普通刷新不会把它冲掉；`background_paused` 同时反映 `paused || redial_hold`。高疑似时置上 `redial_hold` 并清掉 `awaiting_session`（`controller.rs:249-253`），`bind_new_session` 在有 `loss` 时直接放弃自动认领（`controller.rs:705-710`）——新出现的那条更可能属于挤掉本机的设备。
 
-恢复只走显式路径：原 id 重新出现（`controller.rs:588-593`）、`select`（`controller.rs:631-632`）、`disconnect`（`controller.rs:674-675`）或一次成功连接（`controller.rs:464-465`）都会清掉 `loss` 与 `redial_hold`。
+`redial_hold` 的生命周期是显式的：只有用户主动恢复才解除——`disconnect`（`controller.rs:742-746`）、`clear`/`forget`（`controller.rs:143-148`）以及一次非自动的成功连接（`controller.rs:370-381`、`511-518`）。普通轮询成功、当前选中会话在线、`select` 切换目标（`controller.rs:684-693`）都只清 `loss`、保留保护；原会话重新出现同理（`controller.rs:643-655`）。保护期间提示文案会写明“自动重拨仍未恢复”，不会出现界面说保护有效、后台却被轮询悄悄解除的情况。
 
 ### 重拨
 
-`redial_tick` 每次轮询前先确认网卡绑定（`controller.rs:727-729`），会话监测本身不受暂停影响。真正发起重拨要同时满足：未被 `paused` 或 `redial_hold` 挡住、模式不是 `Disabled`、仍有选中会话、`missing >= 3`、`attempts < 3`、距上次尝试已超过退避窗口（`controller.rs:756-766`）。退避是 `30 秒 × 2^attempts` 叠加抖动（`controller.rs:470-475`）。
+`redial_tick` 每次轮询前先确认网卡绑定（`controller.rs:799`），会话监测本身不受暂停影响。真正发起重拨要同时满足：`auto_auth_allowed()`（未 `redial_hold`、未 `paused`、模式不是 `Disabled`，`controller.rs:915-919`）、仍有选中会话、`missing >= 3`、`attempts < 3`、距上次尝试已超过退避窗口（`controller.rs:830-833`）。退避是 `30 秒 × 2^attempts` 叠加抖动（`controller.rs:598-602`）。
 
-两种模式的差别（`controller.rs:598-621`）：
+两种模式的差别（`controller.rs:845-870`）：
 
 - `TerminateAndReconnect`：先 `clear()` 丢弃旧状态再连。
-- `NewSession`：置 `reconnecting = true`，让 `connect` 跳过开头的 `clear()`（`controller.rs:153-158`），保留现有 API/Cookie 与会话行，直到新连接成功——重拨是事务性的。
+- `NewSession`：置 `reconnecting = true`，让 `connect` 跳过开头的 `clear()`（`controller.rs:300-305`），保留现有 API/Cookie 与会话行，直到新连接成功——重拨是事务性的。
 
-结果处理（`controller.rs:622-655`）：
+结果处理（`controller.rs:872-906`）：
 
 | 结果 | 行为 |
 |---|---|
@@ -252,19 +252,21 @@ daemon 跑两个独立 worker（`daemon.rs:104-125`）：
 | 瞬时错误 | 归还凭据、`attempts` 归零、回滚到重拨前的全部状态，等下一次掉线检测 |
 | 其他错误（认证被拒） | `paused = true`，但**保留**进程内凭据供手动重试 |
 
-错误分类分三档（`controller.rs:658-684`）：
+错误分类分三档（`controller.rs:921-948`），另有两个独立判定：
 
 - `transient_reconnect_error`：`Network(_)`、`Timeout(_)`、`DiscoveryTimeout`、`DiscoveryNotFound`、`Http(408|425|429|500..=599)`。
-- `recoverable_poll_error`：上面这些再加 `Rejected`——合盖一夜后后台 Cookie 过期会让每次轮询都失败，而重连会用保存的凭据重新登录后台（`controller.rs:669-676`）。
-- `retryable_connection_error`：`transient` 再加 `NetworkInterface`——网卡暂时消失是环境问题，不该像认证被拒那样停下来等人（`controller.rs:678-684`）。
+- `recoverable_poll_error`：上面这些再加 `Rejected`——合盖一夜后后台 Cookie 过期会让每次轮询都失败，而重连会用保存的凭据重新登录后台（`controller.rs:937-943`）。
+- `retryable_connection_error`：`transient` 再加 `NetworkInterface`——网卡暂时消失是环境问题，不该像认证被拒那样停下来等人（`controller.rs:945-948`）。
+- `auto_auth_allowed`：后台自动认证的统一准入（`controller.rs:915-919`），自动重拨与 `retry_after_failure` 都先过它；它挡的是“是否允许重新认证”，不挡轮询。
+- `poll_failure_is_network`：只有 `Network(_)`、`Timeout(_)` 能成为“本机连接异常”的证据（`controller.rs:206-208`）。
 
 ### 网络自愈
 
-轮询因网络或网卡失败时走 `retry_after_failure`：用当前网卡上下文重建连接并重连一次，事务性——只有 `connect` 成功才替换现有会话与客户端，失败时回滚（`controller.rs:694-756`）。它用**独立**的 `network_attempts` 计数，与会话掉线的 `attempts` 互不干扰（`controller.rs:45-46`），退避是 `30 秒 << min(network_attempts, 4)`，即 30 秒到 8 分钟封顶（`controller.rs:686-692`）。轮询成功一次就归零（`controller.rs:567`）。
+轮询因网络或网卡失败时走 `retry_after_failure`：先过 `auto_auth_allowed()`，保护期间直接返回、只保留监测（`controller.rs:962-966`）；其余情况用当前网卡上下文重建连接并重连一次，事务性——只有 `connect` 成功才替换现有会话与客户端，失败时回滚（`controller.rs:962-1022`）。它用**独立**的 `network_attempts` 计数，与会话掉线的 `attempts` 互不干扰（`controller.rs:63`），退避是 `30 秒 << min(network_attempts, 4)`，即 30 秒到 8 分钟封顶（`controller.rs:951-956`）。轮询成功一次就归零（`controller.rs:809-810`、`623`）。
 
-网卡地址变化由 `rebind_changed_network` 处理：每次轮询重新解析网卡，上下文变了就用新的源地址重建 HTTP 客户端，Cookie 留在共享 jar 里，因此不需要重新认证（`controller.rs:355-385`、`lib.rs:274-288`、`lib.rs:342-350`）。解析失败时不动现有绑定，等下一次轮询再判断（`controller.rs:361-363`）。
+网卡地址变化由 `rebind_changed_network` 处理：每次轮询重新解析网卡，上下文变了就用新的源地址重建 HTTP 客户端，Cookie 留在共享 jar 里，因此不需要重新认证（`controller.rs:530-560`、`lib.rs:274-288`、`lib.rs:342-350`）。解析失败时不动现有绑定，等下一次轮询再判断（`controller.rs:532-535`）。
 
-`apply_settings` 让“保存设置”对已建立的连接立刻生效：后台地址变了调 `rebase`，网卡或代理变了清掉 `bound_network` 交给下次轮询重建；关闭重拨时立即丢弃进程内凭据（`controller.rs:386-422`）。
+`apply_settings` 让“保存设置”对已建立的连接立刻生效：后台地址变了调 `rebase`，网卡或代理变了清掉 `bound_network` 交给下次轮询重建；关闭重拨时立即丢弃进程内凭据（`controller.rs:565-596`）。
 
 ## 九、凭据
 
