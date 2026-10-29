@@ -1,6 +1,6 @@
 # 校园网认证协议实现
 
-> 对应版本：0.5.15（来源 `Cargo.toml` 的 workspace `version`，`tauri.conf.json` 与前端 `package.json` 同步）。
+> 对应版本：0.5.16（来源 `Cargo.toml` 的 workspace `version`，`tauri.conf.json` 与前端 `package.json` 同步）。
 > 本文只描述代码里真实存在的行为，每条断言都给出文件，并尽可能精确到符号或行号；协议事实与抓包依据见[校园网认证协议分析](./campus-network-auth.md)，运行、配置与构建见[开发者文档](./developer-guide.md)。
 
 ## 一、代码地图
