@@ -78,18 +78,13 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: macos-dmg-${{ matrix.arch }}
-          path: |
-            target/packages/*.dmg
-            target/packages/*.dmg.sha256
+          path: target/packages/*.dmg
           if-no-files-found: error
       - name: 上传 ZIP（仅 Actions 存档）
         uses: actions/upload-artifact@v7
         with:
           name: macos-zip-${{ matrix.arch }}
-          path: |
-            target/packages/*.zip
-            target/packages/*.sha256
-            !target/packages/*.dmg.sha256
+          path: target/packages/*.zip
   windows:
     name: Windows ${{ matrix.arch }}
     needs: frontend
@@ -133,7 +128,6 @@ jobs:
           path: |
             target/packages/*.zip
             target/packages/*-setup.exe
-            target/packages/*.sha256
 
   linux:
     name: Linux ${{ matrix.arch }}
@@ -184,14 +178,12 @@ jobs:
           test -n "$src"
           name="DGCU-Net-Portal-${version}-linux-${{ matrix.arch }}.AppImage"
           cp "$src" "target/packages/$name"
-          (cd target/packages && sha256sum "$name" > "$name.sha256")
       - uses: actions/upload-artifact@v7
         with:
           name: linux-dist-${{ matrix.arch }}
           path: |
             target/packages/*.tar.gz
             target/packages/*.AppImage
-            target/packages/*.sha256
       - uses: actions/upload-artifact@v7
         with:
           name: linux-bin-${{ matrix.arch }}
@@ -254,13 +246,6 @@ jobs:
             chown -R builder /work
             su builder -c "makepkg -f --noconfirm"
           '
-      - name: Arch 包 SHA-256
-        if: matrix.arch == 'x86_64'
-        run: |
-          cd target/arch
-          pkg=$(ls dgcu-net-portal-*.pkg.tar.zst)
-          sha256sum "$pkg" > "$pkg.sha256"
-          cat "$pkg.sha256"
       # 某一步失败也要把已经打好的包传上去：否则 deb 成功了、rpm 失败，
       # 整轮 CI 白跑一次（0.5.15 就踩过这个）。
       - uses: actions/upload-artifact@v7
@@ -271,8 +256,7 @@ jobs:
           path: |
             target/packages/*.deb
             target/packages/*.rpm
-            target/packages/*.sha256
-            target/arch/*.pkg.tar.zst*
+            target/arch/*.pkg.tar.zst
 
   release:
     name: 发布 Release
@@ -315,6 +299,9 @@ jobs:
       - name: 汇总 SHA256SUMS.txt
         run: |
           cd release
+          # 打包脚本已不再产出单文件 .sha256（见 scripts/package_*.py）。
+          # 这行是兜底：artifact 里若混进旧的校验文件，Release 也只会有一个
+          # SHA256SUMS.txt，不会出现一堆 .sha256 资产。
           rm -f -- *.sha256
           ls -l
           find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -printf '%f\n' \

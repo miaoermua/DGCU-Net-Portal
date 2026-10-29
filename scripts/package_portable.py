@@ -11,7 +11,6 @@ No installer, no service registration, no code signing.
 打包是幂等的：重复运行会先清掉上一次的同名产物再重新生成。
 """
 import argparse
-import hashlib
 import json
 import shutil
 import tarfile
@@ -76,6 +75,5 @@ else:
     with tarfile.open(archive, 'w:gz') as stream:
         stream.add(folder, arcname=name, filter=normalize)
 
-digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-(output / (name + '.sha256')).write_text(f'{digest}  {archive.name}\n', encoding='utf-8')
+# 不产出单独的 .sha256：校验和统一进 Release 的 SHA256SUMS.txt。
 print(archive)

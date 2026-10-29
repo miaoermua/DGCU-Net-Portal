@@ -234,7 +234,7 @@ GUI 在运行时会沿自身可执行文件的祖先目录查找同包内的 `po
 
 页面顺序：欢迎 → 许可协议（`MUI_PAGE_LICENSE`，内容就是随包分发的 `LICENSE` 正文，编译时嵌入；静默安装跳过）→ 组件 → 目录 → 安装 → 完成。
 
-快捷方式：开始菜单建一个 `DGCU-Net-Portal` 文件夹，内含程序与卸载两项（必装）；桌面快捷方式在组件页里作选装项，**默认不勾选**（程序常驻托盘，开始菜单已经够用）。要让桌面项默认勾选，把 `Section /o` 的 `/o` 去掉即可。
+快捷方式：开始菜单建一个 `DGCU-Net-Portal` 文件夹，内含程序与卸载两项（必装）；桌面快捷方式**默认勾选，但用户仍可在组件页取消**。NSIS 没有「默认勾选的可选项」这种语法——`Section` 是必选（复选框被禁用、改不了），`Section /o` 是可选但默认不勾，所以默认值放在文件末尾的 `.onInit` 里用 `SelectSection` 主动设置（必须写在 Section 定义之后，它用的是 Section 索引）。卸载时四样一起清掉：桌面快捷方式、开始菜单的程序与卸载两项、以及空出来的程序文件夹。
 
 升级时靠 `InstallDirRegKey` 读回上次的安装位置（`packaging/windows/installer.nsi` 写入 `HKCU\Software\DGCU\DGCU-Net-Portal` 的 `InstallLocation`），不需要用户重选目录。
 
@@ -245,6 +245,8 @@ GUI 在运行时会沿自身可执行文件的祖先目录查找同包内的 `po
 WebView2 运行时是 Tauri 界面的前提。安装器只检测并提示（读 `EdgeUpdate\Clients` 的 `pv`），不静默下载执行别的程序；缺失时提示用户去官方页面安装。
 
 高分屏：脚本声明 `ManifestDPIAware true` + `ManifestDPIAwareness "PerMonitorV2,System"`，否则 Windows 会把整个向导当位图拉伸、中文发虚。`PerMonitorV2` 要 Win10 1703+，更老的系统按列表里的 `System` 回落；`ManifestDPIAwareness` 需要 NSIS 3.03+（runner 的 3.10 满足）。本安装器没有自定义位图，所以不会踩 NSIS 用最近邻缩放位图导致糊图的老问题。
+
+**`installer.nsi` 必须存成 UTF-8 with BOM。** NSIS 3 判断脚本编码**只看 BOM**：没有 BOM 时按系统 ANSI 代码页解码。macOS/Linux 的 locale 是 UTF-8，本地编译碰巧正确；Windows runner 是 CP1252，脚本里的中文会被当成单字节读入，安装器的组件名、运行中提示全变成 `ç¨‹åºæ–‡ä»¶` 那种乱码，而且**编译不报错**——只能在装的时候看出来。`package_windows.py` 构建前会检查 BOM，缺失直接失败并说明原因，因为这种回归在本机 macOS 上完全无法复现。NSIS 自带语言文件（按钮、页面标题）不受影响，它们的编码由 NSIS 自己管。
 
 ## Linux 发行版包
 
@@ -279,10 +281,13 @@ rpm 的 `%files` 与 `%install` 必须一起改：文件清单里声明了、`%i
 
 传给 `softprops/action-gh-release` 时用 `body_path` 加 `generate_release_notes: true`，官方行为是把 body **拼在**自动生成的更新说明前面，所以表格在上、提交历史在下，两者都保留。
 
+**校验和只有 `SHA256SUMS.txt` 一个文件**。`scripts/package_*.py` 不再为每个产物输出同名 `.sha256`：那只是 Release 汇总前的中间物，逐份留着会让资产列表长一倍，手工上传时也很容易被一起带上去（0.5.16 的 Release 里就有 5 个多余的 `.sha256`）。release job 汇总时用 `find` 枚举 `release/` 全部文件生成清单，因此清单始终覆盖实际存在的每个产物；那行 `rm -f -- *.sha256` 只是兜底，防止旧 artifact 或手工放的校验文件混进去。
+
 表格只列 `RULES` 里认得的文件名，认不出的一律跳过 —— 某个产物没打出来时，说明里不会出现指向不存在文件的死链。新增产物格式时在 `RULES` 里加一条即可。这里的「便携版」指 Linux 的 AppImage（单文件直接运行）。
 
 `SKIP` 里的文件仍会上传到 Release，只是不进表格，需要的人仍能在资产列表里找到：
 
 - `-windows-aarch64-setup.exe`、`-windows-aarch64.zip`：Windows on ARM 用的人少，列出来只是多两行。
+- `-linux-aarch64.AppImage`：同上，arm 桌面本来就少，表里只留 x86_64 的便携版。
 - `-macos-x86_64.dmg`：Apple Silicon 占绝大多数，表里并列两行只会让人多犹豫一次。
 - `-linux-*.tar.gz`、`*.deb`、`*.rpm`：同类已由 AppImage 与 Arch 包覆盖，全列出来表格会长一倍。

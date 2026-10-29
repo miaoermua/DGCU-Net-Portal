@@ -35,12 +35,14 @@ MAC_LABEL = {'arm64': 'Apple Silicon', 'x86_64': 'Intel'}
 # 表格只放各平台的主入口，不求把资产列全。下面这些照常上传到 Release，
 # 只是不进表，需要的人仍能在资产列表里找到：
 #   Windows arm64 的安装版与便携版 —— 用的人少，列出来只是多两行；
+#   Linux arm64 的 AppImage —— 同上，arm 桌面本来就少；
 #   Intel Mac 的 dmg —— Apple Silicon 占绝大多数，并列两行反而让人多犹豫一次；
 #   Linux 的 tar.gz / deb / rpm —— 同类已经由 AppImage 与 Arch 包覆盖，
 #   全列出来表格会长一倍。
 SKIP = [
     r'-windows-aarch64-setup\.exe$',
     r'-windows-aarch64\.zip$',
+    r'-linux-aarch64\.AppImage$',
     r'-macos-x86_64\.dmg$',
     r'-linux-[^-]+\.tar\.gz$',
     r'\.deb$',
