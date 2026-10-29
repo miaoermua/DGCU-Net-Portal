@@ -582,6 +582,297 @@ async fn stale_endpoint_file_is_reclaimed() {
     assert!(daemon::bind_endpoint(&socket).await.unwrap().is_some());
     let _ = std::fs::remove_file(path);
 }
+/// 启动一个用临时端点、临时控制器的真 daemon。
+#[cfg(unix)]
+async fn serve_temp_daemon(
+    tag: &str,
+    state: Arc<daemon::State>,
+) -> (
+    String,
+    tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+) {
+    let socket = test_socket_name(tag);
+    let listener = daemon::bind_endpoint(&socket)
+        .await
+        .expect("绑定测试端点")
+        .expect("测试端点不应被其他 daemon 占用");
+    let server = tokio::spawn(daemon::serve_on(
+        listener,
+        state,
+        logging::LogBuffer::default(),
+    ));
+    (socket, server)
+}
+/// T1：`Status` 读已发布快照，不等待控制器锁。
+///
+/// 持锁任务在锁内 `forget()` 之后刻意不释放锁：此时控制器已经是新状态，但没有
+/// 发布，所以 `Status` 必须仍返回旧快照且立刻返回。释放锁之后才能读到新快照。
+#[cfg(unix)]
+#[tokio::test]
+async fn status_reads_published_snapshot_without_waiting_for_lock() {
+    let state = Arc::new(daemon::State::new(controller::Controller::with_logs(
+        settings::Settings::default(),
+        logging::LogBuffer::default(),
+    )));
+    let (socket, server) = serve_temp_daemon("snapshot-status", state.clone()).await;
+
+    let initial = ipc::request_on(&socket, ipc::Request::Status)
+        .await
+        .expect("Status 应成功")
+        .snapshot
+        .expect("Status 必须带快照");
+
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let holder = state.clone();
+    let holder_task = tokio::spawn(async move {
+        let mut controller = holder.lock().await;
+        controller.forget();
+        locked_tx.send(()).unwrap();
+        let _ = release_rx.await;
+        drop(controller);
+    });
+    locked_rx.await.unwrap();
+
+    let held = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        ipc::request_on(&socket, ipc::Request::Status),
+    )
+    .await
+    .expect("Status 不应等待控制器锁")
+    .expect("Status 应成功")
+    .snapshot
+    .expect("Status 必须带快照");
+    assert_eq!(
+        held.message, initial.message,
+        "锁未释放前不能看到锁内的修改"
+    );
+
+    let _ = release_tx.send(());
+    holder_task.await.unwrap();
+    let released = ipc::request_on(&socket, ipc::Request::Status)
+        .await
+        .expect("Status 应成功")
+        .snapshot
+        .expect("Status 必须带快照");
+    assert_eq!(released.message, "已清除本地会话；这不代表远端已经下线");
+
+    server.abort();
+    tokio::task::yield_now().await;
+    let _ = std::fs::remove_file(format!("/tmp/{socket}"));
+}
+/// T2：IPC 改状态后，快照随之更新，且响应里的快照与已发布快照来自同一次持锁区间。
+#[cfg(unix)]
+#[tokio::test]
+async fn ipc_mutations_publish_snapshot() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![vec![], vec![session_json("acct-1", "192.0.2.2")]]);
+    let settings = settings::Settings {
+        server: mock.base.clone(),
+        ..Default::default()
+    };
+    let state = Arc::new(daemon::State::new(controller::Controller::with_logs(
+        settings,
+        logging::LogBuffer::default(),
+    )));
+    {
+        let mut controller = state.lock().await;
+        controller
+            .connect(
+                Credential::new("test-user".into(), "secret".into()),
+                "",
+                true,
+                |_| {},
+            )
+            .await
+            .expect("mock 后台应接受后台登录");
+    }
+    assert_eq!(state.snapshot().sessions.len(), 1);
+    assert_eq!(state.snapshot().selected_id, None);
+
+    let (socket, server) = serve_temp_daemon("snapshot-ipc", state.clone()).await;
+
+    let selected = ipc::request_on(
+        &socket,
+        ipc::Request::Select {
+            session_id: "acct-1".into(),
+        },
+    )
+    .await
+    .expect("Select 应成功");
+    assert!(selected.ok);
+    let after_select = ipc::request_on(&socket, ipc::Request::Status)
+        .await
+        .expect("Status 应成功")
+        .snapshot
+        .expect("Status 必须带快照");
+    assert_eq!(after_select.selected_id.as_deref(), Some("acct-1"));
+    assert_eq!(after_select.message, "已切换管理会话");
+    assert_eq!(
+        selected.snapshot.as_ref().map(|s| s.selected_id.clone()),
+        Some(after_select.selected_id.clone())
+    );
+
+    let forgot = ipc::request_on(&socket, ipc::Request::Forget)
+        .await
+        .expect("Forget 应成功");
+    assert!(forgot.ok);
+    let after_forget = ipc::request_on(&socket, ipc::Request::Status)
+        .await
+        .expect("Status 应成功")
+        .snapshot
+        .expect("Status 必须带快照");
+    assert_eq!(after_forget.selected_id, None);
+    assert!(after_forget.sessions.is_empty());
+    assert_eq!(after_forget.status, "idle");
+    assert_eq!(after_forget.message, "已清除本地会话；这不代表远端已经下线");
+    assert_eq!(
+        forgot.snapshot.expect("Forget 应带快照").message,
+        after_forget.message
+    );
+
+    server.abort();
+    tokio::task::yield_now().await;
+    let _ = std::fs::remove_file(format!("/tmp/{socket}"));
+}
+/// T3：后台任务（与 worker 相同的取锁 → `tick()` → 释放）改变状态后快照同步更新。
+#[tokio::test]
+async fn background_tick_publishes_snapshot() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![
+            session_json("acct-1", "192.0.2.2"),
+            session_json("acct-2", "192.0.2.3"),
+        ],
+    ]);
+    let settings = settings::Settings {
+        server: mock.base.clone(),
+        ..Default::default()
+    };
+    let state = Arc::new(daemon::State::new(controller::Controller::with_logs(
+        settings,
+        logging::LogBuffer::default(),
+    )));
+    {
+        let mut controller = state.lock().await;
+        controller
+            .connect(
+                Credential::new("test-user".into(), "secret".into()),
+                "",
+                true,
+                |_| {},
+            )
+            .await
+            .expect("mock 后台应接受后台登录");
+    }
+    assert_eq!(state.snapshot().sessions.len(), 1);
+
+    let worker = state.clone();
+    tokio::spawn(async move {
+        worker.lock().await.tick().await;
+    })
+    .await
+    .unwrap();
+
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.sessions.len(), 2, "tick 的新会话没有发布出去");
+    assert!(snapshot.authenticated);
+    assert_eq!(snapshot.status, "backend");
+}
+/// T4：请求返回错误、但失败前已经改过状态时，快照仍要发布失败后的状态。
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_up_publishes_error_snapshot() {
+    let settings = settings::Settings {
+        // 端口 1 上没有监听者，连接会被立刻拒绝，不需要等超时。
+        server: "http://127.0.0.1:1/".into(),
+        ..Default::default()
+    };
+    let state = Arc::new(daemon::State::new(controller::Controller::with_logs(
+        settings,
+        logging::LogBuffer::default(),
+    )));
+    let (socket, server) = serve_temp_daemon("snapshot-failed-up", state.clone()).await;
+
+    let failed = ipc::request_on(
+        &socket,
+        ipc::Request::Up {
+            username: "test-user".into(),
+            password: "secret".into(),
+            portal_url: String::new(),
+            backend_only: true,
+        },
+    )
+    .await
+    .expect("Up 应返回响应");
+    assert!(!failed.ok);
+
+    let snapshot = ipc::request_on(&socket, ipc::Request::Status)
+        .await
+        .expect("Status 应成功")
+        .snapshot
+        .expect("Status 必须带快照");
+    assert_eq!(snapshot.status, "error");
+    assert!(!snapshot.authenticated);
+    assert_eq!(snapshot.message, failed.message);
+    assert!(snapshot.message.starts_with("请求失败"));
+
+    server.abort();
+    tokio::task::yield_now().await;
+    let _ = std::fs::remove_file(format!("/tmp/{socket}"));
+}
+/// T5：并发读取只能看到某一次操作的完整投影，不会读到两次操作各写一半的状态。
+#[tokio::test]
+async fn published_snapshot_is_never_mixed() {
+    let settings = settings::Settings {
+        server: "http://127.0.0.1:1/".into(),
+        ..Default::default()
+    };
+    let state = Arc::new(daemon::State::new(controller::Controller::with_logs(
+        settings,
+        logging::LogBuffer::default(),
+    )));
+    let initial_message = state.snapshot().message;
+    let forgot_message = "已清除本地会话；这不代表远端已经下线";
+    let writing = Arc::new(AtomicBool::new(true));
+    let writer = {
+        let state = state.clone();
+        let writing = writing.clone();
+        tokio::spawn(async move {
+            for _ in 0..6 {
+                state.lock().await.forget();
+                tokio::task::yield_now().await;
+                let mut controller = state.lock().await;
+                let _ = controller
+                    .connect(
+                        Credential::new("test-user".into(), "secret".into()),
+                        "",
+                        true,
+                        |_| {},
+                    )
+                    .await;
+                drop(controller);
+                tokio::task::yield_now().await;
+            }
+            writing.store(false, Ordering::Relaxed);
+        })
+    };
+
+    let mut samples = 0usize;
+    while writing.load(Ordering::Relaxed) {
+        let snapshot = state.snapshot();
+        let complete = (snapshot.status == "idle"
+            && (snapshot.message == initial_message || snapshot.message == forgot_message))
+            || (snapshot.status == "error" && snapshot.message.starts_with("请求失败"));
+        assert!(complete, "快照混合了不同操作的字段: {snapshot:?}");
+        samples += 1;
+        tokio::task::yield_now().await;
+    }
+    writer.await.unwrap();
+    assert!(samples > 0);
+}
 /// 只回一条 Status 的最小 daemon，用来验证抢占保护。刻意不复用 `daemon::serve`，
 /// 免得测试读真实设置、真的发起登录。
 #[cfg(unix)]

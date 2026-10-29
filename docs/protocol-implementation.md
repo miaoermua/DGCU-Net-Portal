@@ -1,7 +1,7 @@
 # 校园网认证协议实现
 
-> 对应版本：0.5.15（来源 `Cargo.toml` 的 workspace `version`，`tauri.conf.json` 与前端 `package.json` 同步）。
-> 本文只描述代码里真实存在的行为，每条断言都给出 `文件:行`；协议事实与抓包依据见[校园网认证协议分析](./campus-network-auth.md)，运行、配置与构建见[开发者文档](./developer-guide.md)。
+> 对应版本：0.5.16（来源 `Cargo.toml` 的 workspace `version`，`tauri.conf.json` 与前端 `package.json` 同步）。
+> 本文只描述代码里真实存在的行为，每条断言都给出文件，并尽可能精确到符号或行号；协议事实与抓包依据见[校园网认证协议分析](./campus-network-auth.md)，运行、配置与构建见[开发者文档](./developer-guide.md)。
 
 ## 一、代码地图
 
@@ -12,7 +12,7 @@
 | `crates/portal-cli/src/lib.rs` | LFRadius 后台 HTTP 客户端、错误类型、URL 校验 | `PortalClient`、`AppError`、`OnlineSession`、`AccountInfo`、`validate_url`、`redact` |
 | `crates/portal-cli/src/cmcc.rs` | CMCC Portal 入口构造与登录/代拨流程 | `CmccContext`、`PortalClient::cmcc_login_progress`、`Phase`、`PortalLoginOutcome` |
 | `crates/portal-cli/src/discovery.rs` | 公共 HTTP 探测发现 Portal 入口 | `PortalClient::discover` |
-| `crates/portal-cli/src/controller.rs` | 状态、会话绑定、掉线重拨、网络自愈 | `Controller`、`Snapshot` |
+| `crates/portal-cli/src/controller.rs` 与 `controller/{connection,session,reconnect}.rs`（测试在 `controller/tests.rs`） | 状态模型、连接生命周期、轮询与会话观察、掉线重拨、网络自愈 | `Controller`、`Snapshot`、`connect`、`observe_session`、`redial_tick` |
 | `crates/portal-cli/src/daemon.rs` | IPC 服务端与两个轮询 worker | `daemon::serve`、`bind_endpoint` |
 | `crates/portal-cli/src/ipc.rs` | 本地 socket 协议 | `SOCKET_NAME`、`Request`、`Response` |
 | `crates/portal-cli/src/settings.rs` | 设置模型、持久化、凭据存取 | `Settings`、`UiPreferences`、`CredentialStore`、`ReconnectMode`、`RunMode`、`PollJitter` |
@@ -28,14 +28,14 @@
 
 ## 二、两条独立的 HTTP 会话
 
-Portal 认证与后台自助是两套会话，代码里刻意分开（`lib.rs:1`）：`Controller::connect` 会构造两个 `PortalClient`，一个给后台（`api`），一个给 Portal（`portal`），各自持有独立的 Cookie jar（`controller.rs:187-198`）。
+Portal 认证与后台自助是两套会话，代码里刻意分开（`lib.rs:1`）：`Controller::connect` 会构造两个 `PortalClient`，一个给后台（`api`），一个给 Portal（`portal`），各自持有独立的 Cookie jar（`controller/connection.rs` 的 `connect()`）。
 
-顺序是**先登录后台、再走 Portal**（`controller.rs:202-217`）：
+顺序是**先登录后台、再走 Portal**（`connect()`）：
 
-1. 后台 `user_login` 成功后立刻读一次 `myinfo`（套餐与到期时间只在连接时读，它随订购变更而不随会话变化，`controller.rs:209-210`），再读一次会话列表作为 baseline。
-2. baseline 里如果已经能唯一确定本机对应的会话，直接返回 `session_online`，跳过 Portal 登录（`controller.rs:218-234`）。
-3. Portal 登录完成后，只有第一次后台登录失败时才补一次 `user_login`——Portal 的 Cookie 不能用来访问后台自助接口（`controller.rs:286-301`）。
-4. Portal 成功但后台登录仍失败时，不报整体失败，而是置 `status="accepted"` 并提示重新登录后台查询会话（`controller.rs:292-298`）。
+1. 后台 `user_login` 成功后立刻读一次 `myinfo`（套餐与到期时间只在连接时读，它随订购变更而不随会话变化，`connect()`），再读一次会话列表作为 baseline。
+2. baseline 里如果已经能唯一确定本机对应的会话，直接返回 `session_online`，跳过 Portal 登录（`connect()` 中的 `unique_local_session()`）。
+3. Portal 登录完成后，只有第一次后台登录失败时才补一次 `user_login`——Portal 的 Cookie 不能用来访问后台自助接口（`connect()`）。
+4. Portal 成功但后台登录仍失败时，不报整体失败，而是置 `status="accepted"` 并提示重新登录后台查询会话（`connect()`）。
 
 `PortalClient` 的 HTTP 行为是固定的：不自动跟随跳转（`redirect::Policy::none()`，这样 302 才能被显式判断）、请求超时 10 秒、连接超时 5 秒、TCP keepalive 30 秒、连接池空闲 15 秒、响应体上限 2 MiB、非 2xx 直接返回 `Http(状态码)`（`lib.rs:24-30`、`lib.rs:327-341`、`lib.rs:372-390`）。
 
@@ -45,11 +45,11 @@ Portal 认证与后台自助是两套会话，代码里刻意分开（`lib.rs:1`
 
 | 条件 | 做法 | 代码 |
 |---|---|---|
-| 用户粘贴了 Portal URL | 校验后按本机网卡上下文重写 | `controller.rs:267-277` |
-| Portal URL 留空 | 按 DGCU 模板拼 `libs/portal/unify/portal.php/login/main/nasid/4/`，附加 `wlanacname=route1`、`vlan=0.0`、`iarmdst=captive.apple.com/hotspot-detect.html` | `controller.rs:238-248`、`cmcc.rs:80-96` |
-| 模板表单不可用且 `probe_enabled` | 回退到公共 HTTP 探测发现入口 | `controller.rs:249-263`、`discovery.rs:72-104` |
+| 用户粘贴了 Portal URL | 校验后按本机网卡上下文重写 | `controller/connection.rs` 的 `connect()` |
+| Portal URL 留空 | 按 DGCU 模板拼 `libs/portal/unify/portal.php/login/main/nasid/4/`，附加 `wlanacname=route1`、`vlan=0.0`、`iarmdst=captive.apple.com/hotspot-detect.html` | `connect()`、`cmcc.rs:80-96` |
+| 模板表单不可用且 `probe_enabled` | 回退到公共 HTTP 探测发现入口 | `connect()`、`discovery.rs:72-104` |
 
-模板路径优先是因为公共探测站点常常先超时（`controller.rs:240-242`）。判断“模板可用”用的是 `portal_form_available`：只 GET 入口并检查表单，不提交任何凭据（`cmcc.rs:176-180`）。
+模板路径优先是因为公共探测站点常常先超时（`connect()`）。判断“模板可用”用的是 `portal_form_available`：只 GET 入口并检查表单，不提交任何凭据（`cmcc.rs:176-180`）。
 
 ### 探测链
 
@@ -101,7 +101,7 @@ Portal 认证与后台自助是两套会话，代码里刻意分开（`lib.rs:1`
 - 判定条件是响应正文严格等于 `success`；其他非空正文继续等待，与抓包页面的行为一致（`cmcc.rs:373-379`）。
 - 正文超过 8192 字节说明返回的是页面而不是状态，判为 `InvalidResponse("状态查询返回页面")`（`cmcc.rs:377-379`）。
 
-代拨没有独立的适配器或 PPPOE 实现：它就是 Portal 登录里的一段 HTTP 轮询，是否进入由服务端响应决定。`PortalLoginOutcome::Dialed` 对应的界面文案是“Portal 与代拨均已确认成功”（`controller.rs:337-339`）。
+代拨没有独立的适配器或 PPPOE 实现：它就是 Portal 登录里的一段 HTTP 轮询，是否进入由服务端响应决定。`PortalLoginOutcome::Dialed` 对应的界面文案是“Portal 与代拨均已确认成功”（`connect()` 的消息匹配）。
 
 ### 信任域校验
 
@@ -118,7 +118,7 @@ Portal 认证与后台自助是两套会话，代码里刻意分开（`lib.rs:1`
 | 接口 | 代码 | 说明 |
 |---|---|---|
 | `POST home.php?c=user&a=user_login` | `lib.rs:405-417` | 表单 `username`/`password`；成功后 Cookie 进入 jar |
-| `GET home.php?c=user&a=myinfo` | `lib.rs:419-423` | 转成 `AccountInfo`；失败不影响会话查询（`controller.rs:210`、`controller.rs:303-305`） |
+| `GET home.php?c=user&a=myinfo` | `lib.rs:419-423` | 转成 `AccountInfo`；失败不影响会话查询（`connect()` 的两处读取） |
 | `GET home.php?c=user&a=onlinelog&page=N&pagesize=15` | `lib.rs:424-442` | 逐页取到 `total` 为止，最多 100 页；`data` 为空但 `total` 未取满报 `InvalidResponse("分页不完整")` |
 | `POST home.php?c=user&a=offline&r=person` | `lib.rs:451-474` | 九个表单字段，其中 `key` 复用 `radacctid`、`num=1` |
 
@@ -130,20 +130,20 @@ Portal 认证与后台自助是两套会话，代码里刻意分开（`lib.rs:1`
 
 ### Snapshot
 
-`Snapshot` 是 daemon 回给 CLI 与 GUI 的唯一状态载体（`controller.rs:17-29`）：`status`、`message`、`sessions`、`rates`、`selected_id`、`background_paused`、`authenticated`、`one_session`、`account`。
+`Snapshot` 是 daemon 回给 CLI 与 GUI 的唯一状态载体（`controller.rs` 的 `Snapshot`）：`status`、`message`、`sessions`、`rates`、`selected_id`、`background_paused`、`authenticated`、`one_session`、`account`。
 
-`status` 是**字符串**而不是枚举（`controller.rs:19`）。全部取值、写入位置与界面标题（标题映射见 `crates/portal-gui/frontend/src/usePortal.ts:57`）：
+`status` 是**字符串**而不是枚举（`Snapshot::status`）。全部取值、写入位置与界面标题（标题映射见 `crates/portal-gui/frontend/src/usePortal.ts:57`）：
 
 | `status` | 界面标题 | 何时写入 |
 |---|---|---|
-| `idle` | 尚未连接 | 初始化 `controller.rs:85`；`forget` 清除本地会话 `controller.rs:113` |
-| `authenticating` | 正在认证 | `connect` 开始 `controller.rs:201` |
-| `accepted` | 认证成功 | Portal 已确认 `controller.rs:332`；Portal 成功但后台登录失败 `controller.rs:293` |
-| `session_online` | 所选会话在线 | baseline 里已恢复本机会话 `controller.rs:330`；轮询确认所选会话仍在 `controller.rs:588` |
-| `backend` | 已登录后台 | 只登录了后台、未选中会话 `controller.rs:400` |
-| `offline` | 已下线 | 所选会话从列表消失 `controller.rs:608`；下线已确认 `controller.rs:698` |
-| `error` | 连接失败 | `fail()` `controller.rs:129` |
-| `unknown` | 下线待确认 | 下线请求失败或未确认 `controller.rs:519` |
+| `idle` | 尚未连接 | 初始化 `Controller::with_logs`；`forget()` 清除本地会话（`controller.rs`） |
+| `authenticating` | 正在认证 | `connect()` 开始（`controller/connection.rs`） |
+| `accepted` | 认证成功 | Portal 已确认、Portal 成功但后台登录失败，均在 `connect()` |
+| `session_online` | 所选会话在线 | baseline 里已恢复本机会话 `connect()`；轮询确认所选会话仍在 `observe_session()`（`controller/session.rs`） |
+| `backend` | 已登录后台 | 只登录了后台、未选中会话 `connect()` |
+| `offline` | 已下线 | 所选会话从列表消失 `observe_session()`；下线已确认 `disconnect()`（`controller/connection.rs`） |
+| `error` | 连接失败 | `fail()`（`controller.rs`） |
+| `unknown` | 下线待确认 | 下线请求失败或未确认 `disconnect()` |
 
 ### 错误类型
 
@@ -153,7 +153,7 @@ Portal 认证与后台自助是两套会话，代码里刻意分开（`lib.rs:1`
 
 传输层失败先分类成 `NetworkFault::{Connect, Timeout, Other}`（`lib.rs:78-98`）：`Connect` 几乎总是本机绑定的源地址已失效（合盖唤醒换网段最典型），`Timeout` 更像链路慢或被拦，两者压成一句就没法从日志区分（`lib.rs:73-77`）。转换时只取 reqwest 自己的判定，不拼接 `source()` 链或系统错误原文，因为那可能带上本地地址与 URL（`lib.rs:85-97`）。
 
-`Network` 的用户文案刻意点出两个最可能的原因——不在校园网环境、Portal 服务器离线，并有测试锁住这句不让改回含糊说法（`lib.rs:36-42`、`controller.rs:855-871`）。
+`Network` 的用户文案刻意点出两个最可能的原因——不在校园网环境、Portal 服务器离线，并有测试锁住这句不让改回含糊说法（`lib.rs:36-42`、`controller/tests.rs` 的 `unreachable_portal_names_the_two_likely_causes`）。
 
 ### 日志
 
@@ -189,10 +189,10 @@ refresh.policy           poll.jitter
 
 两条互斥的规则，都拒绝“猜”：
 
-- **新增会话绑定**：Portal 登录前记录 baseline 的 `radacctid` 集合（`controller.rs:323-328`），之后每次轮询比对；恰好一条新增就自动选中，两条以上则放弃自动绑定、要求用户手动选（`controller.rs:474-492`）。`new_session_id` 是同一语义的纯函数版本（`lib.rs:491-500`）。
-- **本机 IP 匹配**：会话的 `framedipaddress` 等于所选网卡 IPv4，且这样的记录唯一，才自动恢复（`controller.rs:493-505`）。同一 IP 上有两条时不替用户挑——挑错等于把别人的设备下线或把流量算到自己头上（`controller.rs:825-854`）。
+- **新增会话绑定**：Portal 登录前记录 baseline 的 `radacctid` 集合（`connect()`），之后每次轮询比对；恰好一条新增就自动选中，两条以上则放弃自动绑定、要求用户手动选（`bind_new_session()`，`controller/session.rs`）。`new_session_id` 是同一语义的纯函数版本（`lib.rs:491-500`）。
+- **本机 IP 匹配**：会话的 `framedipaddress` 等于所选网卡 IPv4，且这样的记录唯一，才自动恢复（`unique_local_session()`，`controller/session.rs`）。同一 IP 上有两条时不替用户挑——挑错等于把别人的设备下线或把流量算到自己头上（`controller/tests.rs` 的 `local_session_binding_needs_an_unambiguous_ip_match`）。
 
-`select` 只接受当前列表里存在的 id，否则 `SessionNotFound`（`controller.rs:464-473`）。
+`select` 只接受当前列表里存在的 id，否则 `SessionNotFound`（`controller/session.rs` 的 `select()`）。
 
 ### 速率
 
@@ -204,67 +204,90 @@ refresh.policy           poll.jitter
 - 会话从列表消失就丢掉它的基线，同一 id 再出现时重新采样（`traffic.rs:21-22`）。
 - `Rate` 的三个字段 `upload_bps`、`download_bps`、`sample_seconds` 都是 `Option`（`traffic.rs:6-11`）。
 
-`traffic_enabled` 关闭时清空基线并返回空表，重新打开后从头采样（`controller.rs:440-447`）。
+`traffic_enabled` 关闭时清空基线并返回空表，重新打开后从头采样（`controller/session.rs` 的 `update_rates()`）。
 
 ## 八、掉线检测、重拨与网络自愈
 
-daemon 跑两个独立 worker（`daemon.rs:104-125`）：
+daemon 跑两个独立 worker（`daemon.rs:107-128`）：
 
-- **刷新 worker**：间隔取 `refresh_policy.next_delay(poll_jitter)`，即 60 秒叠加抖动；策略为 `Disabled` 时返回 `None`，worker 按 1 秒空转（`daemon.rs:107-112`、`settings.rs:80-87`）。调用 `Controller::tick`，没有后台会话或刷新被禁用时直接返回（`controller.rs:534-545`）。
-- **重拨 worker**：固定 5 秒叠加抖动，调用 `redial_tick`（`daemon.rs:116-125`）。
+- **刷新 worker**：间隔取 `refresh_policy.next_delay(poll_jitter)`，即 60 秒叠加抖动；策略为 `Disabled` 时返回 `None`，worker 按 1 秒空转（`daemon.rs:110-116`、`settings.rs:80-87`）。调用 `Controller::tick`，没有后台会话或刷新被禁用时直接返回（`controller/session.rs` 的 `tick()`）。
+- **重拨 worker**：固定 5 秒叠加抖动，调用 `redial_tick`（`daemon.rs:119-128`）。
 
 抖动按等级取 ±5%/±10%/±20%/0%，偏移量由当前时间的纳秒部分取模得到（`settings.rs:88-111`）。
 
 ### 掉线检测
 
-`redial_tick` 只要还持有后台客户端就轮询会话，不再以 `paused` 或 `reconnect_mode` 为前提（`controller.rs:720-726`）：backend-only 登录会置 `paused = true`，重拨关闭时旧实现根本不会查列表。查询失败只记 `last_poll_failure` 并走网络自愈，不推进缺失计数（`controller.rs:741-752`）；只有成功返回的列表才参与判定，请求失败不会被当成“所有会话都消失”。
+`redial_tick` 只要还持有后台客户端就轮询会话，不再以 `paused` 或 `reconnect_mode` 为前提（`controller/reconnect.rs` 的 `redial_tick()`）：backend-only 登录会置 `paused = true`，重拨关闭时旧实现根本不会查列表。查询失败既不推进缺失计数，也不参与“会话是否消失”的判定——只有成功返回的列表才算证据，请求失败不会被当成“所有会话都消失”。
 
-`observe_session` 先判定再清理（`controller.rs:582-617`）：原 `radacctid` 还在就归零 `missing`、置 `session_online`、清掉旧告警；消失就 `missing += 1`、置 `offline`，并在 `drops_state_on_loss()` 释放本地态之前留下 `loss { id, kind }`。`refresh` 也调用它，但 `count = false`（`controller.rs:550-567`），避免 1 分钟刷新与 5 秒 worker 把缺失次数算两遍。
+失败分支先把错误写进日志（`loss` 为空时也写进 `message`），再分两件事处理：
 
-分级只看能拿到的证据（`controller.rs:582-611`）：
+- **失败证据**：`poll_failure_is_network()` 只认 `Network(_)`/`Timeout(_)`，命中才把 `last_poll_failure` 刷成当前时间，供“疑似被挤下线”判定使用（`controller.rs` 的 `poll_failure_is_network()`）。后台 5xx、Cookie 失效、业务拒绝与解析失败不能反推本机网络有问题。
+- **是否尝试自愈**：`recoverable_poll_error()` 为真才调用 `retry_after_failure()`（`controller/reconnect.rs` 的 `recoverable_poll_error()`）。它等于传输层/超时/发现失败/`Http(408|425|429|500..=599)`，再加 `Rejected`——Cookie 过期或后台维护同样值得用保存的凭据重登一次；`InvalidResponse`、`Redirect`、其他 HTTP 状态码等不属于这一类，只留下日志与提示，不会重建连接。
+
+“可恢复”只代表允许尝试，不代表一定会重新认证：`retry_after_failure()` 入口先过 `auto_auth_allowed()`，`redial_hold`、`paused`、`reconnect_mode == Disabled` 任一成立就直接返回，此时失败只被记录、监测照常；退避窗口未到或进程内没有凭据同样直接返回（`controller/reconnect.rs` 的 `retry_after_failure()`）。`refresh()`/`tick()` 走的是另一条路：只记录 `last_poll_failure`（同样仅限网络/超时）并把错误交给调用方，不触发自愈（`controller/session.rs` 的 `refresh()` 与 `tick()`）。
+
+`observe_session` 先判定再清理（`controller/session.rs` 的 `observe_session()`）：原 `radacctid` 还在就归零 `missing`、置 `session_online`、清掉 `loss`，但**不解除** `redial_hold`；消失就 `missing += 1`、置 `offline`，并在 `drops_state_on_loss()` 释放本地态之前留下 `loss { id, kind }`。`refresh` 也调用它，但 `count = false`（同文件的 `refresh()`），避免 1 分钟刷新与 5 秒 worker 把缺失次数算两遍。
+
+分级只看能拿到的证据（`observe_session()` 中的 `kind` 判定）：
 
 | 结论 | 条件 |
 |---|---|
-| 高疑似被挤下线 | 原会话消失、本机 IPv4 不匹配任何 `framedipaddress`、在线会话数 > 2、最近 120 秒内有过轮询失败（`controller.rs:182-192`） |
+| 高疑似被挤下线 | 原会话消失、本机 IPv4 确定不在任何 `framedipaddress` 里、在线会话数 > 2、最近一次传输层失败或超时发生在 120 秒内（`observe_session()`、`local_ip_in()`、`recent_poll_failure()`、`poll_failure_is_network()`；后三者在 `controller.rs`） |
 | 会话丢失、原因不明 | 原会话消失，但不满足上面的组合 |
 
-在线会话数超过 2 只是风险信号：原会话仍在、或列表里还能找到本机 IP 时都不判定。解析不到本机地址时不把“IP 不在列表”当证据（`controller.rs:189-192`）。结论只升级不降级，同一目标只在首次或等级变化时写一次日志（`controller.rs:194-221`）。
+在线会话数超过 2 只是风险信号：原会话仍在、或列表里还能找到本机 IP 时都不判定。`local_ip_in` 是保守三态（`controller.rs`）：任一已知地址匹配 → `Some(true)`；全部地址已知且都不匹配 → `Some(false)`；没有匹配但至少一条会话缺地址、或解析不到本机地址 → `None`。空列表没有任何未知项，按 `Some(false)` 处理。结论只升级不降级，同一目标只在首次或等级变化时写一次日志（同文件的 `record_loss()`）。
 
-`snapshot.message` 在 `loss` 存在时优先返回告警文案（`controller.rs:236-239`），普通刷新不会把它冲掉；`background_paused` 同时反映 `paused || redial_hold`。高疑似时置上 `redial_hold` 并清掉 `awaiting_session`（`controller.rs:207-212`），`bind_new_session` 在有 `loss` 时直接放弃自动认领（`controller.rs:635-640`）——新出现的那条更可能属于挤掉本机的设备。
+“最近一次失败”不是窗口内的累计记录：`last_poll_failure` 只是一个 `Option<Instant>`，`recent_poll_failure()` 判断的是它距今是否不超过 120 秒。只有 `Network(_)`/`Timeout(_)` 会把它刷成当前时间，其他错误既不更新也不清除它；而任何一次成功拿到列表的轮询都会把它置空（`refresh()` 与 `redial_tick()` 的成功分支，`controller/session.rs` 与 `controller/reconnect.rs`），所以一次成功轮询之后，之前的失败就不再是证据。
 
-恢复只走显式路径：原 id 重新出现（`controller.rs:588-593`）、`select`（`controller.rs:631-632`）、`disconnect`（`controller.rs:674-675`）或一次成功连接（`controller.rs:464-465`）都会清掉 `loss` 与 `redial_hold`。
+`snapshot.message` 在 `loss` 存在时优先返回告警文案（`controller.rs` 的 `snapshot()`），普通刷新不会把它冲掉；`background_paused` 同时反映 `paused || redial_hold`。高疑似时置上 `redial_hold` 并清掉 `awaiting_session`（`record_loss()`），`bind_new_session` 在有 `loss` 时直接放弃自动认领（`controller/session.rs` 的 `bind_new_session()`）——新出现的那条更可能属于挤掉本机的设备。
+
+`redial_hold` 的生命周期是显式的，解除只发生在显式恢复路径：`disconnect()`（`controller/connection.rs`）、`clear()`/`forget()`（`controller.rs`），以及非自动连接在 `connect()` **入口**的 `clear()`（`if !self.reconnecting`，`controller/connection.rs` 的 `connect()`）。也就是说手动连接一进入连接流程就解除保护，与认证是否成功无关：连接随后失败，保护也不会复原。`connect()` 里另有两处 `!self.reconnecting` 的 `lift_eviction_protection()`（恢复本机分支与成功收尾），入口清理已经生效，它们不改变这个结论。
+
+自动重拨不会绕过这道门控：`redial_tick()` 先用 `auto_auth_allowed()` 挡掉 `redial_hold`，走到了才会 `clear()`（`TerminateAndReconnect`，此时 `redial_hold` 已为假，清理不会解除仍在生效的保护）或以 `reconnecting = true` 跳过入口 `clear()`（`NewSession`）；`retry_after_failure()` 也以同一个门控为入口。普通轮询成功、当前选中会话在线、`select` 切换目标（`controller/session.rs` 的 `select()`）都只清 `loss`、保留保护；原会话重新出现同理（同文件的 `observe_session()`）。保护期间提示文案会写明“自动重拨仍未恢复”，不会出现界面说保护有效、后台却被轮询悄悄解除的情况。
 
 ### 重拨
 
-`redial_tick` 每次轮询前先确认网卡绑定（`controller.rs:727-729`），会话监测本身不受暂停影响。真正发起重拨要同时满足：未被 `paused` 或 `redial_hold` 挡住、模式不是 `Disabled`、仍有选中会话、`missing >= 3`、`attempts < 3`、距上次尝试已超过退避窗口（`controller.rs:756-766`）。退避是 `30 秒 × 2^attempts` 叠加抖动（`controller.rs:470-475`）。
+`redial_tick` 每次轮询前先确认网卡绑定（`redial_tick()` 调用 `rebind_changed_network()`），会话监测本身不受暂停影响。真正发起重拨要同时满足：`auto_auth_allowed()`（未 `redial_hold`、未 `paused`、模式不是 `Disabled`，`controller/reconnect.rs`）、仍有选中会话、`missing >= 3`、`attempts < 3`、距上次尝试已超过退避窗口（`redial_tick()`）。`attempts` 是**连续失败次数**：可重试失败归零，成功绑定时也归零（`redial_tick()` 的结果分支），所以历史上成功重拨不会把下一次掉线挡在 3 次上限外。退避是 `30 秒 × 2^attempts` 叠加抖动（`retry_backoff()`）。
 
-两种模式的差别（`controller.rs:598-621`）：
+两种模式的差别（`redial_tick()`）：
 
 - `TerminateAndReconnect`：先 `clear()` 丢弃旧状态再连。
-- `NewSession`：置 `reconnecting = true`，让 `connect` 跳过开头的 `clear()`（`controller.rs:153-158`），保留现有 API/Cookie 与会话行，直到新连接成功——重拨是事务性的。
+- `NewSession`：置 `reconnecting = true`，让 `connect` 跳过开头的 `clear()`（`controller/connection.rs` 的 `connect()`），保留现有 API/Cookie 与会话行，直到新连接成功——重拨是事务性的。
 
-结果处理（`controller.rs:622-655`）：
+结果处理（`redial_tick()`）：
 
 | 结果 | 行为 |
 |---|---|
-| 成功且绑定到会话 | 正常继续 |
+| 成功且绑定到会话 | 正常继续；只有 `selected` 真的出现在本轮会话列表里才清零 `attempts`（`selected` 仍为空则保留计数） |
 | 成功但没绑定到会话 | `paused = true`，提示“自动重拨未完成或无法绑定新会话” |
-| 瞬时错误 | 归还凭据、`attempts` 归零、回滚到重拨前的全部状态，等下一次掉线检测 |
-| 其他错误（认证被拒） | `paused = true`，但**保留**进程内凭据供手动重试 |
+| 瞬时错误 | 归还凭据、`attempts` 归零、用 `ReconnectCheckpoint` 恢复快照中的连接状态（只改内存，不撤销已发出的请求），再由调用方改写失败提示，等下一次掉线检测 |
+| 其他错误（认证被拒） | `paused = true`，**保留**进程内凭据与新的暂停决策；`NewSession` 下只回滚连接相关字段 |
 
-错误分类分三档（`controller.rs:658-684`）：
+### 重连快照
+
+两条重连路径共用私有 `ReconnectCheckpoint`（`controller/reconnect.rs`）。`capture` 对 `Controller` 做穷尽解构，新增字段必须在这里显式归类，否则编译失败（`ReconnectCheckpoint::capture`）：
+
+- **恢复**：`api`、`account`、`rows`、`selected`、`awaiting_session`、`accounting`、`latest_rates`、`paused`、`status`、`message`、`missing`、`loss`、`redial_hold`、`bound_network`。这些是 `connect()` 在返回 `Err` 前可能写到的会话可见状态。
+- **保留**：`credential`、`attempts`、`last_attempt`、`network_attempts`、`reconnecting` 由调用方在 `connect()` 返回后决定；`current_network`、`last_poll_failure` 是失败后必须保留的新证据；`settings`、`logs`、`resolve_network` 不属于一次连接事务。
+- **两种恢复策略**：瞬时/可重试失败用 `restore` 恢复快照中的 14 项连接状态，`paused`/`status`/`message`/`loss`/`redial_hold` 都在其中（`ReconnectCheckpoint::restore`），快照外的调度字段与失败提示仍由调用方更新；认证被拒用 `restore_connection` 只退回 `api`/`account`/`rows`/`selected`/`awaiting_session`/`accounting`/`latest_rates`/`missing`/`bound_network`，不覆盖 `paused`、`status`、`message`、`loss`、`redial_hold` 这五项（方法内按 `_` 解构，保留调用方刚写入的值）；两份清单的差别就是 `restore` 多退这五项（`ReconnectCheckpoint::restore_connection`；两者都在 `controller/reconnect.rs`）。`TerminateAndReconnect` 被拒时已经 `clear()`，不再回滚旧会话。
+
+回滚只改内存，撤销不了已经发出的 HTTP 请求、已完成的 Portal 认证或服务端会话变化。`daemon` 的所有入口共用 `Arc<tokio::sync::Mutex<Controller>>`（`daemon.rs:21`），`&mut Controller` 在整个 `connect().await` 期间独占，因此快照不会被并发的 `select`/`disconnect` 覆盖。
+
+错误分类分三档（`controller/reconnect.rs` 的 `transient_reconnect_error`、`recoverable_poll_error`、`retryable_connection_error`），另有两个独立判定：
 
 - `transient_reconnect_error`：`Network(_)`、`Timeout(_)`、`DiscoveryTimeout`、`DiscoveryNotFound`、`Http(408|425|429|500..=599)`。
-- `recoverable_poll_error`：上面这些再加 `Rejected`——合盖一夜后后台 Cookie 过期会让每次轮询都失败，而重连会用保存的凭据重新登录后台（`controller.rs:669-676`）。
-- `retryable_connection_error`：`transient` 再加 `NetworkInterface`——网卡暂时消失是环境问题，不该像认证被拒那样停下来等人（`controller.rs:678-684`）。
+- `recoverable_poll_error`：上面这些再加 `Rejected`——合盖一夜后后台 Cookie 过期会让每次轮询都失败，而重连会用保存的凭据重新登录后台（`recoverable_poll_error()`）。
+- `retryable_connection_error`：`transient` 再加 `NetworkInterface`——网卡暂时消失是环境问题，不该像认证被拒那样停下来等人（`retryable_connection_error()`）。`redial_tick` 与 `retry_after_failure` 都用它判定可重试，所以重拨时解析不到网卡会走快照回滚，而不是 `paused = true`（`redial_tick()` 的对应分支）。
+- `auto_auth_allowed`：后台自动认证的统一准入（`auto_auth_allowed()`，`controller/reconnect.rs`），自动重拨与 `retry_after_failure` 都先过它；它挡的是“是否允许重新认证”，不挡轮询。
+- `poll_failure_is_network`：只有 `Network(_)`、`Timeout(_)` 能成为“本机连接异常”的证据（`controller.rs` 的 `poll_failure_is_network()`）。
 
 ### 网络自愈
 
-轮询因网络或网卡失败时走 `retry_after_failure`：用当前网卡上下文重建连接并重连一次，事务性——只有 `connect` 成功才替换现有会话与客户端，失败时回滚（`controller.rs:694-756`）。它用**独立**的 `network_attempts` 计数，与会话掉线的 `attempts` 互不干扰（`controller.rs:45-46`），退避是 `30 秒 << min(network_attempts, 4)`，即 30 秒到 8 分钟封顶（`controller.rs:686-692`）。轮询成功一次就归零（`controller.rs:567`）。
+轮询因网络或网卡失败时走 `retry_after_failure`：先过 `auto_auth_allowed()`，保护期间直接返回、只保留监测（`controller/reconnect.rs` 的 `retry_after_failure()` 入口）；其余情况用当前网卡上下文重建连接并重连一次（同函数）。失败同样用 `ReconnectCheckpoint` 回滚：可重试错误全量退回并保留 `last_poll_failure`，认证被拒只退连接相关字段、保留 `paused`。它用**独立**的 `network_attempts` 计数，与会话掉线的 `attempts` 互不干扰（`Controller::network_attempts`，`controller.rs`），退避是 `30 秒 << min(network_attempts, 4)`，即 30 秒到 8 分钟封顶（`network_retry_backoff()`）。`network_attempts` 是网络自愈自己的连续失败计数：`retry_after_failure()` 里重连成功归零、可重试失败加一，此外 `redial_tick()` 任何一次成功轮询也把它归零——只有这两类赋值点，`clear()`/`release()` 重置的是 `attempts`，不碰它。`last_poll_failure` 在 `redial_tick()` 与 `refresh()` 成功后都会清空。
 
-网卡地址变化由 `rebind_changed_network` 处理：每次轮询重新解析网卡，上下文变了就用新的源地址重建 HTTP 客户端，Cookie 留在共享 jar 里，因此不需要重新认证（`controller.rs:355-385`、`lib.rs:274-288`、`lib.rs:342-350`）。解析失败时不动现有绑定，等下一次轮询再判断（`controller.rs:361-363`）。
+网卡地址变化由 `rebind_changed_network` 处理：每次轮询重新解析网卡，上下文变了就用新的源地址重建 HTTP 客户端，Cookie 留在共享 jar 里，因此不需要重新认证（`controller.rs` 的 `rebind_changed_network()`、`lib.rs:274-288`、`lib.rs:342-350`）。解析失败时不动现有绑定，等下一次轮询再判断（同函数的解析失败分支）。
 
-`apply_settings` 让“保存设置”对已建立的连接立刻生效：后台地址变了调 `rebase`，网卡或代理变了清掉 `bound_network` 交给下次轮询重建；关闭重拨时立即丢弃进程内凭据（`controller.rs:386-422`）。
+`apply_settings` 让“保存设置”对已建立的连接立刻生效：后台地址变了调 `rebase`，网卡或代理变了清掉 `bound_network` 交给下次轮询重建；关闭重拨时立即丢弃进程内凭据（`controller.rs` 的 `apply_settings()`）。
 
 ## 九、凭据
 
@@ -280,11 +303,11 @@ daemon 跑两个独立 worker（`daemon.rs:104-125`）：
 
 进程内凭据的保留与释放规则（与密码存在哪里无关）：
 
-- 只要 `reconnect_mode != Disabled` 就保留在 `Controller` 内存里，重拨才有账号可用（`controller.rs:228-231`、`controller.rs:349-351`）。
-- 关闭重拨后这份凭据没有后续用途，立即丢弃（`controller.rs:397-400`）。
-- `Memory` + 重拨关闭时，任何失败都会整体 `clear()`（`controller.rs:152-158`）；会话丢失走 `release()`（`controller.rs:130-151`），只释放连接与会话，`loss` 留着给界面提示。`Memory` + 重拨开启时凭据必须留到下一次重拨（`controller.rs:463-468`）。
-- 手动下线与 `forget` 是无条件释放路径（`controller.rs:506-509`、`controller.rs:110-115`）。
-- 重拨暂停不等于释放，凭据留着供手动重试（`controller.rs:648-651`）。
+- 只要 `reconnect_mode != Disabled` 就保留在 `Controller` 内存里，重拨才有账号可用（`controller/connection.rs` 的 `connect()`，恢复本机分支与收尾各一处）。
+- 关闭重拨后这份凭据没有后续用途，立即丢弃（`controller.rs` 的 `apply_settings()`）。
+- `Memory` + 重拨关闭时，在连接失败里只有被 `connect()` 的 `fail()` 接住的那几处会整体 `clear()`（网卡解析、Portal 上下文与登录、后台登录），且要满足 `drops_state_on_loss()`：`credential_store == Memory` 且 `reconnect_mode == Disabled`（`controller.rs` 的 `fail()`、`drops_state_on_loss()`）。轮询/刷新失败不走 `fail()`，`tick()` 只记日志并（`loss` 为空时）写提示；会话丢失在 `observe_session()` 判定完 `loss` 之后才走 `release()`（`controller/session.rs`），只释放连接与会话，`loss` 留着给界面提示；重拨与网络自愈的失败走快照回滚加 `paused`，同样不 `clear()`（`controller/reconnect.rs`）。`Memory` + 重拨开启时凭据必须留到下一次重拨（`connect()` 的凭据保留逻辑）。
+- 手动下线与 `forget` 是无条件释放路径（`controller/connection.rs` 的 `disconnect()`、`controller.rs` 的 `forget()`）。
+- 重拨暂停不等于释放，凭据留着供手动重试（`redial_tick()` 的认证被拒分支）。
 
 daemon 启动时的自动登录只读 `System` 与 `File`，`Memory` 模式跳过（`daemon.rs:85-103`）。
 

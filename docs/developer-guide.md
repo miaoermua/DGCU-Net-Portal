@@ -1,6 +1,6 @@
 # 开发者文档
 
-> 对应版本：0.5.15。运行、配置与构建说明。
+> 对应版本：0.5.16。运行、配置与构建说明。
 > 协议事实与抓包依据见[校园网认证协议分析](./campus-network-auth.md)，代码如何实现这些协议（含状态、错误、时序常量与算法）见[校园网认证协议实现](./protocol-implementation.md)。
 
 DGCU 校园网客户端。当前工作区只保留两个 Rust package：
@@ -92,7 +92,7 @@ cargo run -p portal-cli -- service enable
 | `probe_enabled` | `true` | 只在 DGCU 模板表单不可用时才回退公共探测 |
 | `refresh_policy` | `one_minute` | `one_minute` / `disabled`（`settings.rs:31-37`） |
 | `poll_jitter` | `low` | `low` ±5% / `medium` ±10% / `high` ±20% / `disabled` 0%；旧配置的 `enabled` 会被读成 `low`（`settings.rs:39-48`、`settings.rs:88-96`） |
-| `traffic_enabled` | `false` | 关闭时清空速率基线（`controller.rs:440-447`） |
+| `traffic_enabled` | `false` | 关闭时清空速率基线（`controller/session.rs` 的 `update_rates()`） |
 | `interface_name` | 空 | 空表示自动选第一个非 internal、同时有 IPv4 与 MAC 的网卡（`network.rs:120-128`） |
 | `bypass_proxy` | `true` | 为 `true` 时 HTTP 客户端 `no_proxy()`（`lib.rs:334-336`） |
 | `credential_store` | `system` | `system` / `file` / `memory`（`settings.rs:50-57`） |
@@ -274,6 +274,8 @@ rpm 的 `%files` 与 `%install` 必须一起改：文件清单里声明了、`%i
 ## Release 说明
 
 `scripts/release_notes.py` 扫 `release/` 目录生成「快捷下载」表，由 `release` job 在发布前调用。链接用**当前 tag** 拼（`releases/download/<tag>/<文件名>`），不用 `latest`：资产名里带版本号，用 `latest` 会让下载链接和页面上的版本对不上。
+
+因为要跑仓库里的这个脚本，`release` job **必须 `checkout`**。它以前只做「下载 artifact + 发 Release」，工作区是空的，加这一步时漏了 checkout 就会直接报找不到脚本文件（0.5.15 就这么挂的）。
 
 传给 `softprops/action-gh-release` 时用 `body_path` 加 `generate_release_notes: true`，官方行为是把 body **拼在**自动生成的更新说明前面，所以表格在上、提交历史在下，两者都保留。
 

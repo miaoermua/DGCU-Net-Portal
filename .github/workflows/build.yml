@@ -282,6 +282,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # 必须 checkout：下面要跑仓库里的 scripts/release_notes.py。
+      # 这个 job 以前只「下载 artifact + 发 Release」，不需要工作区；
+      # 加了生成下载表那一步之后就必须把仓库拉下来，否则脚本找不到。
+      - uses: actions/checkout@v7
       # 只取各平台的发行包，避免把 frontend-dist（js/css/png）与 linux-bin-*（裸二进制）带进 Release。
       # macOS 只取 dmg：zip 以 macos-zip-* 单独留在 Actions 存档里，不进 Release。
       - name: 下载发行包（macOS DMG）
