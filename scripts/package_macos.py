@@ -11,7 +11,6 @@ runner itself. The app must already be signed, so the image is made after codesi
 bundle it holds is the signed one.
 """
 import argparse
-import hashlib
 import json
 import platform
 import plistlib
@@ -81,8 +80,7 @@ subprocess.run(['codesign', '--force', '--sign', '-', str(app)], check=True)
 subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
 subprocess.run(['codesign', '--force', '--sign', '-', str(folder / 'portal-cli')], check=True)
 subprocess.run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(folder), str(archive)], check=True)
-digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-(output / (name + '.sha256')).write_text(f'{digest}  {archive.name}\n', encoding='utf-8')
+# 不产出单独的 .sha256：校验和统一进 Release 的 SHA256SUMS.txt。
 print(archive)
 
 if args.dmg:
@@ -116,6 +114,5 @@ if args.dmg:
     subprocess.run(['swift', str(root / 'packaging/macos/render.swift'), str(root / 'packaging/macos/background.svg'), str(picture), '2', str(font)], check=True)
     subprocess.run([str(python), '-m', 'dmgbuild', '-s', str(root / 'packaging/macos/installer.py'),
         '-D', f'app={app}', '-D', f'background={picture}', args.volume, str(disk_image)], check=True)
-    digest = hashlib.sha256(disk_image.read_bytes()).hexdigest()
-    (output / (name + '.dmg.sha256')).write_text(f'{digest}  {disk_image.name}\n', encoding='utf-8')
+    # 不产出单独的 .sha256：校验和统一进 Release 的 SHA256SUMS.txt。
     print(disk_image)

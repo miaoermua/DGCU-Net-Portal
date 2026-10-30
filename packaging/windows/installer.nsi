@@ -1,4 +1,4 @@
-; DGCU-Net-Portal 的 Windows 安装器。
+﻿; DGCU-Net-Portal 的 Windows 安装器。
 ;
 ; 装到当前用户的 Programs 目录，不写 Program Files、不提权：应用本身的后台服务
 ; 也是当前用户级的登录启动任务（crates/portal-cli/src/service.rs 的 TASK），
@@ -28,6 +28,8 @@ ManifestDPIAwareness "PerMonitorV2,System"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
 !include "x64.nsh"
+; 桌面快捷方式要「默认勾选、但可以取消」，NSIS 没有直接语法，用这里的宏实现。
+!include "Sections.nsh"
 !include "Win\RestartManager.nsh"
 
 !ifndef VERSION
@@ -237,8 +239,7 @@ Section "$(SEC_MAIN)" SecMain
   Call CheckWebView2
 SectionEnd
 
-; 桌面快捷方式默认不勾选：程序常驻托盘，开始菜单已经够用，
-; 大多数人不希望桌面多一个入口。选装项在组件页里可勾。
+; 桌面快捷方式默认勾选，用户仍可在组件页取消（默认值在文件末尾的 .onInit 里设置）。
 Section /o "$(SEC_DESKTOP)" SecDesktop
   SetShellVarContext current
   CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${GUI_EXE}"
@@ -279,3 +280,12 @@ Section "Uninstall"
   DeleteRegKey HKCU "${UNINST_KEY}"
   DeleteRegKey HKCU "${APP_KEY}"
 SectionEnd
+
+; 桌面快捷方式默认勾选，但仍可在组件页取消。
+;
+; NSIS 没有「默认勾选的可选项」这种直接写法：`Section` 是必选（复选框被禁用、
+; 用户改不了），`Section /o` 是可选但默认不勾。要「默认勾上、可以取消」只能在
+; 这里主动选中。必须放在 Section 定义之后 —— SelectSection 用的是 Section 索引。
+Function .onInit
+  !insertmacro SelectSection ${SecDesktop}
+FunctionEnd

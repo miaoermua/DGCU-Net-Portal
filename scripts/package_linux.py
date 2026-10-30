@@ -15,7 +15,6 @@ GUI 与 CLI 必须装在同一目录：GUI 沿自身路径的祖先目录找同�
 """
 import argparse
 import gzip
-import hashlib
 import io
 import json
 import re
@@ -252,7 +251,6 @@ try:
 finally:
     shutil.rmtree(staging, ignore_errors=True)
 
-digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-(archive.parent / (archive.name + '.sha256')).write_text(
-    f'{digest}  {archive.name}\n', encoding='utf-8')
+# 不再产出单独的 .sha256：Release 由 release_notes 之外的汇总步骤统一生成
+# SHA256SUMS.txt，逐个产物再放一份只会让资产列表变长，还容易被手工上传带进去。
 print(archive)

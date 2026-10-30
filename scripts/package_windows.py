@@ -10,10 +10,10 @@ GUI 与 CLI 必须同目录（GUI 沿自身路径的祖先目录找同包的 dae
         --binary-dir target/x86_64-pc-windows-msvc/release
 
 需要 PATH 里有 makensis（Windows 上 `choco install nsis`，macOS 上 `brew install nsis`）。
-产物是 `DGCU-Net-Portal-<version>-windows-<arch>-setup.exe` 与同名 .sha256。
+产物是 `DGCU-Net-Portal-<version>-windows-<arch>-setup.exe`。校验和不在这里生成，
+统一由 Release 的 SHA256SUMS.txt 覆盖。
 """
 import argparse
-import hashlib
 import json
 import shutil
 import subprocess
@@ -34,6 +34,18 @@ version = config['version']
 binary_dir = (args.binary_dir or Path('target/release')).resolve()
 output = args.output.resolve()
 output.mkdir(parents=True, exist_ok=True)
+
+# NSIS 3 靠 BOM 判断脚本编码：没有 BOM 时按系统 ANSI 代码页解码。macOS/Linux 的
+# locale 是 UTF-8，碰巧读得对；Windows runner 是 CP1252，安装器里的中文会变成
+# "ç¨‹åºæ–‡ä»¶" 那种乱码，而且编译不报错。编辑器另存时很容易把 BOM 丢掉，
+# 而这种回归在本机 macOS 上完全看不出来，所以构建前直接检查。
+installer_script = root / 'packaging/windows/installer.nsi'
+if not installer_script.read_bytes().startswith(b'\xef\xbb\xbf'):
+    raise SystemExit(
+        f'{installer_script} 缺少 UTF-8 BOM —— NSIS 在 Windows 上按 CP1252 解码，'
+        '安装器里的中文会显示成乱码（macOS 本地编译反而正常，很难发现）。\n'
+        '修复：用编辑器「另存为 → UTF-8 with BOM」。'
+    )
 
 # 四段版本：VIProductVersion 只接受 x.x.x.x。
 parts = (version.split('.') + ['0', '0', '0'])[:4]
@@ -67,7 +79,7 @@ try:
         f'-DBINARYDIR={staging}',
         f'-DICONFILE={root / "crates/portal-gui/icons/icon.ico"}',
         f'-DOUTFILE={installer}',
-        str(root / 'packaging/windows/installer.nsi'),
+        str(installer_script),
     ]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
@@ -79,6 +91,5 @@ try:
 finally:
     shutil.rmtree(staging, ignore_errors=True)
 
-digest = hashlib.sha256(installer.read_bytes()).hexdigest()
-(output / (name + '.sha256')).write_text(f'{digest}  {installer.name}\n', encoding='utf-8')
+# 不产出单独的 .sha256：校验和统一进 Release 的 SHA256SUMS.txt。
 print(installer)
