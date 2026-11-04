@@ -3,7 +3,7 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { MotionConfig } from 'motion-v'
 import { MiuixArrowPreference, MiuixBasicComponent, MiuixButton, MiuixCard, MiuixDropdownPreference, MiuixIcon, MiuixIconButton, MiuixProgressIndicator, MiuixSwitchPreference, MiuixSnackbarHost, showSnackbar, setThemeMode } from 'miuix-vue'
 import { Clear, Close, File, Forward, Info, Link, Refresh, SearchDevice, Settings as SettingsIcon, Update } from 'miuix-vue/icons'
-import { usePortal, formatBytes, formatRate, formatDuration, mask } from './usePortal'
+import { usePortal, formatBytes, formatRate, formatDuration, logScrollTarget, mask } from './usePortal'
 import { licenseGroups, licenseNotice } from './licenses'
 import appIcon from '../../icons/icon.png'
 
@@ -25,7 +25,7 @@ watch(confirmation, async value => {
 })
 onUnmounted(() => dialog.value?.close())
 watch(logsOpen, async open => {
-  if (open) { logFocus = document.activeElement as HTMLElement; await nextTick(); logDialog.value?.showModal(); logDialog.value?.querySelector<HTMLButtonElement>('button')?.focus() }
+  if (open) { logFocus = document.activeElement as HTMLElement; await nextTick(); logDialog.value?.showModal(); logDialog.value?.querySelector<HTMLButtonElement>('button')?.focus(); logsFollow = true; logsAnchor = null; moveLogsToBottom() }
   else { logDialog.value?.close(); logFocus?.focus() }
 })
 watch(sessionPickerOpen, async open => {
@@ -44,6 +44,42 @@ watch(licensesOpen, async open => {
 })
 onUnmounted(() => { logDialog.value?.close(); sessionDialog.value?.close(); licenseDialog.value?.close() })
 const logTime = (value: number) => new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
+// 日志列表按 sequence 升序，最新在末尾。默认吸附到底部跟随新日志；
+// 一旦用户把滚轮/键盘滚离底部，就记下视口顶部那条日志的 sequence 与像素偏移，
+// 之后每秒刷新按这个锚点回填滚动位置，不再跟随。
+// 只有锚点那条被 300 条上限回收了，才重新吸附到底。
+const logsBody = ref<HTMLElement | null>(null)
+let logsFollow = true
+let logsAnchor: number | null = null
+let logsAnchorOffset = 0
+function moveLogsToBottom() { const body = logsBody.value; if (body) body.scrollTop = body.scrollHeight }
+function onLogsScroll() {
+  const body = logsBody.value
+  if (!body) return
+  if (body.scrollHeight - body.scrollTop - body.clientHeight <= 2) { logsFollow = true; logsAnchor = null; return }
+  logsFollow = false
+  const top = body.getBoundingClientRect().top
+  for (const line of body.querySelectorAll<HTMLElement>('[data-sequence]')) {
+    const rect = line.getBoundingClientRect()
+    if (rect.bottom <= top) continue
+    logsAnchor = Number(line.dataset.sequence)
+    logsAnchorOffset = rect.top - top
+    return
+  }
+  logsAnchor = null
+}
+watch(logEntries, () => {
+  const body = logsBody.value
+  if (!body) return
+  // 锚点那条已被 300 条上限回收时这里也返回 bottom，等于重新吸附到底。
+  if (logScrollTarget(logsFollow, logsAnchor, logEntries.value) === 'bottom') {
+    logsFollow = true; logsAnchor = null; moveLogsToBottom(); return
+  }
+  if (logsAnchor == null) return
+  const anchor = body.querySelector<HTMLElement>(`[data-sequence="${logsAnchor}"]`)
+  if (!anchor) { logsFollow = true; logsAnchor = null; moveLogsToBottom(); return }
+  body.scrollTop += anchor.getBoundingClientRect().top - body.getBoundingClientRect().top - logsAnchorOffset
+}, { flush: 'post' })
 const account = computed(() => snapshot.value.account)
 // 未订购的账号后台把套餐名写成“学生”：卡片直接说明 Free，不显示套餐名，也不套“读取中”的灰字。
 const accountPlan = computed(() => { const value = account.value; return !value ? '—' : value.unpurchased ? 'Free' : value.bandwidth || value.plan || '—' })
@@ -250,7 +286,7 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate(tru
       </section>
     </main>
     <dialog ref="dialog" class="confirm-dialog" aria-labelledby="dialog-title" @cancel.prevent="answer(false)"><template v-if="confirmation"><h2 id="dialog-title">{{ confirmation.title }}</h2><p>{{ confirmation.text }}</p><div class="dialog-actions"><MiuixButton @click="answer(false)">取消</MiuixButton><MiuixButton type="primary" @click="answer(true)">{{ confirmation.label }}</MiuixButton></div></template></dialog>
-    <dialog ref="logDialog" class="logs-dialog" aria-labelledby="logs-title" @cancel.prevent="logsOpen = false"><div class="logs-heading"><h2 id="logs-title">portal-cli 日志 <span v-if="demo" class="mode-badge">模拟</span></h2><MiuixIconButton class="dialog-icon-button" aria-label="关闭日志" title="关闭日志" @click="logsOpen = false"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton></div><p class="dialog-caption">{{ demo ? '仅为 Demo 操作生成的模拟事件。' : '当前 GUI 进程与 CLI 共用认证核心的日志，不读取其他 CLI 进程。' }} 不记录账号、密码、URL 或 Cookie。</p><div class="logs-body" role="log" aria-label="客户端日志" aria-live="off"><p v-if="!logEntries.length" class="logs-empty">暂无日志，开启后执行认证操作即可查看。</p><div v-for="entry in logEntries" :key="entry.sequence" class="log-line"><time>{{ logTime(entry.timestamp_ms) }}</time><span class="log-level" :class="entry.level">{{ entry.level.toUpperCase() }}</span><code>{{ entry.code }}</code><span>{{ entry.message }}</span></div></div><div class="logs-footer"><span>{{ logEntries.length }} / 300 条 · 关闭日志开关即清空</span><MiuixIconButton class="dialog-icon-button" aria-label="清空日志" title="清空日志" @click="clearLogs"><MiuixIcon :icon="Clear" :size="18" /></MiuixIconButton></div></dialog>
+    <dialog ref="logDialog" class="logs-dialog" aria-labelledby="logs-title" @cancel.prevent="logsOpen = false"><div class="logs-heading"><h2 id="logs-title">portal-cli 日志 <span v-if="demo" class="mode-badge">模拟</span></h2><MiuixIconButton class="dialog-icon-button" aria-label="关闭日志" title="关闭日志" @click="logsOpen = false"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton></div><p class="dialog-caption">{{ demo ? '仅为 Demo 操作生成的模拟事件。' : '当前 GUI 进程与 CLI 共用认证核心的日志。' }}</p><div ref="logsBody" class="logs-body" role="log" aria-label="客户端日志" aria-live="off" @scroll.passive="onLogsScroll"><p v-if="!logEntries.length" class="logs-empty">暂无日志，开启后执行认证操作即可查看。</p><div v-for="entry in logEntries" :key="entry.sequence" class="log-line" :data-sequence="entry.sequence"><time>{{ logTime(entry.timestamp_ms) }}</time><span class="log-level" :class="entry.level">{{ entry.level.toUpperCase() }}</span><span class="log-text"><code>{{ entry.code }}</code><span>{{ entry.message }}</span></span></div></div><div class="logs-footer"><span>{{ logEntries.length }} / 300 条</span><MiuixIconButton class="dialog-icon-button" aria-label="清空日志" title="清空日志" @click="clearLogs"><MiuixIcon :icon="Clear" :size="18" /></MiuixIconButton></div></dialog>
     <dialog ref="sessionDialog" class="confirm-dialog session-picker" aria-labelledby="picker-title" @cancel.prevent="sessionPickerOpen = false"><h2 id="picker-title">选择要下线的会话</h2><p>无法唯一确定本次连接，请选择目标；不会自动下线其他设备。</p><div class="picker-list"><button v-for="row in snapshot.sessions" :key="row.radacctid" class="picker-session" :disabled="locked" @click="selectForDisconnect(row.radacctid)"><strong>会话 {{ row.radacctid }}</strong><span>{{ row.framedipaddress || 'IP 未上报' }} · {{ mask(row.username) }}</span></button><p v-if="!snapshot.sessions.length">暂无可选会话，请打开认证后台确认远端状态。</p></div><div class="dialog-actions"><MiuixButton @click="sessionPickerOpen = false">取消</MiuixButton><MiuixButton v-if="!snapshot.sessions.length" @click="openSite">认证后台</MiuixButton></div></dialog>
     <dialog ref="licenseDialog" class="logs-dialog license-dialog" aria-labelledby="licenses-title" @cancel.prevent="licensesOpen = false"><div class="logs-heading"><h2 id="licenses-title">开源软件声明</h2><MiuixIconButton class="dialog-icon-button" aria-label="关闭开源软件声明" title="关闭开源软件声明" @click="licensesOpen = false"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton></div><MiuixCard class="license-notice-card"><span class="license-notice-icon"><MiuixIcon :icon="Info" :size="20" /></span><div class="license-notice-copy"><strong>自由软件 · GPL 3.0-only</strong><p>{{ licenseNotice }}</p></div></MiuixCard><div class="license-groups"><section v-for="group in licenseGroups" :key="group.title" class="license-group"><h3>{{ group.title }}</h3><MiuixCard class="license-group-card"><MiuixArrowPreference v-for="entry in group.entries" :key="entry.name" :title="entry.name" :summary="entry.summary" :disabled="locked" @click="openUrl(entry.url)"><template #end><span class="license-tag">{{ entry.license }}</span></template></MiuixArrowPreference></MiuixCard></section></div></dialog>
     <MiuixSnackbarHost />

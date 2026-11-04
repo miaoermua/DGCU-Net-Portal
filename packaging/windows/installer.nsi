@@ -80,7 +80,13 @@ VIAddVersionKey "FileDescription" "${PRODUCT_NAME} 安装程序"
   !define MUI_UNICON "${ICONFILE}"
 !endif
 !define MUI_ABORTWARNING
-!define MUI_FINISHPAGE_NOAUTOCLOSE
+; 完成页给一个默认勾选的“启动 DGCU-Net-Portal”。MUI 用 Exec 启动，Exec 只创建
+; 进程就返回，界面进程常驻也不会把安装器挂住。
+; 不定义 MUI_FINISHPAGE_RUN_NOTCHECKED，复选框默认就是勾上的。
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${GUI_EXE}"
+!define MUI_FINISHPAGE_RUN_TEXT "启动 DGCU-Net-Portal(&R)"
+; 不定义 MUI_FINISHPAGE_NOAUTOCLOSE：装完直接跳到完成页，点“完成”即关闭安装器，
+; 不停在安装日志页让人再点一次“下一步”。卸载页保留日志，故 UN 版仍定义。
 !define MUI_UNFINISHPAGE_NOAUTOCLOSE
 
 !insertmacro MUI_PAGE_WELCOME

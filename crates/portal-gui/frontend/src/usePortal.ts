@@ -17,6 +17,12 @@ export function formatBytes(value: number | undefined | null): string {
   return `${value.toFixed(1)} ${units[unit]}`
 }
 export const formatRate = (value: number | null | undefined): string => value == null ? '等待更新' : `${formatBytes(value)}/s`
+// 日志弹窗的滚动去向：跟随最新（贴底）还是停在用户当前看的位置。
+// 用户没动过滚轮、没记下锚点、或者锚点那条已经被 300 条上限回收，都回到贴底。
+export function logScrollTarget(following: boolean, anchor: number | null, entries: LogEntry[]): 'bottom' | 'hold' {
+  if (following || anchor == null) return 'bottom'
+  return entries.some(entry => entry.sequence === anchor) ? 'hold' : 'bottom'
+}
 // 后台计费未更新时返回的是空速率（None）而不是 0：只有真正算出区间时才认为有结果。
 const isRateReady = (rate: Rate | undefined): rate is Rate => !!rate && (rate.upload_bps != null || rate.download_bps != null || rate.sample_seconds != null)
 export function formatDuration(value: number): string { return [Math.floor(value / 3600), Math.floor(value % 3600 / 60), value % 60].map(v => String(v).padStart(2, '0')).join(':') }
@@ -30,7 +36,7 @@ const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps
 const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet_direct: 'reachable', internet: 'reachable', internet_latency_ms: 38 }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.5.16')
+  const version = ref('0.5.17')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')

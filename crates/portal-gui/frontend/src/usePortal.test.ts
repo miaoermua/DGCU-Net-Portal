@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createPortalState, defaultSettings, emptySnapshot, formatRate, normalizeSettings } from './usePortal'
+import { createPortalState, defaultSettings, emptySnapshot, formatRate, logScrollTarget, normalizeSettings } from './usePortal'
 import { licenseGroups } from './licenses'
-import type { DesktopBridge, Session, Settings } from './types'
+import type { DesktopBridge, LogEntry, Session, Settings } from './types'
 
 const row = (id: string): Session => ({ radacctid: id, username: 'synthetic-user', framedipaddress: '192.0.2.1', acctstarttime: '', acctsessiontime: 60, acctinputoctets: 600, acctoutputoctets: 6000 })
 // passive 是后台轮询与事件返回的快照；one_session 与后端一致，随凭据保存方式变化。
@@ -246,6 +246,15 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     expect(formatRate(null)).toBe('等待更新')
     expect(formatRate(0)).toBe('0.0 B/s')
     expect(formatRate(1048576)).toBe('1.0 MiB/s')
+  })
+  it('follows the newest log line until the anchored entry is recycled', () => {
+    const entry = (sequence: number): LogEntry => ({ sequence, timestamp_ms: 0, level: 'info', code: 'portal.form', message: '正在读取认证表单' })
+    const entries = [entry(301), entry(302), entry(303)]
+    // 没滚过就贴底；滚走后停在锚点那条；锚点被 300 条上限回收、或记不到锚点，都回到贴底。
+    expect(logScrollTarget(true, null, entries)).toBe('bottom')
+    expect(logScrollTarget(false, 302, entries)).toBe('hold')
+    expect(logScrollTarget(false, 300, entries)).toBe('bottom')
+    expect(logScrollTarget(false, null, entries)).toBe('bottom')
   })
   it('keeps the last rate and says so only when a manual refresh returns identical accounting', async () => {
     const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
