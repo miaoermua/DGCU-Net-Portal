@@ -3,6 +3,7 @@
 //! `redial_tick` 处理会话掉线后的自动重拨，`retry_after_failure` 处理轮询
 //! 因网络/网卡失败后的自愈；两条路径共用 `ReconnectCheckpoint` 与
 //! `retryable_connection_error` 的错误分类。
+use super::session::{CollectResult, CollectTicket};
 use super::{Controller, SessionLoss};
 use crate::{
     cmcc::Phase,
@@ -79,9 +80,13 @@ impl ReconnectCheckpoint {
             redial_hold,
             current_network: _,
             last_poll_failure: _,
-            // "最近一次成功采集"是观测事实，不属于一次连接事务：回滚它会把刚发生
-            // 的成功采集抹掉，界面反而误报数据陈旧。
-            last_collect_at: _,
+            // 心跳是观测事实，不属于一次连接事务：回滚它会误报数据陈旧。
+            collect_clock: _,
+            // 代次与票据序号是单调计数器，回滚它们会让已经作废的在途结果重新
+            // 变成"有效"，因此只保留、不恢复。
+            connection_generation: _,
+            collect_attempt: _,
+            applied_collect: _,
             bound_network,
             resolve_network: _,
         } = c;
@@ -159,18 +164,29 @@ impl Controller {
             .apply(Duration::from_secs(30 * (1 << self.attempts)))
     }
 
-    /// Check the selected session on the short drop-detection cadence. This is the
-    /// app's only periodic `/sessions` caller: the same response also feeds the
-    /// controller state that the rate observer settles later.
-    pub async fn redial_tick<F: Fn(Phase)>(&mut self, progress: F) {
+    /// 常规采集的会话侧提交：把锁外拿到的结果写回控制器，再做原有的重拨判定。
+    ///
+    /// 过期结果（连接已换、已下线，或有更新的采集先提交）整份丢弃，一个字段都不写
+    /// ——包括 `current_network` 和 `missing`。这是"旧响应不覆盖新状态"的落点。
+    pub(crate) async fn finish_session_collect<F: Fn(Phase)>(
+        &mut self,
+        ticket: CollectTicket,
+        result: CollectResult,
+        progress: F,
+    ) {
         // 监测与重拨解耦：只要登录了后台就轮询会话，不因 `paused` 或
         // `reconnect_mode` 关闭而停；是否重拨由下面的条件单独决定。
         // backend-only 登录会置 `paused = true`，原实现因此永远看不到会话消失。
         if self.api.is_none() {
             return;
         }
-        match self.sync_sessions().await {
-            Ok(()) => {
+        if !self.accept_collection(&ticket) {
+            return;
+        }
+        self.apply_network(&ticket, &result);
+        match result.rows {
+            Ok(rows) => {
+                self.commit_rows(rows);
                 self.bind_new_session();
                 self.update_session_status();
                 self.network_attempts = 0;
@@ -178,8 +194,8 @@ impl Controller {
             }
             Err(error) => {
                 // 请求失败只算"连接异常"的证据，不能据此断言任何会话消失；
-                // 只有传输层失败/超时算本机异常（由 `sync_sessions` 记下），
-                // 后台错误与解析失败不算。
+                // 只有传输层失败/超时算本机异常，后台错误与解析失败不算。
+                self.note_poll_failure(&error);
                 self.logs.error(&error);
                 if self.loss.is_none() {
                     self.message = error.to_string();
@@ -375,5 +391,20 @@ impl Controller {
                 self.message = "自动重连被认证系统拒绝，已暂停；请手动检查账号和网络".into();
             }
         }
+    }
+}
+
+#[cfg(test)]
+impl Controller {
+    /// 一步到位的采集：领票 → 采集 → 提交，全程在调用方的持锁区间内。
+    ///
+    /// 生产路径由 daemon 的 `State::session_tick()` 驱动，中间的采集被挪到了锁外；
+    /// 这个入口只给需要"同步跑完一轮"的单元测试用。
+    pub async fn redial_tick<F: Fn(Phase)>(&mut self, progress: F) {
+        let Some(ticket) = self.begin_collect() else {
+            return;
+        };
+        let result = Self::collect(&ticket).await;
+        self.finish_session_collect(ticket, result, progress).await;
     }
 }

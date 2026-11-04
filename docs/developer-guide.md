@@ -40,7 +40,7 @@ cargo run -p portal-cli -- diagnose interfaces
 cargo run -p portal-cli -- service enable
 ```
 
-密码不通过命令行参数传递。`up` 与 `config account` 在终端交互输入，密码走 `rpassword` 隐藏输入（`crates/portal-cli/src/bin/portal-cli.rs:76-86`）；`up` 通过本地 IPC 把交互输入交给 daemon，`config account` 会把账号写进设置并强制 `credential_store=system`、密码存进系统凭据库（`bin/portal-cli.rs:232-240`）。
+密码不通过命令行参数传递。`up` 与 `config account` 在终端交互输入，密码走 `rpassword` 隐藏输入（`crates/portal-cli/src/bin/portal-cli.rs` 的 `credentials()`）；`up` 通过本地 IPC 把交互输入交给 daemon，`config account` 会把账号写进设置并强制 `credential_store=system`、密码存进系统凭据库（同文件的 `apply_account()`）。
 
 `config set` 支持的键与取值（`bin/portal-cli.rs:94-149`）：
 
@@ -56,7 +56,9 @@ cargo run -p portal-cli -- service enable
 | `auto-redial` | `off`、`new`、`terminate` |
 | `traffic` | `on`、`off` |
 
-`config set` 与 `config account` 在配置**保存成功之后**会向运行中的 daemon 发一次 `Reload`，让新配置立刻生效（`bin/portal-cli.rs` 的 `reload_daemon_if_running()`）。daemon 没在运行时命令仍然成功，只提示"将在下次启动时生效"；保存本身失败则直接报错，不会误报重新加载成功。
+`config set` 与 `config account` 在配置**保存成功之后**会向运行中的 daemon 发一次 `Reload`（`bin/portal-cli.rs` 的 `reload_daemon()`），三种结果分开处理：daemon 确认加载时静默通过；明确拒绝时提示原因；未运行或连不上时提示"将在下次启动时生效"。保存本身失败则直接报错，不会误报重新加载。
+
+`config account` 还要写系统凭据库，两步是独立的：配置已落盘后，即使密码保存失败也会照常 Reload（否则 daemon 会继续用旧账号配置）。凭据失败时命令以失败退出，并在提示里同时给出凭据错误和 Reload 结果（`account_outcome()`）。
 
 ### 目前未接入的命令
 
@@ -87,7 +89,7 @@ cargo run -p portal-cli -- service enable
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | `server` | `http://172.18.100.65/lfradius/` | LFRadius 后台地址（`lib.rs:21`）；必须是 http(s)、不含凭据、query 与 fragment（`lib.rs:250-272`） |
-| `auth_url` | `{server}web/admin/login` | 只用于界面上的“打开认证网站”，认证流程不读它（`usePortal.ts:226`、`crates/portal-gui/src/main.rs:298-304`） |
+| `auth_url` | `{server}web/admin/login` | 只用于界面上的“打开认证网站”，认证流程不读它（`usePortal.ts:226`、`crates/portal-gui/src/main.rs:342-348`） |
 | `probe_url` | `http://captive.apple.com/hotspot-detect.html` | 公共探测的起点，另有两个内置备用探测地址 |
 | `paip` | `172.18.100.65` | Portal 侧地址，写进入口 URL；必须是合法 IP（`settings.rs:192-194`） |
 | `basip` | 空 | 空表示沿用认证表单返回的隐藏值；填写后才覆盖，必须是合法 IP（`settings.rs:195-199`） |
@@ -152,7 +154,7 @@ cargo run -p portal-gui
 
 前端只有 8 个源文件、没有组件目录：三个页面（网络、设置、关于）都在 `App.vue` 里，状态与动作集中在 `usePortal.ts`，类型在 `types.ts`，另有 `licenses.ts`、`compact.css`、`main.ts`、`miuix-icons.d.ts` 与 `usePortal.test.ts`。
 
-`crates/portal-gui/src/main.rs:465-484` 注册的 Tauri 命令共 18 个：
+`crates/portal-gui/src/main.rs:509-528` 注册的 Tauri 命令共 18 个：
 
 ```text
 initial          connect         refresh          snapshot
@@ -172,11 +174,11 @@ GUI 负责账号、网卡、刷新、流量展示、日志查看、托盘和桌�
 | `tray_startup`（托盘启动） | 隐藏窗口 | 收进托盘常驻 |
 | `lightweight`（轻量模式，默认） | 显示窗口 | 直接退出 GUI 并释放托盘，只留独立的后台服务 |
 
-daemon 是独立进程、认证不受影响，任何模式下都不会因为关掉窗口而中断。运行方式每次关闭窗口时重读设置，保存后即时生效、无需重启（`main.rs:453-464`）；保存时若运行方式变了会重建托盘菜单，免得切到轻量模式后仍留着重复项（`main.rs:287-294`）。关窗后的去向由纯函数 `close_action` 决定（`main.rs:344-349`），只有 `lightweight` 退进程，其余收进托盘。
+daemon 是独立进程、认证不受影响，任何模式下都不会因为关掉窗口而中断。运行方式每次关闭窗口时重读设置，保存后即时生效、无需重启（`main.rs:497-508`）；保存时若运行方式变了会重建托盘菜单，免得切到轻量模式后仍留着重复项（`main.rs:334-340`）。关窗后的去向由纯函数 `close_action` 决定（`main.rs:388-393`），只有 `lightweight` 退进程，其余收进托盘。
 
-收进托盘时 macOS 上会一并撤掉 Dock 图标（`main.rs:358-368`）：程序还在跑但没有可见界面，Dock 里挂个点不动的图标只会让人以为卡住；托盘图标不受影响，两者是两套机制。托盘唤回窗口时先把 Dock 图标放回去再显示窗口（`main.rs:371-380`），顺序反了 macOS 会把刚显示的窗口当成后台应用的一部分。非 macOS 平台没有 Dock，`set_dock_visible` 是空操作。`tray_startup` 启动时窗口就是隐藏的，因此启动即撤掉 Dock 图标（`main.rs:439-446`）。
+收进托盘时 macOS 上会一并撤掉 Dock 图标（`main.rs:401-412`）：程序还在跑但没有可见界面，Dock 里挂个点不动的图标只会让人以为卡住；托盘图标不受影响，两者是两套机制。托盘唤回窗口时先把 Dock 图标放回去再显示窗口（`main.rs:416-427`），顺序反了 macOS 会把刚显示的窗口当成后台应用的一部分。非 macOS 平台没有 Dock，`set_dock_visible` 是空操作。`tray_startup` 启动时窗口就是隐藏的，因此启动即撤掉 Dock 图标（`main.rs:487-492`）。
 
-托盘菜单固定三项：“打开主窗口”“进入轻量模式”“退出服务”；`lightweight` 下“进入轻量模式”与关窗重复，菜单中不展示该项（`main.rs:22-35`）。“进入轻量模式”只调用 `app.exit(0)` 结束 GUI 进程，daemon 与认证不受影响，且不会写回 `run_mode`——托盘的一次点击不改变用户保存的运行方式（`main.rs:426-428`）；只有“退出服务”会发 `Request::Shutdown`、按需停止登录启动任务，并由前端确认后再退（`main.rs:325-332`、`main.rs:429-435`）。确认框在前端，所以“退出服务”必须先把窗口唤回再发事件——收在托盘里、或 `tray_startup` 启动时窗口是隐藏的，只发事件会让用户点了菜单却看不到任何反应。左键单击托盘图标唤回主窗口、右键弹出菜单；Linux 的 appindicator 不支持这个区分，按桌面环境原生行为处理（`main.rs:411-423`）。唤回窗口时除了 `show()` 还会 `unminimize()`：最小化状态下 `show()` 只恢复可见性，窗口仍缩在程序坞/任务栏里，看起来同样像没反应。
+托盘菜单固定三项：“打开主窗口”“进入轻量模式”“退出服务”；`lightweight` 下“进入轻量模式”与关窗重复，菜单中不展示该项（`main.rs:22-35`）。“进入轻量模式”只调用 `app.exit(0)` 结束 GUI 进程，daemon 与认证不受影响，且不会写回 `run_mode`——托盘的一次点击不改变用户保存的运行方式（`main.rs:473-475`）；只有“退出服务”会发 `Request::Shutdown`、按需停止登录启动任务，并由前端确认后再退（`main.rs:369-376`、`main.rs:473-482`）。确认框在前端，所以“退出服务”必须先把窗口唤回再发事件——收在托盘里、或 `tray_startup` 启动时窗口是隐藏的，只发事件会让用户点了菜单却看不到任何反应。左键单击托盘图标唤回主窗口、右键弹出菜单；Linux 的 appindicator 不支持这个区分，按桌面环境原生行为处理（`main.rs:458-469`）。唤回窗口时除了 `show()` 还会 `unminimize()`：最小化状态下 `show()` 只恢复可见性，窗口仍缩在程序坞/任务栏里，看起来同样像没反应。
 
 轻量模式关掉窗口后留下的后台 `portal-cli daemon` 常驻内存约 3.7M；带 Tauri 与 WebView2 的界面进程约 80M，只在界面打开时存在。
 

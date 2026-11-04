@@ -21,6 +21,8 @@ mod connection;
 mod reconnect;
 mod session;
 
+pub(crate) use self::session::ManualRefresh;
+
 #[cfg(test)]
 mod tests;
 
@@ -54,6 +56,48 @@ pub struct Snapshot {
 /// 30 秒 ≈ 6 个采集周期、3 个请求超时上限。因此一次卡住的请求或连续漏掉两三个
 /// 周期都不会被误判成停滞，而真正停摆的采集链路最迟半分钟就能被界面看出来。
 const COLLECT_STALL: Duration = Duration::from_secs(30);
+
+/// 采集心跳：`Controller` 写，daemon 的 `Status` 路径读。
+///
+/// 用 `std::sync::Mutex` 而不是控制器那把异步锁：临界区只有一次 `Instant` 读写
+/// （纳秒级、不跨 await），而 `Status` 必须在不取控制器锁的前提下算实时年龄，
+/// 否则采集停摆时要等下一次快照发布才看得出来。
+#[derive(Clone, Default)]
+pub(crate) struct CollectClock(Arc<std::sync::Mutex<Option<Instant>>>);
+
+impl CollectClock {
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Instant>> {
+        // 这里只存一个 Instant，没有跨字段不变量；即使持锁线程 panic 过，
+        // 取回内层值也仍然是可用的数据。
+        self.0.lock().unwrap_or_else(|error| error.into_inner())
+    }
+    /// 记录一次成功采集。
+    pub(crate) fn mark(&self) {
+        *self.slot() = Some(Instant::now());
+    }
+    /// 连接释放：没有连接就没有"采集新鲜度"可言。
+    fn clear(&self) {
+        *self.slot() = None;
+    }
+    /// 当前新鲜度：`(年龄毫秒, 是否停滞)`。未认证或没有成功采集过都是"无信息"。
+    pub(crate) fn health(&self, authenticated: bool) -> (Option<u64>, bool) {
+        if !authenticated {
+            return (None, false);
+        }
+        match *self.slot() {
+            Some(at) => {
+                let age = at.elapsed();
+                (Some(age.as_millis() as u64), age >= COLLECT_STALL)
+            }
+            None => (None, false),
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn set(&self, at: Option<Instant>) {
+        *self.slot() = at;
+    }
+}
+
 /// 原目标会话消失后的分级结论。
 ///
 /// 后台没有 MAC 或可靠的设备标识，`framedipaddress` 只是本机网卡的地址，
@@ -109,18 +153,25 @@ pub struct Controller {
     current_network: Option<network::NetworkContext>,
     /// 最近一次轮询失败的时刻，作为"连接异常"的证据；成功后清空。
     last_poll_failure: Option<Instant>,
-    /// 最近一次**成功常规采集**（`sync_sessions`）的时刻，用于向界面暴露数据新鲜度。
-    ///
-    /// 与 `last_poll_failure` 相反：失败不刷新它，只有拿到列表才刷新。它不参与
-    /// 在线状态判定，只回答"这份数据是多久以前拿到的"。
-    last_collect_at: Option<Instant>,
+    /// 采集心跳。写在这里是因为判定仍然属于控制器状态，但它是共享句柄：
+    /// daemon 的 `Status` 路径不取控制器锁也能读出实时年龄。
+    collect_clock: CollectClock,
     /// 当前 client 绑定的网卡上下文。与实时解析结果不一致时重建 client。
     bound_network: Option<network::NetworkContext>,
     /// 网卡解析入口。默认是真实的 `network::resolve`；测试里替换成受控实现，
     /// 就能在不改动本机网络的前提下验证"地址变化 → 重建 client"。
     resolve_network: NetworkResolver,
+    /// 连接代次：任何"会让在途采集结果失效"的状态变更都 +1。
+    ///
+    /// 采集请求现在在锁外执行，返回时控制器可能已经换了连接（重新登录、下线、
+    /// 改了后台地址）。提交前比对代次，不一致就整份丢弃——旧响应不能覆盖新状态。
+    connection_generation: u64,
+    /// 采集票据序号：每次领票 +1，用来拒绝乱序返回的旧结果。
+    collect_attempt: u64,
+    /// 已经应用到状态里的最大票据序号。
+    applied_collect: u64,
 }
-type NetworkResolver =
+pub(crate) type NetworkResolver =
     Arc<dyn Fn(&str) -> Result<Option<network::NetworkContext>, String> + Send + Sync>;
 
 impl Default for Controller {
@@ -164,9 +215,12 @@ impl Controller {
             redial_hold: false,
             current_network: None,
             last_poll_failure: None,
-            last_collect_at: None,
+            collect_clock: CollectClock::default(),
             bound_network: None,
             resolve_network: Arc::new(network::resolve),
+            connection_generation: 0,
+            collect_attempt: 0,
+            applied_collect: 0,
         }
     }
     /// 丢掉连接与会话状态，但保留"原会话丢失"的结论。
@@ -186,7 +240,10 @@ impl Controller {
         self.rates_epoch = self.rows_epoch;
         // 没有连接就没有"采集新鲜度"可言：重新登录后由第一次成功采集重新计时，
         // 否则界面会在登出期间一直显示数据陈旧。
-        self.last_collect_at = None;
+        self.collect_clock.clear();
+        // 连接没了：所有还在路上的采集结果都必须作废，否则它们回来时会往一个
+        // 已经清空（甚至换了账号）的控制器里写 rows。
+        self.bump_connection();
         self.paused = true;
         self.missing = 0;
         self.attempts = 0;
@@ -331,14 +388,9 @@ impl Controller {
             None => self.message.clone(),
         };
         // 数据新鲜度只对"已登录后台"有意义：没有 api 就没有采集，登出期间不该
-        // 显示成"数据陈旧"。`last_collect_at` 在 `release()` 里会被清空，所以重新
-        // 登录后要等第一次成功采集才重新计时。
-        let collect_age_ms = match (&self.api, self.last_collect_at) {
-            (Some(_), Some(at)) => Some(at.elapsed().as_millis() as u64),
-            _ => None,
-        };
-        let collector_stalled =
-            collect_age_ms.is_some_and(|age| age >= COLLECT_STALL.as_millis() as u64);
+        // 显示成"数据陈旧"。心跳在 `release()` 里会被清空，所以重新登录后要等
+        // 第一次成功采集才重新计时。
+        let (collect_age_ms, collector_stalled) = self.collect_clock.health(self.api.is_some());
         Snapshot {
             status: self.status.clone(),
             message,
@@ -354,43 +406,16 @@ impl Controller {
         }
     }
 
-    /// 重新解析网卡；地址变了就用新地址重建 client。返回是否发生了重建。
+    /// 采集心跳的共享句柄：daemon 的 `Status` 路径用它现算新鲜度。
+    pub(crate) fn clock(&self) -> CollectClock {
+        self.collect_clock.clone()
+    }
+    /// 连接身份变了：作废所有在途采集结果。
     ///
-    /// 合盖唤醒、Wi-Fi 漫游、插拔网线都会换掉 IPv4，而 `local_address` 是钉在
-    /// client 上的：不重建就会对每个请求立刻失败。Cookie 在共享 jar 里，重建
-    /// 不影响登录态，也不需要重新走认证流程。
-    ///
-    /// 轮询（`session::refresh`）与重拨（`reconnect::redial_tick`）都要用它，
-    /// 所以放在共享原语层，避免两个兄弟模块互相依赖。
-    fn rebind_changed_network(&mut self) -> bool {
-        // 解析失败（例如短暂读不到 MAC）时不动现有绑定，等下一次轮询再判断。
-        let Ok(current) = (self.resolve_network)(&self.settings.interface_name) else {
-            // 地址未知：本地 IP 不能作为"被挤下线"的证据。
-            self.current_network = None;
-            return false;
-        };
-        // 每次成功解析都更新，即使地址没变：判定要用的是"现在的"本机 IP。
-        self.current_network = current.clone();
-        if current == self.bound_network {
-            return false;
-        }
-        let Some(api) = self.api.as_mut() else {
-            return false;
-        };
-        let local = current
-            .as_ref()
-            .and_then(|context| context.ipv4.parse::<IpAddr>().ok());
-        match api.rebind(local) {
-            Ok(()) => {
-                self.bound_network = current;
-                self.logs.record(crate::logging::Event::NetworkRebind);
-                true
-            }
-            Err(_) => {
-                self.logs.record(crate::logging::Event::NetworkRebindFailed);
-                false
-            }
-        }
+    /// 只加一，不重置。领票时带走的代次与这里的值不一致，提交就会被丢弃，因此
+    /// 不需要在提交侧追踪"谁改了什么"。
+    fn bump_connection(&mut self) {
+        self.connection_generation = self.connection_generation.wrapping_add(1);
     }
 }
 
@@ -427,6 +452,8 @@ impl Controller {
         if !server_changed && !network_changed {
             return;
         }
+        // 后台地址或网卡变了：在途的采集结果是按旧地址/旧网卡拿到的，不能提交。
+        self.bump_connection();
         if self.api.is_none() {
             self.bound_network = None;
             return;

@@ -1,6 +1,6 @@
 use super::reconnect::ReconnectCheckpoint;
 use super::*;
-use crate::tests::{row, session_json, Mock};
+use crate::tests::{row, session_json, session_json_counters, Mock};
 
 #[test]
 fn binds_unique_session_after_accounting_delay() {
@@ -51,7 +51,11 @@ async fn changed_interface_address_rebuilds_client_without_relogin() {
         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Some(context("127.0.0.1")))
     });
-    assert!(c.rebind_changed_network());
+    // 一次采集：解析到新地址后，请求要按新地址重发，而不是继续用旧绑定。
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let result = Controller::collect(&ticket).await;
+    assert!(result.rebound, "地址变了就必须重建客户端");
+    c.finish_session_collect(ticket, result, |_| {}).await;
     assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     let api = c.api.as_ref().unwrap();
     assert_eq!(
@@ -62,7 +66,10 @@ async fn changed_interface_address_rebuilds_client_without_relogin() {
     // Cookie 还在，所以不需要重新登录就能继续查询。
     assert!(api.sessions().await.is_ok());
     // 地址没再变化就不该反复重建。
-    assert!(!c.rebind_changed_network());
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let result = Controller::collect(&ticket).await;
+    c.finish_session_collect(ticket, result, |_| {}).await;
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
 }
 /// 网卡地址与后台会话的对应关系决定「自动选中本机会话」。
 ///
@@ -2167,7 +2174,8 @@ async fn collect_age_only_tracks_successful_collections() {
     assert_eq!(failed.status, "session_online");
 
     // 超过阈值：标停滞，但会话与认证结论保持最后一次确认的结果。
-    c.last_collect_at = Some(Instant::now() - Duration::from_secs(31));
+    c.collect_clock
+        .set(Some(Instant::now() - Duration::from_secs(31)));
     let stalled = c.snapshot();
     assert!(stalled.collector_stalled);
     assert!(stalled.collect_age_ms.is_some_and(|age| age >= 31_000));
@@ -2180,7 +2188,7 @@ async fn collect_age_only_tracks_successful_collections() {
     );
 
     // 采集恢复后立刻清除停滞标记。
-    c.last_collect_at = Some(Instant::now());
+    c.collect_clock.set(Some(Instant::now()));
     assert!(!c.snapshot().collector_stalled);
 }
 
@@ -2189,9 +2197,10 @@ async fn collect_age_only_tracks_successful_collections() {
 fn snapshot_hides_collect_age_after_logout() {
     let mut c = Controller {
         api: Some(PortalClient::new("http://127.0.0.1:1/").unwrap()),
-        last_collect_at: Some(Instant::now() - Duration::from_secs(600)),
         ..Default::default()
     };
+    c.collect_clock
+        .set(Some(Instant::now() - Duration::from_secs(600)));
     assert!(c.snapshot().collector_stalled, "前置条件：已登录且数据很旧");
 
     c.forget();
@@ -2228,4 +2237,1013 @@ async fn disabled_policy_keeps_collecting() {
     c.rate_tick();
     assert_eq!(c.rates_epoch, c.rows_epoch);
     assert!(c.latest_rates.is_empty());
+}
+
+// ---- 手动刷新与流量结算解耦 ----
+
+/// 建一个只有后台客户端、没有会话状态的控制器，用于"手动刷新"用例。
+/// 会话数据全部由 mock 的 `script_sessions` 提供，测试只关心 refresh 的产出。
+async fn controller_for_refresh(
+    mock: &Mock,
+    traffic_enabled: bool,
+    refresh_policy: crate::settings::RefreshPolicy,
+) -> Controller {
+    let settings = Settings {
+        server: mock.base.clone(),
+        traffic_enabled,
+        refresh_policy,
+        ..Default::default()
+    };
+    let mut c = Controller::new(settings);
+    c.connect(
+        Credential::new("test-user".into(), "secret".into()),
+        "",
+        true,
+        |_| {},
+    )
+    .await
+    .expect("mock 后台应接受后台登录");
+    c
+}
+
+/// Enabled + 流量统计开启：手动刷新仍然立即结算并发布速率。
+#[tokio::test]
+async fn manual_refresh_settles_immediately_when_enabled() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json_counters(
+            "acct-1",
+            "192.0.2.2",
+            120,
+            2_024,
+            3_048,
+        )],
+    ]);
+    let mut c =
+        controller_for_refresh(&mock, true, crate::settings::RefreshPolicy::OneMinute).await;
+    // 连接时已用 60 秒那帧建立基线，手动刷新拿到 120 秒那帧，区间正好 60 秒。
+    c.refresh().await.expect("手动刷新应成功");
+
+    let rate = &c.latest_rates["acct-1"];
+    assert_eq!(rate.sample_seconds, Some(60));
+    assert_eq!(rate.download_bps, Some(1_000.0 / 60.0));
+    assert_eq!(rate.upload_bps, Some(1_000.0 / 60.0));
+    assert_eq!(c.rates_epoch, c.rows_epoch, "手动刷新消费了这一代数据");
+}
+
+/// Disabled + 流量统计开启：手动刷新照样取数据，但不发布速率、也不留基线。
+#[tokio::test]
+async fn manual_refresh_does_not_publish_rates_when_disabled() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json_counters(
+            "acct-1",
+            "192.0.2.2",
+            120,
+            2_024,
+            3_048,
+        )],
+    ]);
+    let mut c = controller_for_refresh(&mock, true, crate::settings::RefreshPolicy::Disabled).await;
+    c.refresh().await.expect("关闭结算不影响手动刷新");
+
+    assert_eq!(c.rows.len(), 1, "会话数据仍然更新");
+    assert!(c.latest_rates.is_empty(), "关闭态下不发布任何速率");
+    assert_eq!(c.rates_epoch, c.rows_epoch);
+
+    // 没有留下可结算的基线：拿一份更晚的样本做差分只会得到"等待计费更新"。
+    let rates = c.accounting.update(&[row("acct-1", 180, 9_000, 9_000)]);
+    assert!(
+        rates["acct-1"].sample_seconds.is_none(),
+        "手动刷新不得在关闭态留下长期基线"
+    );
+}
+
+/// Disabled 下连续两次手动刷新：第二次也不许拿第一次的样本算出速率。
+/// 这是改造前真实的漏点（旧实现在这里会发布一个 60 秒区间的速率）。
+#[tokio::test]
+async fn repeated_manual_refresh_while_disabled_never_publishes_rates() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json_counters(
+            "acct-1",
+            "192.0.2.2",
+            120,
+            2_024,
+            3_048,
+        )],
+        vec![session_json_counters(
+            "acct-1",
+            "192.0.2.2",
+            180,
+            3_024,
+            4_048,
+        )],
+    ]);
+    let mut c = controller_for_refresh(&mock, true, crate::settings::RefreshPolicy::Disabled).await;
+
+    c.refresh().await.expect("第一次手动刷新应成功");
+    assert!(c.latest_rates.is_empty());
+    c.refresh().await.expect("第二次手动刷新应成功");
+    assert!(c.latest_rates.is_empty(), "连续刷新也不能发布速率");
+
+    let rates = c.accounting.update(&[row("acct-1", 240, 9_000, 9_000)]);
+    assert!(
+        rates["acct-1"].sample_seconds.is_none(),
+        "两次刷新都没留基线"
+    );
+}
+
+/// 流量统计关闭时，手动刷新即使策略开启也不能发布速率。
+#[tokio::test]
+async fn manual_refresh_publishes_nothing_when_traffic_disabled() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json_counters(
+            "acct-1",
+            "192.0.2.2",
+            120,
+            2_024,
+            3_048,
+        )],
+    ]);
+    let mut c =
+        controller_for_refresh(&mock, false, crate::settings::RefreshPolicy::OneMinute).await;
+    c.refresh().await.expect("手动刷新应成功");
+
+    assert_eq!(c.rows.len(), 1);
+    assert!(c.latest_rates.is_empty(), "流量统计关闭时不发布速率");
+}
+
+// ---- 第二阶段：锁外采集的提交校验 ----
+
+/// 只比较会话 id：`OnlineSession` 没有 `PartialEq`，而这些用例关心的就是
+/// "哪一代会话被写进去了"。
+fn ids(rows: &[OnlineSession]) -> Vec<String> {
+    rows.iter().map(|row| row.radacctid.clone()).collect()
+}
+
+/// 旧请求晚于新连接返回：整份丢弃，不能把旧会话写回新连接。
+#[tokio::test]
+async fn stale_collection_cannot_overwrite_a_new_connection() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json("acct-old", "192.0.2.9")],
+    ]);
+    let mut c =
+        controller_for_refresh(&mock, false, crate::settings::RefreshPolicy::OneMinute).await;
+
+    // 票据先领出去，请求在"路上"；此时用户重新登录（内部 clear → 代次 +1）。
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let result = Controller::collect(&ticket).await;
+    c.clear();
+    c.rows = vec![row("fresh", 10, 10, 10)];
+
+    c.finish_session_collect(ticket, result, |_| {}).await;
+    assert_eq!(c.rows.len(), 1);
+    assert_eq!(c.rows[0].radacctid, "fresh", "旧响应不能覆盖新连接");
+}
+
+/// 下线期间返回的响应不能重新写入会话数据。
+#[tokio::test]
+async fn collection_returning_after_logout_is_discarded() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json("acct-1", "192.0.2.2")],
+    ]);
+    let mut c =
+        controller_for_refresh(&mock, false, crate::settings::RefreshPolicy::OneMinute).await;
+
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let result = Controller::collect(&ticket).await;
+    c.forget();
+
+    let snapshot = c
+        .finish_manual_refresh(ticket, result)
+        .expect("过期结果是静默丢弃")
+        .into_snapshot();
+    assert!(c.rows.is_empty(), "下线后不能重新写入 rows");
+    assert!(!snapshot.authenticated);
+}
+
+/// 两个采集乱序返回：旧结果不能覆盖已经提交的新结果。
+#[tokio::test]
+async fn out_of_order_collections_keep_the_newest_rows() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json("old", "192.0.2.2")],
+        vec![session_json("new", "192.0.2.2")],
+    ]);
+    let mut c =
+        controller_for_refresh(&mock, false, crate::settings::RefreshPolicy::OneMinute).await;
+
+    let first = c.begin_collect().expect("需要后台客户端");
+    let first_result = Controller::collect(&first).await;
+    let second = c.begin_collect().expect("需要后台客户端");
+    let second_result = Controller::collect(&second).await;
+
+    // 新的先提交，旧的后到。
+    c.finish_manual_refresh(second, second_result)
+        .expect("新结果应提交");
+    let applied = c.rows.clone();
+    assert_eq!(applied[0].radacctid, "new");
+
+    c.finish_manual_refresh(first, first_result)
+        .expect("旧结果是静默丢弃");
+    assert_eq!(ids(&c.rows), ids(&applied), "旧结果不能覆盖新结果");
+}
+
+/// Reload 改了后台地址后，旧配置下发出的请求不能再提交。
+#[tokio::test]
+async fn collection_started_before_reload_is_discarded() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json("acct-1", "192.0.2.2")],
+    ]);
+    let mut c =
+        controller_for_refresh(&mock, false, crate::settings::RefreshPolicy::OneMinute).await;
+    let before = c.rows.clone();
+
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let result = Controller::collect(&ticket).await;
+
+    let mut next = c.settings.clone();
+    next.server = "http://127.0.0.1:9/lfradius/".into();
+    c.apply_settings(next);
+
+    c.finish_session_collect(ticket, result, |_| {}).await;
+    assert_eq!(
+        ids(&c.rows),
+        ids(&before),
+        "改后台地址后旧请求的结果不能写回"
+    );
+}
+
+/// connect 失败回滚期间，早先发出的采集结果不能覆盖回滚后的状态。
+#[tokio::test]
+async fn connect_rollback_is_not_overwritten_by_in_flight_collection() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json("acct-old", "192.0.2.9")],
+    ]);
+    let mut c =
+        controller_for_refresh(&mock, false, crate::settings::RefreshPolicy::OneMinute).await;
+
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let result = Controller::collect(&ticket).await;
+
+    // 连接失败（端口 1 立即拒连），事务内部会回滚/清理。
+    let mut next = c.settings.clone();
+    next.server = "http://127.0.0.1:1/".into();
+    c.apply_settings(next);
+    let _ = c
+        .connect(
+            Credential::new("test-user".into(), "secret".into()),
+            "",
+            true,
+            |_| {},
+        )
+        .await;
+    let after_rollback = c.rows.clone();
+
+    c.finish_session_collect(ticket, result, |_| {}).await;
+    assert_eq!(
+        ids(&c.rows),
+        ids(&after_rollback),
+        "回滚后的状态不能被在途结果改写"
+    );
+}
+
+/// 手动刷新与常规采集先后提交：只有最新那一代被结算，accounting 不会算两遍。
+#[tokio::test]
+async fn collection_and_manual_refresh_do_not_double_settle() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json_counters(
+            "acct-1",
+            "192.0.2.2",
+            120,
+            2_024,
+            3_048,
+        )],
+        vec![session_json_counters(
+            "acct-1",
+            "192.0.2.2",
+            180,
+            3_024,
+            4_048,
+        )],
+    ]);
+    let mut c =
+        controller_for_refresh(&mock, true, crate::settings::RefreshPolicy::OneMinute).await;
+
+    let first = c.begin_collect().expect("需要后台客户端");
+    let first_result = Controller::collect(&first).await;
+    let second = c.begin_collect().expect("需要后台客户端");
+    let second_result = Controller::collect(&second).await;
+
+    c.finish_manual_refresh(second, second_result)
+        .expect("新结果应结算");
+    let settled_epoch = c.rates_epoch;
+    let settled_rate = c.latest_rates["acct-1"].clone();
+
+    c.finish_manual_refresh(first, first_result)
+        .expect("旧结果是静默丢弃");
+    assert_eq!(c.rates_epoch, settled_epoch, "旧结果不能触发第二次结算");
+    assert_eq!(
+        c.latest_rates["acct-1"].sample_seconds,
+        settled_rate.sample_seconds
+    );
+}
+
+/// 网卡解析失败不能被当成认证失败：请求照发、结果照旧提交。
+#[tokio::test]
+async fn interface_failure_is_not_an_auth_failure() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json("acct-1", "192.0.2.2")],
+    ]);
+    let mut c =
+        controller_for_refresh(&mock, true, crate::settings::RefreshPolicy::OneMinute).await;
+    c.resolve_network = Arc::new(|_| Err("没有找到带 IPv4 和 MAC 的活动网卡".into()));
+
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let result = Controller::collect(&ticket).await;
+    assert!(
+        result.network.is_err(),
+        "解析失败原样带回，不升级成 AppError"
+    );
+    c.finish_session_collect(ticket, result, |_| {}).await;
+
+    assert_eq!(c.rows.len(), 1, "解析失败不影响会话数据");
+    assert!(
+        c.current_network.is_none(),
+        "地址未知：不能参与被挤下线判定"
+    );
+    assert!(c.loss.is_none());
+    // backend-only 登录本来就没有绑定会话，状态仍是 `backend`：解析失败既没有
+    // 把它改成 offline，也没有把它改成 error。
+    assert_eq!(c.status, "backend");
+    assert_eq!(c.missing, 0, "解析失败不能推进掉线计数");
+    assert_eq!(c.attempts, 0, "解析失败不能触发认证重试");
+}
+
+/// HTTP 错误原样传播，并留下"连接异常"的证据。
+#[tokio::test]
+async fn http_failure_propagates_and_marks_poll_failure() {
+    let settings = Settings {
+        server: "http://127.0.0.1:1/lfradius/".into(),
+        ..Default::default()
+    };
+    let mut c = Controller::new(settings);
+    c.api = Some(PortalClient::new("http://127.0.0.1:1/lfradius/").unwrap());
+    c.resolve_network = Arc::new(|_| Ok(None));
+
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let result = Controller::collect(&ticket).await;
+    let error = c
+        .finish_manual_refresh(ticket, result)
+        .expect_err("请求失败必须把错误交回调用方");
+    assert!(matches!(error, AppError::Network(_) | AppError::Timeout(_)));
+    assert!(c.last_poll_failure.is_some(), "传输层失败要留证据");
+}
+
+/// 网卡解析超过 2 秒就放弃等待，返回超时而不是拖住调用方。
+///
+/// 不用 `start_paused`：mock 后台是真线程 + 真 IO，暂停时钟会让 HTTP 自己先超时。
+#[tokio::test]
+async fn slow_interface_resolution_times_out() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![vec![], vec![session_json("acct-1", "192.0.2.2")]]);
+    let mut c =
+        controller_for_refresh(&mock, false, crate::settings::RefreshPolicy::OneMinute).await;
+    c.resolve_network = Arc::new(|_| {
+        // 刚好超过 2 秒阈值，测试结束时阻塞线程也差不多跑完。
+        std::thread::sleep(Duration::from_millis(2_300));
+        Ok(None)
+    });
+
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let result = Controller::collect(&ticket).await;
+    match &result.network {
+        Err(reason) => assert!(reason.contains("超时"), "{reason}"),
+        Ok(_) => panic!("阻塞的解析必须被判成超时"),
+    }
+    // 解析超时不影响这次请求本身。
+    assert!(result.rows.is_ok(), "解析超时不该拦掉会话查询");
+}
+
+/// 停滞阈值的边界：29 秒不标，整 30 秒就标。
+#[test]
+fn collect_stall_boundary_is_thirty_seconds() {
+    let clock = CollectClock::default();
+    clock.set(Some(Instant::now() - Duration::from_secs(29)));
+    let (age, stalled) = clock.health(true);
+    assert!(age.unwrap() >= 29_000);
+    assert!(!stalled);
+
+    clock.set(Some(Instant::now() - COLLECT_STALL));
+    assert!(clock.health(true).1, "恰好 30 秒即视为停滞");
+    assert_eq!(clock.health(false), (None, false), "未认证不报陈旧");
+}
+
+// ---- 第二阶段：锁外 IO 与快照新鲜度 ----
+
+/// 采集在跑的时候控制器锁必须是空的：只读 IPC 不该排在一个 10 秒超时后面。
+#[tokio::test]
+async fn controller_lock_stays_free_while_collection_is_in_flight() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json("acct-1", "192.0.2.2")],
+    ]);
+    let settings = Settings {
+        server: mock.base.clone(),
+        ..Default::default()
+    };
+    let mut controller = Controller::new(settings);
+    controller
+        .connect(
+            Credential::new("test-user".into(), "secret".into()),
+            "",
+            true,
+            |_| {},
+        )
+        .await
+        .expect("mock 后台应接受后台登录");
+    // 用一个明显慢的网卡解析占住"锁外"这一段。
+    controller.resolve_network = Arc::new(|_| {
+        std::thread::sleep(Duration::from_millis(1_500));
+        Ok(None)
+    });
+    let state = Arc::new(crate::daemon::State::new(controller));
+
+    let tick_state = state.clone();
+    let tick = tokio::spawn(async move { tick_state.session_tick().await });
+
+    // 采集还在解析网卡：这段时间里取锁必须立刻成功。
+    let acquired = tokio::time::timeout(Duration::from_millis(500), state.lock()).await;
+    assert!(acquired.is_ok(), "采集期间不该占着控制器锁");
+    drop(acquired);
+    tick.await.expect("采集任务应正常结束");
+}
+
+/// 心跳与"谁在发布快照"无关：不再有新快照，读路径也要给出实时年龄。
+#[tokio::test]
+async fn status_snapshot_recomputes_collect_age_at_read_time() {
+    let c = Controller {
+        api: Some(PortalClient::new("http://127.0.0.1:1/").unwrap()),
+        ..Default::default()
+    };
+    c.collect_clock.set(Some(Instant::now()));
+    let state = crate::daemon::State::new(c);
+
+    let fresh = state.snapshot();
+    assert!(!fresh.collector_stalled);
+    assert!(fresh.collect_age_ms.is_some_and(|age| age < 1_000));
+
+    // 不发布新快照，只把心跳拨回 31 秒前。
+    state
+        .clock()
+        .set(Some(Instant::now() - Duration::from_secs(31)));
+    let stale = state.snapshot();
+    assert!(stale.collector_stalled, "停滞必须在读的时候算出来");
+    assert!(stale.collect_age_ms.is_some_and(|age| age >= 31_000));
+    assert!(stale.authenticated, "停滞不等于离线");
+    assert_eq!(stale.status, fresh.status);
+    assert_eq!(stale.sessions.len(), fresh.sessions.len());
+
+    // 采集恢复：同一个共享心跳刷新后立刻不再陈旧。
+    state.clock().set(Some(Instant::now()));
+    assert!(!state.snapshot().collector_stalled);
+}
+
+/// 登出后不暴露"数据陈旧"。
+#[tokio::test]
+async fn status_snapshot_hides_staleness_when_logged_out() {
+    let c = Controller::default();
+    c.collect_clock
+        .set(Some(Instant::now() - Duration::from_secs(600)));
+    let state = crate::daemon::State::new(c);
+
+    let snapshot = state.snapshot();
+    assert!(!snapshot.authenticated);
+    assert!(snapshot.collect_age_ms.is_none());
+    assert!(!snapshot.collector_stalled);
+}
+
+/// 被取消的采集任务不会把控制器锁永久占住。
+#[tokio::test]
+async fn cancelled_collection_does_not_keep_the_lock() {
+    let state = Arc::new(crate::daemon::State::new(Controller::default()));
+    let holder = state.clone();
+    let (entered, wait) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _guard = holder.lock().await;
+        let _ = entered.send(());
+        // 卡住不放手，模拟一个被取消前的长任务。
+        std::future::pending::<()>().await;
+    });
+    wait.await.expect("持锁任务应先拿到锁");
+    task.abort();
+    let _ = task.await;
+
+    let acquired = tokio::time::timeout(Duration::from_secs(1), state.lock()).await;
+    assert!(acquired.is_ok(), "任务取消后锁必须能重新拿到");
+}
+
+// ---- 收尾：下线 / 重拨使旧票据失效、手动刷新 single-flight、刷新响应语义 ----
+
+/// 下线期间在途的采集结果不能回来把会话写活。
+///
+/// 真实顺序：领票 → 请求在途 → 用户下线成功 → 旧结果返回。下线是显式释放
+/// 本地会话状态的操作，返回的旧列表必须把下线前的世界一起丢掉。
+#[tokio::test]
+async fn disconnect_invalidates_in_flight_collection() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        // 在途采集拿到的是"下线前"的列表。
+        vec![session_json("acct-1", "192.0.2.2")],
+        // disconnect_id 先查一次列表，确认目标还在。
+        vec![session_json("acct-1", "192.0.2.2")],
+        // 下线后的确认查询：目标已消失。
+        vec![],
+    ]);
+    let settings = Settings {
+        server: mock.base.clone(),
+        traffic_enabled: true,
+        // System 模式不会走 `clear()`，正是这条分支曾经漏掉代次递增。
+        credential_store: CredentialStore::System,
+        ..Default::default()
+    };
+    let mut c = Controller::new(settings);
+    c.connect(
+        Credential::new("test-user".into(), "secret".into()),
+        "",
+        true,
+        |_| {},
+    )
+    .await
+    .expect("mock 后台应接受后台登录");
+    c.select("acct-1").expect("应能选中在线会话");
+
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let stale = Controller::collect(&ticket).await;
+    assert!(matches!(&stale.rows, Ok(rows) if rows.len() == 1));
+    let applied_before = c.applied_collect;
+
+    // 结果还没提交，用户先点下线。
+    c.disconnect("acct-1").await.expect("下线应成功");
+    assert!(c.rows.is_empty(), "下线后本地不再持有该会话");
+    // 把心跳拨到 31 秒前：如果旧结果刷新了心跳，停滞标记会被清掉。
+    c.collect_clock
+        .set(Some(Instant::now() - Duration::from_secs(31)));
+    let bound_before = c.bound_network.clone();
+
+    c.finish_session_collect(ticket, stale, |_| {}).await;
+
+    assert!(c.rows.is_empty(), "旧采集结果不能把已下线的会话写回来");
+    assert_eq!(c.missing, 0, "过期结果不能推进掉线计数");
+    assert!(c.last_poll_failure.is_none(), "过期结果不能改写失败证据");
+    assert!(c.latest_rates.is_empty(), "过期结果不能带回速率");
+    assert_eq!(c.applied_collect, applied_before, "过期结果不占提交序号");
+    assert_eq!(c.bound_network, bound_before, "过期结果不能改动网络绑定");
+    assert!(c.snapshot().collector_stalled, "过期结果不能刷新心跳");
+}
+
+/// NewSession 重拨换了连接身份：重拨前领票的结果不能覆盖重拨后的状态。
+#[tokio::test]
+async fn new_session_redial_invalidates_in_flight_refresh() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json("acct-old", "192.0.2.2")],
+        vec![],
+        vec![session_json("acct-new", "192.0.2.2")],
+    ]);
+    // 三次解析刻意给出不同结果，让"谁被写回控制器"可观测：
+    // 1. 建立连接时绑定 127.0.0.1；
+    // 2. 旧采集解析不到网卡 → 用无源地址重建客户端（`bound_address()` 变 None）；
+    // 3. 重拨时重新绑定 127.0.0.1。
+    // 于是旧结果若被提交，控制器的客户端会退回"未绑定"那一份，而不只是界面数据变了。
+    // 解析器必须在 connect 之前装好，否则首次连接会消耗掉计数器的第 0 次。
+    let resolutions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = resolutions.clone();
+    let mut c = Controller::new(Settings {
+        server: mock.base.clone(),
+        ..Default::default()
+    });
+    c.resolve_network =
+        Arc::new(
+            move |_| match counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                1 => Ok(None),
+                _ => Ok(Some(network::NetworkContext {
+                    interface_name: "en0".into(),
+                    ipv4: "127.0.0.1".into(),
+                    mac: "02:00:00:00:00:01".into(),
+                })),
+            },
+        );
+    c.connect(
+        Credential::new("test-user".into(), "secret".into()),
+        "",
+        true,
+        |_| {},
+    )
+    .await
+    .expect("mock 后台应接受后台登录");
+
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let stale = Controller::collect(&ticket).await;
+    assert!(stale.rebound, "前置条件：旧结果确实重建过客户端");
+    assert!(
+        matches!(&stale.rows, Ok(rows) if rows.iter().any(|row| row.radacctid == "acct-old")),
+        "前置条件：旧结果带的是重拨前的 rows"
+    );
+    let applied_before = c.applied_collect;
+
+    c.reconnecting = true;
+    c.connect(
+        Credential::new("test-user".into(), "secret".into()),
+        "",
+        true,
+        |_| {},
+    )
+    .await
+    .expect("重拨应成功");
+    c.reconnecting = false;
+    assert_eq!(
+        c.rows[0].radacctid, "acct-new",
+        "前置条件：重拨后的会话列表"
+    );
+    let bound_after_redial = c.bound_network.clone();
+    let client_address_after_redial = c.api.as_ref().expect("重拨后应有客户端").bound_address();
+    assert_eq!(
+        client_address_after_redial,
+        Some(IpAddr::from([127, 0, 0, 1])),
+        "前置条件：重拨后的客户端按新地址重建过"
+    );
+
+    c.finish_session_collect(ticket, stale, |_| {}).await;
+
+    assert_eq!(
+        c.rows[0].radacctid, "acct-new",
+        "旧结果不能覆盖重拨后的会话"
+    );
+    assert_eq!(
+        c.bound_network, bound_after_redial,
+        "旧结果不能把重拨前的客户端绑定顶回来"
+    );
+    // 这个断言同时锁住 API 客户端与它携带的 cookie jar：旧采集的客户端克隆来自
+    // 重拨前的 jar，若被写回，这里会看到 None（它被重建成无源地址）。
+    assert_eq!(
+        c.api.as_ref().expect("重拨后应有客户端").bound_address(),
+        client_address_after_redial,
+        "旧结果不能把旧客户端（及其 cookie jar）写回控制器"
+    );
+    assert_eq!(c.applied_collect, applied_before);
+}
+
+/// 重拨失败回滚恢复原连接，但**不会**让已作废的票据重新有效。
+#[tokio::test]
+async fn redial_rollback_does_not_revive_old_ticket() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json("acct-old", "192.0.2.2")],
+    ]);
+    let settings = Settings {
+        server: mock.base.clone(),
+        // 固定为 System：Memory 模式 `fail()` 会 `clear()`，那会掩盖
+        // "回滚是否复活票据"这一层语义。
+        credential_store: CredentialStore::System,
+        ..Default::default()
+    };
+    let mut c = Controller::new(settings);
+    c.connect(
+        Credential::new("test-user".into(), "secret".into()),
+        "",
+        true,
+        |_| {},
+    )
+    .await
+    .expect("mock 后台应接受后台登录");
+
+    let ticket = c.begin_collect().expect("需要后台客户端");
+    let stale = Controller::collect(&ticket).await;
+    let applied_before = c.applied_collect;
+    let checkpoint = ReconnectCheckpoint::capture(&c);
+
+    c.settings.server = "http://127.0.0.1:1/lfradius/".into();
+    c.reconnecting = true;
+    let failed = c
+        .connect(
+            Credential::new("test-user".into(), "secret".into()),
+            "",
+            true,
+            |_| {},
+        )
+        .await;
+    c.reconnecting = false;
+    assert!(failed.is_err(), "后台连不上时重拨必须失败");
+
+    checkpoint.restore(&mut c);
+    assert_eq!(c.rows[0].radacctid, "acct-1", "回滚恢复重拨前的会话");
+
+    c.finish_session_collect(ticket, stale, |_| {}).await;
+    assert_eq!(c.rows[0].radacctid, "acct-1", "回滚不能让旧票据重新有效");
+    assert_eq!(c.applied_collect, applied_before);
+}
+
+/// 两个并发手动刷新只发一次 HTTP；第二个立刻拿到当前快照。
+#[tokio::test]
+async fn manual_refresh_is_single_flight() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![vec![], vec![session_json("acct-1", "192.0.2.2")]]);
+    let mut controller = Controller::new(Settings {
+        server: mock.base.clone(),
+        ..Default::default()
+    });
+    controller
+        .connect(
+            Credential::new("test-user".into(), "secret".into()),
+            "",
+            true,
+            |_| {},
+        )
+        .await
+        .expect("mock 后台应接受后台登录");
+    // 第一次刷新在网卡解析上慢一拍，这段时间闸门是占着的。
+    controller.resolve_network = Arc::new(|_| {
+        std::thread::sleep(Duration::from_millis(800));
+        Ok(None)
+    });
+    let state = Arc::new(crate::daemon::State::new(controller));
+    let before = onlinelog_requests(&mock);
+
+    let running_state = state.clone();
+    let running = tokio::spawn(async move { running_state.refresh().await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let second = state.refresh().await.expect("并发刷新不该失败");
+    let crate::daemon::RefreshOutcome::Busy(snapshot) = second else {
+        panic!("已有刷新在跑时不该重新发起采集");
+    };
+    assert_eq!(snapshot.sessions.len(), 1, "挡住的那次照样回当前快照");
+    assert_eq!(
+        onlinelog_requests(&mock),
+        before,
+        "并发刷新没有发出第二次 HTTP"
+    );
+
+    let first = running
+        .await
+        .expect("刷新任务应结束")
+        .expect("第一次刷新应成功");
+    assert!(matches!(first, crate::daemon::RefreshOutcome::Applied(_)));
+    assert_eq!(
+        onlinelog_requests(&mock),
+        before + 1,
+        "只有第一次刷新发了请求"
+    );
+
+    // 闸门已释放：紧接着再刷一次，正常发出第二个请求。
+    state.lock().await.resolve_network = Arc::new(|_| Ok(None));
+    let third = state.refresh().await.expect("后续刷新应成功");
+    assert!(matches!(third, crate::daemon::RefreshOutcome::Applied(_)));
+    assert_eq!(onlinelog_requests(&mock), before + 2);
+}
+
+/// 请求失败后闸门必须释放：下一次刷新要能真的再发一次请求，而不是被挡住。
+#[tokio::test]
+async fn manual_refresh_gate_releases_after_failure() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![vec![], vec![session_json("acct-1", "192.0.2.2")]]);
+    let mut controller = Controller::new(Settings {
+        server: mock.base.clone(),
+        ..Default::default()
+    });
+    controller
+        .connect(
+            Credential::new("test-user".into(), "secret".into()),
+            "",
+            true,
+            |_| {},
+        )
+        .await
+        .expect("mock 后台应接受后台登录");
+    let state = Arc::new(crate::daemon::State::new(controller));
+    // 停掉 mock，之后所有请求都会连接失败。
+    drop(mock);
+
+    let first = state.refresh().await;
+    assert!(first.is_err(), "后台不可达时刷新应失败");
+    let second = state.refresh().await;
+    assert!(
+        second.is_err(),
+        "失败后闸门已释放，第二次能真的再发一次请求（而不是被挡住返回 Busy）"
+    );
+}
+
+/// 任务被取消时闸门随 future 一起释放，不会永久占住。
+#[tokio::test]
+async fn manual_refresh_gate_releases_on_cancellation() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![vec![], vec![session_json("acct-1", "192.0.2.2")]]);
+    let mut controller = Controller::new(Settings {
+        server: mock.base.clone(),
+        ..Default::default()
+    });
+    controller
+        .connect(
+            Credential::new("test-user".into(), "secret".into()),
+            "",
+            true,
+            |_| {},
+        )
+        .await
+        .expect("mock 后台应接受后台登录");
+    controller.resolve_network = Arc::new(|_| {
+        std::thread::sleep(Duration::from_millis(800));
+        Ok(None)
+    });
+    let state = Arc::new(crate::daemon::State::new(controller));
+
+    let running_state = state.clone();
+    let running = tokio::spawn(async move { running_state.refresh().await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        matches!(
+            state.refresh().await.expect("探测调用不该失败"),
+            crate::daemon::RefreshOutcome::Busy(_)
+        ),
+        "前置条件：闸门确实被占着"
+    );
+
+    running.abort();
+    let _ = running.await;
+
+    state.lock().await.resolve_network = Arc::new(|_| Ok(None));
+    let after = state.refresh().await.expect("取消之后应能再次刷新");
+    assert!(matches!(after, crate::daemon::RefreshOutcome::Applied(_)));
+}
+
+/// 手动刷新的 single-flight 不影响定时采集：闸门被占着时 5 秒 worker 照常跑完。
+#[tokio::test]
+async fn timed_collection_is_not_blocked_by_manual_refresh() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![vec![], vec![session_json("acct-1", "192.0.2.2")]]);
+    let mut controller = Controller::new(Settings {
+        server: mock.base.clone(),
+        ..Default::default()
+    });
+    controller
+        .connect(
+            Credential::new("test-user".into(), "secret".into()),
+            "",
+            true,
+            |_| {},
+        )
+        .await
+        .expect("mock 后台应接受后台登录");
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = calls.clone();
+    controller.resolve_network = Arc::new(move |_| {
+        // 第一次（手动刷新）解析慢，之后（定时采集）立即返回。
+        if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            std::thread::sleep(Duration::from_millis(1_500));
+        }
+        Ok(None)
+    });
+    let state = Arc::new(crate::daemon::State::new(controller));
+
+    let running_state = state.clone();
+    let running = tokio::spawn(async move { running_state.refresh().await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    tokio::time::timeout(Duration::from_millis(500), state.session_tick())
+        .await
+        .expect("定时采集不能被手动刷新闸门挡住");
+    running.abort();
+    let _ = running.await;
+}
+
+/// IPC 层的实际 Response：提交成功、被取代、被挡住、真正失败是四种不同文案。
+#[test]
+fn sessions_response_distinguishes_outcomes() {
+    use crate::daemon::{sessions_response, RefreshOutcome};
+    let mut c = Controller::default();
+    let snapshot = c.snapshot();
+
+    let applied = sessions_response(Ok(RefreshOutcome::Applied(snapshot.clone())));
+    assert!(applied.ok);
+    assert_eq!(applied.message, "会话刷新成功");
+    assert!(applied.snapshot.is_some());
+
+    let superseded = sessions_response(Ok(RefreshOutcome::Superseded(snapshot.clone())));
+    assert!(superseded.ok, "结果被取代不是失败");
+    assert_eq!(
+        superseded.message,
+        "会话刷新已被更新的操作取代，当前显示最新状态"
+    );
+    assert!(superseded.snapshot.is_some(), "被取代时仍有最新数据可看");
+
+    let busy = sessions_response(Ok(RefreshOutcome::Busy(snapshot)));
+    assert!(busy.ok, "已有刷新在跑也不是失败");
+    assert_eq!(busy.message, "已有刷新正在进行，当前显示最新状态");
+    assert!(busy.snapshot.is_some());
+
+    let failed = sessions_response(Err(AppError::Rejected));
+    assert!(!failed.ok, "只有真正报错才回 ok=false");
+    assert!(failed.snapshot.is_none());
+}
+
+/// 端到端版：不构造 `RefreshOutcome`，而是让一次真实的手动刷新被定时采集抢先提交，
+/// 再把 `State::refresh()` 的返回值交给 IPC 翻译层，断言最终 Response 的文案与数据。
+#[tokio::test]
+async fn superseded_refresh_reports_latest_state_over_ipc() {
+    use crate::daemon::{sessions_response, State};
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        // 之后所有 onlinelog 都返回这一帧：先提交的定时采集写进快照。
+        vec![session_json("acct-timed", "192.0.2.2")],
+    ]);
+    let mut controller = Controller::new(Settings {
+        server: mock.base.clone(),
+        ..Default::default()
+    });
+    controller
+        .connect(
+            Credential::new("test-user".into(), "secret".into()),
+            "",
+            true,
+            |_| {},
+        )
+        .await
+        .expect("mock 后台应接受后台登录");
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = calls.clone();
+    controller.resolve_network = Arc::new(move |_| {
+        // 手动刷新在锁外慢一拍，给定时采集留出"后领票、先提交"的窗口。
+        if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            std::thread::sleep(Duration::from_millis(1_500));
+        }
+        Ok(None)
+    });
+    let state = Arc::new(State::new(controller));
+
+    let manual_state = state.clone();
+    let manual = tokio::spawn(async move { manual_state.refresh().await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // 定时采集领到更大的票据序号，并且先返回、先提交。
+    state.session_tick().await;
+    let outcome = manual
+        .await
+        .expect("手动刷新任务应结束")
+        .expect("被取代不是错误");
+
+    let response = sessions_response(Ok(outcome));
+    assert!(response.ok, "被更新的操作取代不是失败");
+    assert_eq!(
+        response.message, "会话刷新已被更新的操作取代，当前显示最新状态",
+        "IPC 不能把作废结果说成刷新成功"
+    );
+    let snapshot = response.snapshot.expect("被取代时仍返回当前快照");
+    assert!(
+        snapshot
+            .sessions
+            .iter()
+            .any(|row| row.radacctid == "acct-timed"),
+        "返回的必须是定时采集刚提交的新状态：{:?}",
+        snapshot.sessions
+    );
 }

@@ -33,6 +33,25 @@ pub(crate) fn session_json(id: &str, ip: &str) -> serde_json::Value {
         "acctoutputoctets": 2048,
     })
 }
+/// 同上，但可以指定计费计数。速率用例需要让 `acctsessiontime` 与两个字节数
+/// 真的前进，否则 `AccountingRates::update` 只会返回"等待计费更新"。
+pub(crate) fn session_json_counters(
+    id: &str,
+    ip: &str,
+    seconds: u64,
+    up: u64,
+    down: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "radacctid": id,
+        "username": "test-user",
+        "acctstarttime": "2026-01-01 00:00:00",
+        "acctsessiontime": seconds,
+        "framedipaddress": ip,
+        "acctinputoctets": up,
+        "acctoutputoctets": down,
+    })
+}
 pub(crate) struct Mock {
     pub(crate) base: String,
     stop: Arc<AtomicBool>,

@@ -73,6 +73,14 @@ export interface Snapshot {
   /** 采集是否已停滞。只表示数据可能不新，不代表会话已离线。 */
   collector_stalled: boolean
 }
+/** 手动刷新的结果。unknown 只在 daemon 早于结构化字段时出现。 */
+export type RefreshState = 'applied' | 'superseded' | 'busy' | 'unknown'
+/** `snapshot` 三种结果都带：都是后端当前最新状态；`message` 是后端给的原文。 */
+export interface RefreshReport {
+  state: RefreshState
+  message: string
+  snapshot: Snapshot
+}
 export interface UpdateInfo {
   current: string
   latest: string

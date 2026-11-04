@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createPortalState, defaultSettings, emptySnapshot, formatRate, logScrollTarget, normalizeSettings } from './usePortal'
 import { licenseGroups } from './licenses'
-import type { DesktopBridge, LogEntry, Session, Settings } from './types'
+import type { DesktopBridge, LogEntry, Session, Settings, Snapshot } from './types'
 
 const row = (id: string): Session => ({ radacctid: id, username: 'synthetic-user', framedipaddress: '192.0.2.1', acctstarttime: '', acctsessiontime: 60, acctinputoctets: 600, acctoutputoctets: 6000 })
 // passive 是后台轮询与事件返回的快照；one_session 与后端一致，随凭据保存方式变化。
@@ -17,6 +17,9 @@ function desktop(status = 'idle', credentialStore: Settings['credential_store'] 
   const bridge = { core: { invoke }, event: { listen } } as unknown as DesktopBridge
   return { bridge, invoke, listen, stops }
 }
+// 后端把刷新结果拆成了状态与快照：界面按 state 分支，message 只用于展示。
+const refreshed = (state: 'applied' | 'superseded' | 'busy' | 'unknown', snapshot: Snapshot, message = `backend-${state}-message`) => ({ state, message, snapshot })
+const applied = (snapshot: Snapshot) => refreshed('applied', snapshot, '会话刷新成功')
 afterEach(() => vi.useRealTimers())
 describe('Vue migration preserves privacy and IPC behavior', () => {
   it('saving transient settings keeps typed credentials for the upcoming connection but not in persisted settings', async () => {
@@ -260,22 +263,22 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
     state.saved.value.traffic_enabled = true
     const online = { ...emptySnapshot(), status: 'accepted', authenticated: true, sessions: [row('A')], selected_id: 'A' }
-    mock.invoke.mockResolvedValueOnce({ ...online, rates: { A: { upload_bps: 2048, download_bps: 40960, sample_seconds: 60 } } } as never)
+    mock.invoke.mockResolvedValueOnce(applied({ ...online, rates: { A: { upload_bps: 2048, download_bps: 40960, sample_seconds: 60 } } }) as never)
     await state.refresh()
     expect(state.rate.value?.download_bps).toBe(40960)
-    expect(state.notice.value).toBe('')
+    expect(state.notice.value).toBe('刷新成功')
     // 后台计费尚未更新：接口返回空速率，界面沿用上一次算出的结果而不是回到“等待更新”。
     const pendingRate = { upload_bps: null, download_bps: null, sample_seconds: null }
-    mock.invoke.mockResolvedValueOnce({ ...online, rates: { A: pendingRate } } as never)
+    mock.invoke.mockResolvedValueOnce(applied({ ...online, rates: { A: pendingRate } }) as never)
     await state.refresh()
     expect(state.rate.value?.download_bps).toBe(40960)
     expect(state.notice.value).toBe('刷新成功，后台返回一致流量')
-    // 后台真的更新后立刻换成新值，且不产生新的提示。
+    // 后台真的更新后立刻换成新值，提示仍只表示“刷新成功”，不再说数值一致。
     state.notice.value = ''
-    mock.invoke.mockResolvedValueOnce({ ...online, rates: { A: { upload_bps: 4096, download_bps: 81920, sample_seconds: 60 } } } as never)
+    mock.invoke.mockResolvedValueOnce(applied({ ...online, rates: { A: { upload_bps: 4096, download_bps: 81920, sample_seconds: 60 } } }) as never)
     await state.refresh()
     expect(state.rate.value?.download_bps).toBe(81920)
-    expect(state.notice.value).toBe('')
+    expect(state.notice.value).toBe('刷新成功')
     state.dispose()
   })
   it('never announces identical accounting on the first result or while polling in the background', async () => {
@@ -284,12 +287,12 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     state.saved.value.traffic_enabled = true
     const online = { ...emptySnapshot(), status: 'accepted', authenticated: true, sessions: [row('A')], selected_id: 'A' }
     const pendingRate = { upload_bps: null, download_bps: null, sample_seconds: null }
-    // 首次连接后还没有“上一个结果”，此时一致也必须保持安静。
-    mock.invoke.mockResolvedValueOnce({ ...online, rates: { A: pendingRate } } as never)
+    // 首次连接后还没有“上一个结果”，此时只能说“刷新成功”，不能声称数值一致。
+    mock.invoke.mockResolvedValueOnce(applied({ ...online, rates: { A: pendingRate } }) as never)
     await state.refresh()
-    expect(state.notice.value).toBe('')
+    expect(state.notice.value).toBe('刷新成功')
     expect(formatRate(state.rate.value?.download_bps)).toBe('等待更新')
-    mock.invoke.mockResolvedValueOnce({ ...online, rates: { A: { upload_bps: 2048, download_bps: 40960, sample_seconds: 60 } } } as never)
+    mock.invoke.mockResolvedValueOnce(applied({ ...online, rates: { A: { upload_bps: 2048, download_bps: 40960, sample_seconds: 60 } } }) as never)
     await state.refresh()
     expect(state.rate.value?.download_bps).toBe(40960)
     state.notice.value = ''
@@ -298,6 +301,40 @@ describe('Vue migration preserves privacy and IPC behavior', () => {
     await vi.advanceTimersByTimeAsync(2000)
     expect(state.rate.value?.download_bps).toBe(40960)
     expect(state.notice.value).toBe('')
+    state.dispose()
+  })
+  it('announces success only for applied refreshes and shows the backend note otherwise', async () => {
+    const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
+    const online = { ...emptySnapshot(), status: 'accepted', authenticated: true, sessions: [row('A')], selected_id: 'A' }
+    mock.invoke.mockResolvedValueOnce(refreshed('applied', online, '会话刷新成功') as never)
+    await state.refresh()
+    expect(state.notice.value).toBe('刷新成功')
+    // 被更新的采集取代：文案来自后端，快照换成后端刚提交的那份，且不能说“刷新成功”。
+    state.notice.value = ''
+    const latest = { ...online, message: 'superseded-snapshot', sessions: [row('A'), row('B')] }
+    mock.invoke.mockResolvedValueOnce(refreshed('superseded', latest, '会话刷新已被更新的操作取代，当前显示最新状态') as never)
+    await state.refresh()
+    expect(state.snapshot.value.message).toBe('superseded-snapshot')
+    expect(state.snapshot.value.sessions).toHaveLength(2)
+    expect(state.notice.value).toBe('会话刷新已被更新的操作取代，当前显示最新状态')
+    expect(state.notice.value).not.toContain('刷新成功')
+    // 闸门被占：本次没有重新采集，快照仍是当前状态，提示同样不能是成功。
+    state.notice.value = ''
+    mock.invoke.mockResolvedValueOnce(refreshed('busy', { ...online, message: 'busy-snapshot' }, '已有刷新正在进行，当前显示最新状态') as never)
+    await state.refresh()
+    expect(state.snapshot.value.message).toBe('busy-snapshot')
+    expect(state.notice.value).toBe('已有刷新正在进行，当前显示最新状态')
+    expect(state.notice.value).not.toContain('刷新成功')
+    state.dispose()
+  })
+  it('keeps a real refresh failure on the error path and resyncs the snapshot', async () => {
+    const mock = desktop(), state = createPortalState(mock.bridge); await state.initialize()
+    mock.invoke
+      .mockRejectedValueOnce(new Error('无法连接 portal-cli daemon'))
+      .mockResolvedValueOnce({ ...emptySnapshot(), status: 'error', message: '连接失败' })
+    await state.refresh()
+    expect(state.notice.value).toContain('无法连接 portal-cli daemon')
+    expect(state.snapshot.value.status).toBe('error')
     state.dispose()
   })
   it('diagnose sends no credentials and keeps the latency on the card while staying silent', async () => {

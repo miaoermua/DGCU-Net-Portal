@@ -191,10 +191,54 @@ async fn connect(
             collector_stalled: false,
         }))
 }
+/// 一次手动刷新的结构化结果，交给前端做分支。
+///
+/// `snapshot` 三种结果都带：前端照旧用它更新界面，数据不比这次差。
+/// `message` 是后端面向用户的原文，`applied` 之外由前端直接展示。
+#[derive(Debug, serde::Serialize)]
+struct RefreshReport {
+    state: RefreshState,
+    message: String,
+    snapshot: Snapshot,
+}
+
+/// 界面侧的刷新状态。`Unknown` 只在对话框里的 daemon 早于结构化字段时出现：
+/// 此时无法判断这次请求是否真的提交了，只能把后端文案原样展示，不替它宣称成功。
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RefreshState {
+    Applied,
+    Superseded,
+    Busy,
+    Unknown,
+}
+
+/// 把 IPC 响应翻译成给前端的刷新结果。
+///
+/// 失败分支保持原样：`ok: false` 与「成功但没有快照」都返回 `Err`，走既有的
+/// 错误提示。成功响应按结构化字段分支，不去解析中文 `message`。
+fn refresh_report(response: ipc::Response) -> Result<RefreshReport, String> {
+    if !response.ok {
+        return Err(response.message);
+    }
+    let Some(snapshot) = response.snapshot else {
+        return Err(response.message);
+    };
+    Ok(RefreshReport {
+        state: match response.refresh {
+            Some(ipc::RefreshState::Applied) => RefreshState::Applied,
+            Some(ipc::RefreshState::Superseded) => RefreshState::Superseded,
+            Some(ipc::RefreshState::Busy) => RefreshState::Busy,
+            None => RefreshState::Unknown,
+        },
+        message: response.message,
+        snapshot,
+    })
+}
 #[tauri::command]
-async fn refresh(_state: State<'_, AppState>) -> Result<Snapshot, String> {
+async fn refresh(_state: State<'_, AppState>) -> Result<RefreshReport, String> {
     let response = daemon_request(Request::Sessions).await?;
-    response.snapshot.ok_or(response.message)
+    refresh_report(response)
 }
 #[tauri::command]
 async fn snapshot(_state: State<'_, AppState>) -> Result<Snapshot, String> {
@@ -516,5 +560,70 @@ mod tests {
         assert_eq!(close_action(RunMode::Lightweight), OnClose::Exit);
         assert_eq!(close_action(RunMode::Standard), OnClose::HideToTray);
         assert_eq!(close_action(RunMode::TrayStartup), OnClose::HideToTray);
+    }
+    fn snapshot() -> Snapshot {
+        Snapshot {
+            status: "accepted".into(),
+            message: "会话刷新成功".into(),
+            sessions: vec![],
+            rates: Default::default(),
+            selected_id: None,
+            background_paused: false,
+            authenticated: true,
+            one_session: true,
+            account: None,
+            collect_age_ms: Some(0),
+            collector_stalled: false,
+        }
+    }
+    fn replied(refresh: Option<ipc::RefreshState>) -> ipc::Response {
+        ipc::Response {
+            ok: true,
+            message: "会话刷新成功".into(),
+            snapshot: Some(snapshot()),
+            refresh,
+            ..Default::default()
+        }
+    }
+    /// 三种成功结果必须各自映射成独立状态，而不是靠中文文案区分。
+    #[test]
+    fn refresh_states_survive_the_tauri_boundary() {
+        for (wire, expected) in [
+            (ipc::RefreshState::Applied, "applied"),
+            (ipc::RefreshState::Superseded, "superseded"),
+            (ipc::RefreshState::Busy, "busy"),
+        ] {
+            let report = refresh_report(replied(Some(wire))).unwrap();
+            assert_eq!(
+                serde_json::to_value(report.state).unwrap(),
+                serde_json::json!(expected)
+            );
+            assert_eq!(report.message, "会话刷新成功");
+            assert!(report.snapshot.authenticated);
+        }
+    }
+    /// 没有结构化字段说明对端是旧 daemon：不替它宣称成功，只透传原文。
+    #[test]
+    fn missing_refresh_state_falls_back_to_unknown() {
+        let report = refresh_report(replied(None)).unwrap();
+        assert_eq!(
+            serde_json::to_value(report.state).unwrap(),
+            serde_json::json!("unknown")
+        );
+    }
+    #[test]
+    fn refresh_errors_keep_the_existing_err_path() {
+        let failure = ipc::Response::error("无法连接 portal-cli daemon");
+        assert_eq!(
+            refresh_report(failure).unwrap_err(),
+            "无法连接 portal-cli daemon"
+        );
+        // 成功但没有快照同样交给错误分支，而不是造一份空快照。
+        let empty = ipc::Response {
+            ok: true,
+            message: "缺少快照".into(),
+            ..Default::default()
+        };
+        assert_eq!(refresh_report(empty).unwrap_err(), "缺少快照");
     }
 }
