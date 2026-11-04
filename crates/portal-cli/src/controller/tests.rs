@@ -1,6 +1,6 @@
 use super::reconnect::ReconnectCheckpoint;
 use super::*;
-use crate::tests::row;
+use crate::tests::{row, session_json, Mock};
 
 #[test]
 fn binds_unique_session_after_accounting_delay() {
@@ -1753,4 +1753,479 @@ async fn retry_after_failure_restores_state_and_keeps_the_poll_failure_evidence(
         "失败提示不能被回滚成旧文案：{}",
         c.message
     );
+}
+
+// ---- 统一采集 / 流量结算（第一阶段）----
+
+/// 统计 mock 上收到的 `onlinelog` 请求次数：这是"常规采集有几个来源"的直接证据。
+fn onlinelog_requests(mock: &Mock) -> usize {
+    mock.requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request.contains("onlinelog"))
+        .count()
+}
+
+/// 结算只在"有新采集结果"时发生：同一代数据不会被消费两次，
+/// 采集变密也不会把结算变密。
+#[tokio::test]
+async fn rate_tick_settles_each_collected_epoch_once() {
+    let mut c = Controller::default();
+    c.settings.traffic_enabled = true;
+    c.api = Some(PortalClient::new("http://127.0.0.1:1/").unwrap());
+    c.rows = vec![row("acct-1", 60, 100, 1_000)];
+    c.rows_epoch = 1;
+
+    // 第一帧只建立基线，没有可算的区间。
+    c.rate_tick();
+    assert_eq!(c.rates_epoch, 1);
+    assert!(c.latest_rates["acct-1"].sample_seconds.is_none());
+
+    // 新的一代：计费时间 +60 秒，字节增长。
+    c.rows = vec![row("acct-1", 120, 700, 6_000)];
+    c.rows_epoch = 2;
+    c.rate_tick();
+    let rate = &c.latest_rates["acct-1"];
+    assert_eq!(rate.sample_seconds, Some(60));
+    assert_eq!(rate.download_bps, Some(5_000.0 / 60.0));
+    assert_eq!(rate.upload_bps, Some(600.0 / 60.0));
+    assert_eq!(c.rates_epoch, 2);
+
+    // 内容变了但没经过采集（代数没变）：不结算，数值保持上一轮。
+    c.rows = vec![row("acct-1", 180, 1_500, 12_000)];
+    c.rate_tick();
+    assert_eq!(c.rates_epoch, 2, "没有新采集结果就不该结算");
+    assert_eq!(c.latest_rates["acct-1"].sample_seconds, Some(60));
+    assert_eq!(c.latest_rates["acct-1"].download_bps, Some(5_000.0 / 60.0));
+}
+
+/// 关闭后台刷新时既不结算、也要清掉基线：否则恢复后的第一笔速率会跨过整段关闭期，
+/// 算出一个"最近几小时的平均值"当成当前速率。
+#[tokio::test]
+async fn rate_tick_respects_disabled_policy() {
+    let mut c = Controller::default();
+    c.settings.traffic_enabled = true;
+    c.api = Some(PortalClient::new("http://127.0.0.1:1/").unwrap());
+    c.rows = vec![row("acct-1", 60, 100, 1_000)];
+    c.rows_epoch = 7;
+    // 关闭前留下的样本：计费基线 + 一条已经算出来的速率。
+    c.accounting.update(&c.rows);
+    c.latest_rates.insert(
+        "acct-1".into(),
+        Rate {
+            upload_bps: Some(1.0),
+            download_bps: Some(2.0),
+            sample_seconds: Some(60),
+        },
+    );
+    c.rates_epoch = 6;
+
+    c.settings.refresh_policy = crate::settings::RefreshPolicy::Disabled;
+    c.rate_tick();
+
+    assert!(c.latest_rates.is_empty(), "关闭后不该留着旧速率");
+    assert_eq!(c.rates_epoch, c.rows_epoch, "关闭期间攒下的代数不补结算");
+
+    // 幂等：关着的状态下反复调用也不产出任何速率。
+    c.rate_tick();
+    assert!(c.latest_rates.is_empty());
+    assert_eq!(c.rates_epoch, c.rows_epoch);
+}
+
+/// 未登录后台时不结算：没有 `api` 就没有会话数据可言。
+#[tokio::test]
+async fn rate_tick_without_backend_does_nothing() {
+    let mut c = Controller::default();
+    c.settings.traffic_enabled = true;
+    c.rows = vec![row("acct-1", 60, 100, 1_000)];
+    c.rows_epoch = 4;
+
+    c.rate_tick();
+    assert_eq!(c.rates_epoch, 0);
+    assert!(c.latest_rates.is_empty());
+}
+
+/// 常规采集只有一个来源：`redial_tick` 每次加一次请求，`rate_tick` 一次都不发。
+#[tokio::test]
+async fn only_the_collect_tick_requests_sessions() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json("acct-1", "192.0.2.2")],
+    ]);
+    let settings = Settings {
+        server: mock.base.clone(),
+        traffic_enabled: true,
+        ..Default::default()
+    };
+    let mut c = Controller::new(settings);
+    c.connect(
+        Credential::new("test-user".into(), "secret".into()),
+        "",
+        true,
+        |_| {},
+    )
+    .await
+    .expect("mock 后台应接受后台登录");
+    // 连接事务自己查两次：登录后台取 baseline、认证后再取一次。这属于事务内请求，
+    // 不属于常规采集，合并 Worker 时保持原样。
+    let after_connect = onlinelog_requests(&mock);
+    assert_eq!(after_connect, 2);
+
+    c.redial_tick(|_| {}).await;
+    assert_eq!(
+        onlinelog_requests(&mock),
+        after_connect + 1,
+        "常规采集每次只发一次 onlinelog"
+    );
+
+    c.rate_tick();
+    assert_eq!(
+        onlinelog_requests(&mock),
+        after_connect + 1,
+        "流量结算不得发起自己的采集请求"
+    );
+    assert_eq!(c.rates_epoch, c.rows_epoch, "结算要认下这一代数据");
+}
+
+/// 采集失败不覆盖最后一次有效数据、不算一代新数据、也不推进掉线计数。
+#[tokio::test]
+async fn failed_collection_keeps_last_rows_and_epoch() {
+    let settings = Settings {
+        // 端口 1 上没有监听者，连接会被立刻拒绝，不需要等超时。
+        server: "http://127.0.0.1:1/".into(),
+        traffic_enabled: true,
+        ..Default::default()
+    };
+    let mut c = Controller::new(settings);
+    c.api = Some(PortalClient::new("http://127.0.0.1:1/").unwrap());
+    c.rows = vec![row("acct-1", 60, 100, 1_000)];
+    c.selected = Some("acct-1".into());
+    c.rows_epoch = 3;
+    c.rates_epoch = 3;
+
+    c.redial_tick(|_| {}).await;
+    assert_eq!(c.rows.len(), 1, "失败不能清空最后一次有效数据");
+    assert_eq!(c.rows_epoch, 3, "失败的采集不算一代新数据");
+    assert_eq!(c.missing, 0, "请求失败不能推进缺失计数");
+    assert!(c.last_poll_failure.is_some(), "传输层失败要留证据");
+}
+
+/// 会话消失再出现时不会把两条会话的计数器混算。
+#[tokio::test]
+async fn rate_settlement_does_not_mix_sessions() {
+    let mut c = Controller::default();
+    c.settings.traffic_enabled = true;
+    c.api = Some(PortalClient::new("http://127.0.0.1:1/").unwrap());
+    c.rows = vec![row("a", 60, 100, 1_000), row("b", 30, 50, 500)];
+    c.rows_epoch = 1;
+    c.rate_tick();
+
+    c.rows = vec![row("b", 90, 350, 3_500)];
+    c.rows_epoch = 2;
+    c.rate_tick();
+
+    assert!(!c.latest_rates.contains_key("a"), "消失的会话不该留着速率");
+    let b = &c.latest_rates["b"];
+    assert_eq!(b.sample_seconds, Some(60));
+    assert_eq!(b.download_bps, Some(3_000.0 / 60.0));
+    assert_eq!(b.upload_bps, Some(300.0 / 60.0));
+}
+
+/// 手动刷新仍然立即结算，且不会被下一次定时结算重复消费。
+#[tokio::test]
+async fn manual_refresh_settles_and_consumes_the_epoch() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        vec![session_json("acct-1", "192.0.2.2")],
+    ]);
+    let settings = Settings {
+        server: mock.base.clone(),
+        traffic_enabled: true,
+        ..Default::default()
+    };
+    let mut c = Controller::new(settings);
+    c.connect(
+        Credential::new("test-user".into(), "secret".into()),
+        "",
+        true,
+        |_| {},
+    )
+    .await
+    .expect("mock 后台应接受后台登录");
+
+    let before = onlinelog_requests(&mock);
+    c.refresh().await.expect("手动刷新应成功");
+    assert_eq!(
+        onlinelog_requests(&mock),
+        before + 1,
+        "手动刷新保留自己的请求"
+    );
+    assert_eq!(c.rates_epoch, c.rows_epoch, "手动刷新要认下这一代数据");
+
+    // 定时结算没有新数据可算，不应该把刚结算的结果清成空速率。
+    let settled = c.rates_epoch;
+    c.rate_tick();
+    assert_eq!(c.rates_epoch, settled);
+}
+
+// ---- 第一阶段收尾：基线生命周期、配置同步、采集健康 ----
+
+/// 从 Disabled 恢复时不能用关闭前的基线：关闭期的累计字节必须被排除，
+/// 第一笔速率只能从"恢复后的新基线"算起。
+#[tokio::test]
+async fn resuming_after_disabled_starts_a_fresh_baseline() {
+    let mut c = Controller::default();
+    c.settings.traffic_enabled = true;
+    c.api = Some(PortalClient::new("http://127.0.0.1:1/").unwrap());
+    // 关闭前：第 60 秒的样本已经建立基线。
+    c.rows = vec![row("acct-1", 60, 100, 1_000)];
+    c.rows_epoch = 1;
+    c.rate_tick();
+    assert_eq!(c.rates_epoch, 1);
+
+    // 关闭：基线被清掉，期间攒下的代数不补结算。
+    c.settings.refresh_policy = crate::settings::RefreshPolicy::Disabled;
+    c.rows_epoch = 2;
+    c.rate_tick();
+    assert!(c.latest_rates.is_empty());
+    assert_eq!(c.rates_epoch, c.rows_epoch);
+
+    // 关闭期里会话又跑了一小时：恢复时必须从这里重新起算，而不是拿 60 秒那次做差。
+    let mut next = c.settings.clone();
+    next.refresh_policy = crate::settings::RefreshPolicy::OneMinute;
+    c.rows = vec![row("acct-1", 3_660, 100_000, 1_000_000)];
+    c.rows_epoch = 3;
+    c.apply_settings(next);
+    assert_eq!(c.rates_epoch, c.rows_epoch, "恢复时重建基线");
+    assert!(
+        c.latest_rates
+            .values()
+            .all(|rate| rate.sample_seconds.is_none()),
+        "建基线不等于一次有效结算"
+    );
+
+    // 下一份采集（+60 秒）才产出速率，区间是 60 秒而不是一小时。
+    c.rows = vec![row("acct-1", 3_720, 103_600, 1_006_000)];
+    c.rows_epoch = 4;
+    c.rate_tick();
+    let rate = &c.latest_rates["acct-1"];
+    assert_eq!(rate.sample_seconds, Some(60));
+    assert_eq!(rate.download_bps, Some(6_000.0 / 60.0));
+    assert_eq!(rate.upload_bps, Some(3_600.0 / 60.0));
+}
+
+/// 关掉流量统计同样要清基线：重新打开应当从头采样，而不是把关闭期算进来。
+#[tokio::test]
+async fn disabling_traffic_clears_baseline() {
+    let mut c = Controller::default();
+    c.settings.traffic_enabled = true;
+    c.api = Some(PortalClient::new("http://127.0.0.1:1/").unwrap());
+    c.rows = vec![row("acct-1", 60, 100, 1_000)];
+    c.rows_epoch = 5;
+    c.rate_tick();
+    assert_eq!(c.rates_epoch, 5);
+
+    let mut next = c.settings.clone();
+    next.traffic_enabled = false;
+    c.apply_settings(next);
+    assert!(c.latest_rates.is_empty());
+    assert_eq!(c.rates_epoch, c.rows_epoch);
+
+    // 关着的状态下定时结算也不会把旧样本捡回来。
+    c.rows_epoch = 6;
+    c.rate_tick();
+    assert!(c.latest_rates.is_empty());
+}
+
+/// 连接成功即建立基线：下一轮结算就能出速率，不用再等满两轮。
+#[tokio::test]
+async fn connect_seeds_rate_baseline() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![vec![], vec![session_json("acct-1", "192.0.2.2")]]);
+    let settings = Settings {
+        server: mock.base.clone(),
+        traffic_enabled: true,
+        ..Default::default()
+    };
+    let mut c = Controller::new(settings);
+    c.connect(
+        Credential::new("test-user".into(), "secret".into()),
+        "",
+        true,
+        |_| {},
+    )
+    .await
+    .expect("mock 后台应接受后台登录");
+
+    assert_eq!(c.rates_epoch, c.rows_epoch, "连接后基线已就绪");
+    assert!(
+        c.latest_rates
+            .values()
+            .all(|rate| rate.sample_seconds.is_none()),
+        "建基线不产出速率"
+    );
+
+    // 第一次定时结算就能算出区间（60 秒），不需要再等一轮。
+    c.rows = vec![row("acct-1", 120, 2_024, 3_048)];
+    c.rows_epoch = c.rows_epoch.wrapping_add(1);
+    c.rate_tick();
+    assert_eq!(c.latest_rates["acct-1"].sample_seconds, Some(60));
+}
+
+/// 丢掉单条会话的速率与基线后，同一个 id 再出现时从头采样，不做跨期差分。
+#[test]
+fn forget_session_rate_drops_entry_and_baseline() {
+    let mut c = Controller::default();
+    c.latest_rates.insert(
+        "a".into(),
+        Rate {
+            upload_bps: Some(1.0),
+            download_bps: Some(2.0),
+            sample_seconds: Some(60),
+        },
+    );
+    c.accounting.update(&[row("a", 60, 100, 1_000)]);
+
+    c.forget_session_rate("a");
+    assert!(!c.latest_rates.contains_key("a"), "速率快照要一起丢");
+
+    let rates = c.accounting.update(&[row("a", 120, 700, 6_000)]);
+    assert!(
+        rates["a"].sample_seconds.is_none(),
+        "基线已丢弃，重新采样不该算出旧区间的速率"
+    );
+}
+
+/// 下线确认后立刻清掉该会话的速率条目（System 凭证模式不会走 clear()）。
+#[tokio::test]
+async fn disconnect_clears_rate_entry() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![
+        vec![],
+        vec![session_json("acct-1", "192.0.2.2")],
+        // disconnect_id 先查一次列表，确认目标还在。
+        vec![session_json("acct-1", "192.0.2.2")],
+        // 下线后的确认查询：目标已消失。
+        vec![],
+    ]);
+    let settings = Settings {
+        server: mock.base.clone(),
+        traffic_enabled: true,
+        credential_store: CredentialStore::System,
+        ..Default::default()
+    };
+    let mut c = Controller::new(settings);
+    c.connect(
+        Credential::new("test-user".into(), "secret".into()),
+        "",
+        true,
+        |_| {},
+    )
+    .await
+    .expect("mock 后台应接受后台登录");
+    // backend-only 登录不会自动绑定会话（`outcome` 为空），这里显式选中唯一一条。
+    c.select("acct-1").expect("应能选中在线会话");
+    let id = c.selected.clone().expect("应绑定到唯一会话");
+
+    // 造一条已算出的速率。
+    c.rows = vec![row(&id, 120, 2_024, 3_048)];
+    c.rows_epoch = c.rows_epoch.wrapping_add(1);
+    c.rate_tick();
+    assert!(c.latest_rates[&id].sample_seconds.is_some());
+
+    c.disconnect(&id).await.expect("下线应成功");
+    assert!(!c.latest_rates.contains_key(&id), "下线后不该留着它的速率");
+    assert!(c.api.is_some(), "System 凭证模式下线不清本地客户端");
+}
+
+/// 采集健康状态：只有成功采集才刷新时间；停滞不等于离线，也不改认证结论。
+#[tokio::test]
+async fn collect_age_only_tracks_successful_collections() {
+    let mut c = Controller {
+        api: Some(PortalClient::new("http://127.0.0.1:1/").unwrap()),
+        rows: vec![row("acct-1", 60, 100, 1_000)],
+        selected: Some("acct-1".into()),
+        status: "session_online".into(),
+        ..Default::default()
+    };
+    assert!(
+        c.snapshot().collect_age_ms.is_none(),
+        "还没采集过就没有新鲜度可言"
+    );
+
+    // 采集失败：不刷新时间、不标停滞、不推进掉线次数、不改在线状态。
+    c.redial_tick(|_| {}).await;
+    let failed = c.snapshot();
+    assert!(failed.collect_age_ms.is_none(), "失败不能刷新采集时间");
+    assert!(!failed.collector_stalled);
+    assert_eq!(c.missing, 0);
+    assert_eq!(failed.status, "session_online");
+
+    // 超过阈值：标停滞，但会话与认证结论保持最后一次确认的结果。
+    c.last_collect_at = Some(Instant::now() - Duration::from_secs(31));
+    let stalled = c.snapshot();
+    assert!(stalled.collector_stalled);
+    assert!(stalled.collect_age_ms.is_some_and(|age| age >= 31_000));
+    assert!(stalled.authenticated, "停滞不等于未认证");
+    assert_eq!(stalled.status, "session_online");
+    assert_eq!(
+        stalled.sessions.len(),
+        1,
+        "停滞期间照旧展示最后一次确认的会话"
+    );
+
+    // 采集恢复后立刻清除停滞标记。
+    c.last_collect_at = Some(Instant::now());
+    assert!(!c.snapshot().collector_stalled);
+}
+
+/// 登出后不再有"数据陈旧"可言：快照不暴露新鲜度。
+#[test]
+fn snapshot_hides_collect_age_after_logout() {
+    let mut c = Controller {
+        api: Some(PortalClient::new("http://127.0.0.1:1/").unwrap()),
+        last_collect_at: Some(Instant::now() - Duration::from_secs(600)),
+        ..Default::default()
+    };
+    assert!(c.snapshot().collector_stalled, "前置条件：已登录且数据很旧");
+
+    c.forget();
+    let snapshot = c.snapshot();
+    assert!(snapshot.collect_age_ms.is_none());
+    assert!(!snapshot.collector_stalled);
+}
+
+/// 关闭后台刷新只停结算，采集照常：5 秒链路继续拉列表并推进代数。
+#[tokio::test]
+async fn disabled_policy_keeps_collecting() {
+    let mock = Mock::new("direct");
+    mock.script_sessions(vec![vec![], vec![session_json("acct-1", "192.0.2.2")]]);
+    let settings = Settings {
+        server: mock.base.clone(),
+        refresh_policy: crate::settings::RefreshPolicy::Disabled,
+        ..Default::default()
+    };
+    let mut c = Controller::new(settings);
+    let client = PortalClient::new(&mock.base).unwrap();
+    client.login("test-user", "secret").await.unwrap();
+    c.api = Some(client);
+
+    let before = onlinelog_requests(&mock);
+    c.redial_tick(|_| {}).await;
+    assert_eq!(
+        onlinelog_requests(&mock),
+        before + 1,
+        "策略关闭时采集 worker 照常请求"
+    );
+    assert_eq!(c.rows_epoch, 1, "采集成功仍然推进代数");
+
+    // 结算侧保持不动，并把代数追平，避免恢复后补算关闭期的数据。
+    c.rate_tick();
+    assert_eq!(c.rates_epoch, c.rows_epoch);
+    assert!(c.latest_rates.is_empty());
 }

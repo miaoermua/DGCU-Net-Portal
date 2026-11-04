@@ -106,6 +106,9 @@ impl Controller {
                 if self.settings.reconnect_mode != ReconnectMode::Disabled {
                     self.credential = Some(credential);
                 }
+                // 绑定到会话就立刻建立计费基线：既不会把连接前的历史样本算进来，
+                // 也不用再等满两轮结算才有第一个读数。
+                self.seed_rate_baseline();
                 return Ok(self.snapshot());
             }
         }
@@ -241,6 +244,9 @@ impl Controller {
         if self.settings.reconnect_mode != ReconnectMode::Disabled {
             self.credential = Some(credential);
         }
+        // 连接成功后重建计费基线（只记起点，不出速率），下一轮定时结算即可给出
+        // 第一个真实区间。
+        self.seed_rate_baseline();
         // Otherwise credential drops here, before the online session ends.
         Ok(self.snapshot())
     }
@@ -266,6 +272,7 @@ impl Controller {
             return Err(e);
         }
         self.rows.retain(|r| r.radacctid != id);
+        self.forget_session_rate(id);
         if self.selected.as_deref() == Some(id) {
             self.selected = None;
         }

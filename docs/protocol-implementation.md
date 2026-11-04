@@ -130,7 +130,9 @@ Portal 认证与后台自助是两套会话，代码里刻意分开（`lib.rs:1`
 
 ### Snapshot
 
-`Snapshot` 是 daemon 回给 CLI 与 GUI 的唯一状态载体（`controller.rs` 的 `Snapshot`）：`status`、`message`、`sessions`、`rates`、`selected_id`、`background_paused`、`authenticated`、`one_session`、`account`。
+`Snapshot` 是 daemon 回给 CLI 与 GUI 的唯一状态载体（`controller.rs` 的 `Snapshot`）：`status`、`message`、`sessions`、`rates`、`selected_id`、`background_paused`、`authenticated`、`one_session`、`account`、`collect_age_ms`、`collector_stalled`。
+
+后两个字段只描述**数据新鲜度**，不参与任何在线/离线判定：`collect_age_ms` 是距最近一次成功常规采集的毫秒数（未登录或从未采集成功为 `None`），`collector_stalled` 表示该值超过 30 秒（`controller.rs` 的 `COLLECT_STALL`）。采集失败不刷新这个时间，也不推进 `missing`、不改 `status` 与 `authenticated`——停滞只说明"显示的是最后一次确认的状态"。`release()` 会清空记录，所以登出后两个字段回到 `None`/`false`。
 
 `status` 是**字符串**而不是枚举（`Snapshot::status`）。全部取值、写入位置与界面标题（标题映射见 `crates/portal-gui/frontend/src/usePortal.ts:57`）：
 
@@ -206,12 +208,16 @@ refresh.policy           poll.jitter
 
 `traffic_enabled` 关闭时清空基线并返回空表，重新打开后从头采样（`controller/session.rs` 的 `update_rates()`）。
 
+基线不跨"关闭期"存活：关闭后台刷新、关闭流量统计、清空会话都会走 `clear_rate_baseline()`（清基线、清 `latest_rates`、把 `rates_epoch` 追平）；重新打开或连接成功时走 `seed_rate_baseline()`，用当前会话列表重建起点且不产出速率（`controller/session.rs`、`controller/connection.rs` 的 `connect()`）。因此恢复后第一笔速率只覆盖恢复之后的区间，不会把关闭期的累计字节算进去；也不用再等满两轮结算。会话确认下线时 `forget_session_rate()` 丢掉该会话的速率快照与基线（`disconnect()`），同一条 `radacctid` 再出现时按全新样本采样。
+
+采集与结算解耦：`rows_epoch` 在每次成功采集后加一，`update_rates()` 结算时把 `rates_epoch` 追平（`controller.rs`、`controller/session.rs`）。两者相等表示“没有新的有效数据”，此时定时结算直接返回、保留上一轮的 `latest_rates`，因此不会把同一份快照当两次采样，也不会靠“每 N 次采集算一次”凑周期（`rate_tick()`）。
+
 ## 八、掉线检测、重拨与网络自愈
 
-daemon 跑两个独立 worker（`daemon.rs:107-128`）：
+daemon 跑两个 worker（`daemon.rs:179-206`），节奏各自保留，但只有一条会发 HTTP：
 
-- **刷新 worker**：间隔取 `refresh_policy.next_delay(poll_jitter)`，即 60 秒叠加抖动；策略为 `Disabled` 时返回 `None`，worker 按 1 秒空转（`daemon.rs:110-116`、`settings.rs:80-87`）。调用 `Controller::tick`，没有后台会话或刷新被禁用时直接返回（`controller/session.rs` 的 `tick()`）。
-- **重拨 worker**：固定 5 秒叠加抖动，调用 `redial_tick`（`daemon.rs:119-128`）。
+- **采集 worker**：固定 5 秒叠加抖动（`settings.rs:88-111`），调用 `redial_tick`。它是常规 `/sessions` 的**唯一**来源：一次响应同时更新 `rows`、推进 `rows_epoch`、供会话观察/绑定与之后的流量结算使用（`controller/reconnect.rs` 的 `redial_tick()`、`controller/session.rs` 的 `sync_sessions()`）。
+- **结算 worker**：间隔取 `refresh_policy.next_delay(poll_jitter)`，即 60 秒叠加抖动；策略为 `Disabled` 时返回 `None`，worker 按 1 秒空转（`daemon.rs:197-206`、`settings.rs:80-87`）。只调用 `rate_tick()`——读取控制器里最新的会话数据做流量结算，**不发任何请求**；没有新采集结果或策略为 `Disabled` 时直接返回（`controller/session.rs` 的 `rate_tick()`）。
 
 抖动按等级取 ±5%/±10%/±20%/0%，偏移量由当前时间的纳秒部分取模得到（`settings.rs:88-111`）。
 
@@ -224,9 +230,9 @@ daemon 跑两个独立 worker（`daemon.rs:107-128`）：
 - **失败证据**：`poll_failure_is_network()` 只认 `Network(_)`/`Timeout(_)`，命中才把 `last_poll_failure` 刷成当前时间，供“疑似被挤下线”判定使用（`controller.rs` 的 `poll_failure_is_network()`）。后台 5xx、Cookie 失效、业务拒绝与解析失败不能反推本机网络有问题。
 - **是否尝试自愈**：`recoverable_poll_error()` 为真才调用 `retry_after_failure()`（`controller/reconnect.rs` 的 `recoverable_poll_error()`）。它等于传输层/超时/发现失败/`Http(408|425|429|500..=599)`，再加 `Rejected`——Cookie 过期或后台维护同样值得用保存的凭据重登一次；`InvalidResponse`、`Redirect`、其他 HTTP 状态码等不属于这一类，只留下日志与提示，不会重建连接。
 
-“可恢复”只代表允许尝试，不代表一定会重新认证：`retry_after_failure()` 入口先过 `auto_auth_allowed()`，`redial_hold`、`paused`、`reconnect_mode == Disabled` 任一成立就直接返回，此时失败只被记录、监测照常；退避窗口未到或进程内没有凭据同样直接返回（`controller/reconnect.rs` 的 `retry_after_failure()`）。`refresh()`/`tick()` 走的是另一条路：只记录 `last_poll_failure`（同样仅限网络/超时）并把错误交给调用方，不触发自愈（`controller/session.rs` 的 `refresh()` 与 `tick()`）。
+“可恢复”只代表允许尝试，不代表一定会重新认证：`retry_after_failure()` 入口先过 `auto_auth_allowed()`，`redial_hold`、`paused`、`reconnect_mode == Disabled` 任一成立就直接返回，此时失败只被记录、监测照常；退避窗口未到或进程内没有凭据同样直接返回（`controller/reconnect.rs` 的 `retry_after_failure()`）。采集本身（`sync_sessions()`）只记录 `last_poll_failure`（同样仅限网络/超时）并把错误交给调用方：`refresh()` 原样返回给 IPC，只有 `redial_tick()` 的失败分支才会尝试自愈（`controller/session.rs` 的 `sync_sessions()`、`controller/reconnect.rs` 的 `redial_tick()`）。
 
-`observe_session` 先判定再清理（`controller/session.rs` 的 `observe_session()`）：原 `radacctid` 还在就归零 `missing`、置 `session_online`、清掉 `loss`，但**不解除** `redial_hold`；消失就 `missing += 1`、置 `offline`，并在 `drops_state_on_loss()` 释放本地态之前留下 `loss { id, kind }`。`refresh` 也调用它，但 `count = false`（同文件的 `refresh()`），避免 1 分钟刷新与 5 秒 worker 把缺失次数算两遍。
+`observe_session` 先判定再清理（`controller/session.rs` 的 `observe_session()`）：原 `radacctid` 还在就归零 `missing`、置 `session_online`、清掉 `loss`，但**不解除** `redial_hold`；消失就 `missing += 1`、置 `offline`，并在 `drops_state_on_loss()` 释放本地态之前留下 `loss { id, kind }`。手动刷新也调用它，但 `count = false`（同文件的 `refresh()`），缺失次数因此只由 5 秒采集推进，不会被手动刷新额外加一次。
 
 分级只看能拿到的证据（`observe_session()` 中的 `kind` 判定）：
 

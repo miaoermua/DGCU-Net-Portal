@@ -14,6 +14,14 @@ const locked = computed(() => busy.value || !ready.value)
 // Settings are persisted through the daemon and can be edited while a session
 // is online; changing them does not terminate the current daemon session.
 const settingsLocked = computed(() => locked.value)
+// 采集停滞提示：只说明"这份会话数据可能不是最新的"，不改变在线状态与认证结论。
+// 阈值由 daemon 判定（30 秒），这里只负责措辞。
+const staleNotice = computed(() => {
+  if (!snapshot.value.collector_stalled) return ''
+  const seconds = Math.round((snapshot.value.collect_age_ms ?? 0) / 1000)
+  const age = seconds >= 60 ? `${Math.floor(seconds / 60)} 分钟` : `${seconds} 秒`
+  return `后台已 ${age}没有取得新会话数据，当前显示的是最后一次确认的状态`
+})
 const dialog = ref<HTMLDialogElement>()
 const logDialog = ref<HTMLDialogElement>(), sessionDialog = ref<HTMLDialogElement>(), licenseDialog = ref<HTMLDialogElement>()
 let previousFocus: HTMLElement | null = null
@@ -196,7 +204,7 @@ function updateAction() { return updatePhase.value === 'error' ? checkUpdate(tru
     <main>
       <section v-if="page === 0" class="overview" aria-label="网络概览">
         <MiuixCard class="connection-card">
-          <div class="connection-main"><div class="status-icon" :class="{ online: isOnline, authenticating: !!phase }" aria-hidden="true"><MiuixProgressIndicator v-if="phase" type="infinite" :size="25" color="currentColor" /><MiuixIcon v-else :icon="Link" weight="demibold" :size="25" /></div><div class="connection-copy"><div class="status-line"><h2>{{ phase || title }}</h2><span v-if="saved.credential_store === 'memory'" class="privacy-tag">仅一次会话</span></div><p class="status-message" role="status">{{ phase ? '请稍候，等待认证系统返回结果' : snapshot.message }}</p></div></div>
+          <div class="connection-main"><div class="status-icon" :class="{ online: isOnline, authenticating: !!phase }" aria-hidden="true"><MiuixProgressIndicator v-if="phase" type="infinite" :size="25" color="currentColor" /><MiuixIcon v-else :icon="Link" weight="demibold" :size="25" /></div><div class="connection-copy"><div class="status-line"><h2>{{ phase || title }}</h2><span v-if="saved.credential_store === 'memory'" class="privacy-tag">仅一次会话</span></div><p class="status-message" role="status">{{ phase ? '请稍候，等待认证系统返回结果' : snapshot.message }}</p><p v-if="staleNotice" class="status-stale">{{ staleNotice }}</p></div></div>
           <div class="connection-actions"><MiuixButton type="primary" :disabled="locked" @click="primaryAction">{{ primaryLabel }}</MiuixButton><MiuixIconButton class="shutdown-icon" :disabled="locked" aria-label="退出并停止后台服务" title="退出并停止后台服务" @click="close"><MiuixIcon :icon="Close" :size="18" /></MiuixIconButton><MiuixButton class="auth-site-icon" :disabled="locked" aria-label="打开认证后台" title="打开认证后台" @click="openSite"><MiuixIcon :icon="Forward" :size="18" /></MiuixButton></div>
         </MiuixCard>
         <div class="traffic-grid" aria-label="后台计费流量">

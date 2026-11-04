@@ -147,6 +147,22 @@ fn set_config(mut settings: Settings, key: &str, value: &str) -> Result<(), Stri
     }
     settings.save()
 }
+
+/// 配置落盘后请运行中的 daemon 重新加载。
+///
+/// 只在保存成功之后调用，且只做尽力而为：daemon 没在运行是正常情况（下次启动会
+/// 读到新配置），IPC 失败也不该把"配置已保存"这条成功结果变成命令失败。真正需要
+/// 说出来的失败是 daemon 明确回了 `ok: false`——那种情况下配置没有生效，不讲清楚
+/// 用户会以为改成功了。
+async fn reload_daemon_if_running() {
+    match ipc::request(Request::Reload).await {
+        Ok(response) if !response.ok => {
+            eprintln!("配置已保存，但后台拒绝重新加载：{}", response.message)
+        }
+        Ok(_) => {}
+        Err(_) => eprintln!("配置已保存；后台服务未运行，将在下次启动时生效"),
+    }
+}
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     match run(Cli::parse()).await {
@@ -228,6 +244,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ConfigCommand::Set { key, value } => {
                 set_config(Settings::load(), &key, &value)?;
                 println!("已保存配置：{key}");
+                reload_daemon_if_running().await;
             }
             ConfigCommand::Account => {
                 let credential = credentials()?;
@@ -237,6 +254,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 settings.save()?;
                 portal_cli::settings::save_password(&credential.password)?;
                 println!("账号凭据已保存到系统凭据库");
+                // 账号与凭据保存方式参与运行时行为（自动登录、清凭据策略），
+                // 一并让 daemon 重新加载。
+                reload_daemon_if_running().await;
             }
             ConfigCommand::Reset => return Err("配置重置需要明确指定配置文件路径".into()),
         },

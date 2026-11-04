@@ -370,4 +370,22 @@ mod tests {
         );
         assert_eq!(RefreshPolicy::Disabled.next_delay(PollJitter::Low), None);
     }
+
+    /// 5 秒采集周期叠加抖动后的真实边界。
+    ///
+    /// `PollJitter::apply` 是**对称**抖动：`base + offset - span`，`offset` 落在
+    /// `0..=2*span`，所以结果在 `base ± span` 之间，会比 5 秒略短（low 档最坏
+    /// 4.75 秒）。这是改造前就有的行为，第一阶段统一采集时原样保留，不改成
+    /// 单向正向偏移——那会同时改变重连退避与 60 秒结算的实际间隔。
+    #[test]
+    fn five_second_collect_cadence_stays_within_jitter_bounds() {
+        for _ in 0..100 {
+            let low = PollJitter::Low.apply(Duration::from_secs(5)).as_millis();
+            assert!((4_750..=5_250).contains(&low), "low 抖动越界：{low}");
+        }
+        assert_eq!(
+            PollJitter::Disabled.apply(Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
+    }
 }

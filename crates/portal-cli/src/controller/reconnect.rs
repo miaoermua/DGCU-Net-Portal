@@ -62,6 +62,10 @@ impl ReconnectCheckpoint {
             selected,
             accounting,
             latest_rates,
+            // 采集代数只标记"这一代数据有没有被流量结算用过"，不属于一次连接事务；
+            // 回滚它会让结算重复消费同一份数据，或者漏结算一代。
+            rows_epoch: _,
+            rates_epoch: _,
             paused,
             status,
             message,
@@ -75,6 +79,9 @@ impl ReconnectCheckpoint {
             redial_hold,
             current_network: _,
             last_poll_failure: _,
+            // "最近一次成功采集"是观测事实，不属于一次连接事务：回滚它会把刚发生
+            // 的成功采集抹掉，界面反而误报数据陈旧。
+            last_collect_at: _,
             bound_network,
             resolve_network: _,
         } = c;
@@ -152,9 +159,9 @@ impl Controller {
             .apply(Duration::from_secs(30 * (1 << self.attempts)))
     }
 
-    /// Check the selected session on the short drop-detection cadence. This is
-    /// intentionally separate from `tick`: it reads session presence but does
-    /// not update accounting-rate samples.
+    /// Check the selected session on the short drop-detection cadence. This is the
+    /// app's only periodic `/sessions` caller: the same response also feeds the
+    /// controller state that the rate observer settles later.
     pub async fn redial_tick<F: Fn(Phase)>(&mut self, progress: F) {
         // 监测与重拨解耦：只要登录了后台就轮询会话，不因 `paused` 或
         // `reconnect_mode` 关闭而停；是否重拨由下面的条件单独决定。
@@ -162,15 +169,8 @@ impl Controller {
         if self.api.is_none() {
             return;
         }
-        // 每次轮询前先确认 client 绑的还是当前网卡地址；换过地址就重建。
-        self.rebind_changed_network();
-        let rows = match self.api.as_ref() {
-            Some(api) => api.sessions().await,
-            None => return,
-        };
-        match rows {
-            Ok(rows) => {
-                self.rows = rows;
+        match self.sync_sessions().await {
+            Ok(()) => {
                 self.bind_new_session();
                 self.update_session_status();
                 self.network_attempts = 0;
@@ -178,10 +178,8 @@ impl Controller {
             }
             Err(error) => {
                 // 请求失败只算"连接异常"的证据，不能据此断言任何会话消失；
-                // 而且只有传输层失败/超时算本机异常，后台错误与解析失败不算。
-                if Self::poll_failure_is_network(&error) {
-                    self.last_poll_failure = Some(Instant::now());
-                }
+                // 只有传输层失败/超时算本机异常（由 `sync_sessions` 记下），
+                // 后台错误与解析失败不算。
                 self.logs.error(&error);
                 if self.loss.is_none() {
                     self.message = error.to_string();

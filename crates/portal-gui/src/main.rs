@@ -186,6 +186,9 @@ async fn connect(
             authenticated: true,
             one_session: Settings::load().credential_store == CredentialStore::Memory,
             account: None,
+            // 兜底快照来自一次 IPC 响应：daemon 刚回过话，视为刚采集过。
+            collect_age_ms: Some(0),
+            collector_stalled: false,
         }))
 }
 #[tauri::command]

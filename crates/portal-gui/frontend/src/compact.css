@@ -60,7 +60,7 @@ h1 { font-size: 17px; line-height: 1.25; font-weight: 700; letter-spacing: -.35p
 .status-icon .m-icon, .status-icon .m-progress { width: 18.75px; height: 18.75px; }
 .status-line { flex-wrap: wrap; gap: 8px; }
 .status-line h2 { font-size: 17px; line-height: 1.4; }
-.status-message { font-size: 11px; color: var(--m-color-on-surface-variant-summary); line-height: 1.6; margin-top: 3px; overflow-wrap: anywhere; }
+.status-message { font-size: 11px; color: var(--m-color-on-surface-variant-summary); line-height: 1.6; margin-top: 3px; overflow-wrap: anywhere; }.status-stale { margin-top: 4px; font-size: 11px; line-height: 1.6; color: #c48925; overflow-wrap: anywhere; }
 .connection-actions { display: flex; gap: 7px; flex-shrink: 0; }
 .shutdown-icon, .refresh-icon, .clear-session-icon, .backend-login-icon { --m-icon-button-min-width: 32px; --m-icon-button-min-height: 32px; --m-icon-button-radius: 10px; --m-icon-button-bg: var(--m-color-secondary-container); }
 .auth-site-icon.m-button { padding: 8px; min-width: 32px; width: 32px; }

@@ -68,6 +68,10 @@ export interface Snapshot {
   authenticated: boolean
   one_session: boolean
   account: AccountInfo | null
+  /** 距最近一次成功采集的毫秒数；未登录或从未采集成功时为 null。 */
+  collect_age_ms: number | null
+  /** 采集是否已停滞。只表示数据可能不新，不代表会话已离线。 */
+  collector_stalled: boolean
 }
 export interface UpdateInfo {
   current: string

@@ -174,6 +174,13 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 /// 在已经绑定的端点上服务：先起两个后台 worker，再进入 accept 循环。
 ///
+/// 两个 worker 共享同一次采集结果，节奏各自保留：
+///
+/// - 采集 worker 约每 5 秒跑一次 `redial_tick`，是**唯一**周期性发起 `/sessions`
+///   的地方，结果写入控制器后供会话观察、绑定和流量结算共用。
+/// - 结算 worker 约每 60 秒跑一次 `rate_tick`，只读时钟和控制器里的最新会话数据，
+///   不发任何 HTTP 请求，因此不会产生第二次采集。
+///
 /// `serve()` 只负责绑定端点、读取设置和启动自动登录；测试用临时端点直接进这里，
 /// 不去读本机设置。两个入口走的是同一份服务逻辑，没有测试专用分支。
 pub(crate) async fn serve_on(
@@ -181,27 +188,28 @@ pub(crate) async fn serve_on(
     state: Arc<State>,
     logs: LogBuffer,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let worker_state = state.clone();
+    let collect_state = state.clone();
     tokio::spawn(async move {
         loop {
-            let settings = worker_state.lock().await.settings.clone();
+            let settings = collect_state.lock().await.settings.clone();
+            let delay = settings
+                .poll_jitter
+                .apply(std::time::Duration::from_secs(5));
+            tokio::time::sleep(delay).await;
+            collect_state.lock().await.redial_tick(|_| {}).await;
+        }
+    });
+    let rate_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            let settings = rate_state.lock().await.settings.clone();
+            // 关闭后台刷新时维持 1 秒的空转节奏：`rate_tick` 进去就返回，不发请求。
             let delay = settings
                 .refresh_policy
                 .next_delay(settings.poll_jitter)
                 .unwrap_or_else(|| std::time::Duration::from_secs(1));
             tokio::time::sleep(delay).await;
-            worker_state.lock().await.tick().await;
-        }
-    });
-    let redial_state = state.clone();
-    tokio::spawn(async move {
-        loop {
-            let settings = redial_state.lock().await.settings.clone();
-            let delay = settings
-                .poll_jitter
-                .apply(std::time::Duration::from_secs(5));
-            tokio::time::sleep(delay).await;
-            redial_state.lock().await.redial_tick(|_| {}).await;
+            rate_state.lock().await.rate_tick();
         }
     });
     eprintln!("portal-cli daemon ready");
