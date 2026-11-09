@@ -270,6 +270,8 @@ Arch 的 `makepkg` 必须跑在 Arch 自己的 rootfs 里（Ubuntu 上没有 `pa
 
 安装布局（与 `packaging/arch/PKGBUILD` 一致）：`/usr/bin/portal-gui`、`/usr/bin/portal-cli`、`/usr/share/applications/dgcu-portal.desktop`、`/usr/share/icons/hicolor/256x256/apps/portal-gui.png`、`/usr/share/licenses/dgcu-net-portal/LICENSE`。desktop 文件在 `packaging/linux/`，三个发行版共用一份。
 
+AppImage 是唯一由 tauri bundler 拼装的产物，它的内容不受上面几个脚本控制。bundler 默认只带 GUI 主程序，daemon 必须显式声明成 `externalBin`（`crates/portal-gui/tauri.appimage.conf.json`），否则包内根本没有 `portal-cli`，用户一启动就会看到「找不到同包内的 portal-cli daemon」。CI 的做法是先把 `target/release/portal-cli` 复制成 `crates/portal-gui/binaries/portal-cli-<目标三元组>`（这个目录已 gitignore），bundler 打包时去掉三元组后缀放进 `usr/bin`，正好落在 GUI「沿自身可执行文件目录向上找同包 daemon」的搜索路径上。打完还会检查 AppDir 里确实存在 `usr/bin/portal-cli`，缺了直接让这一步失败，而不是等用户装上才发现。本地要打 AppImage 也得先放好这个带后缀的文件，再执行 `tauri build --config tauri.appimage.conf.json`。
+
 deb 由 Python 直接拼 ar 归档（`debian-binary` / `control.tar.gz` / `data.tar.gz`），**不依赖 `dpkg-deb`**，因此在 macOS 上也能构建与验证。rpm 需要 PATH 里有 `rpmbuild`（Ubuntu 上 `apt install rpm`）。
 
 rpm 的 `%files` 与 `%install` 必须一起改：文件清单里声明了、`%install` 却没装进 buildroot 的路径，rpmbuild 要等到最后打包阶段才报 `File not found`，一次 CI 就白跑。`package_linux.py` 在调用 `rpmbuild` 之前会先解析 spec 比对两段（只认整行就是段标记的行，注释里的字样不算），不一致就直接退出并指出缺哪一条——因此在没有 `rpmbuild` 的机器上也能验证 spec 自洽。

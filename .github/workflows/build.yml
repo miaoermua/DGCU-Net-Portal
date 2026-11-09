@@ -172,10 +172,29 @@ jobs:
         run: |
           npm install --global @tauri-apps/cli@^2
           version=$(jq -r .version crates/portal-gui/tauri.conf.json)
-          echo '{"bundle":{"active":true,"targets":["appimage"]}}' > /tmp/tauri.ci.json
-          (cd crates/portal-gui && tauri build --config /tmp/tauri.ci.json)
+          # AppImage 只由 tauri bundler 决定内容，而它默认只带 GUI 主程序。
+          # daemon 必须在 tauri.appimage.conf.json 里声明成 externalBin，否则
+          # 包内没有 portal-cli，GUI 启动即报「找不到同包内的 portal-cli」。
+          # externalBin 的文件名要带目标三元组，bundler 打包时会去掉后缀再放
+          # 到 usr/bin，正好与 GUI 沿自身目录查找的规则一致。
+          case "${{ matrix.arch }}" in
+            x86_64) triple=x86_64-unknown-linux-gnu ;;
+            aarch64) triple=aarch64-unknown-linux-gnu ;;
+            *) echo "未知架构：${{ matrix.arch }}" >&2; exit 1 ;;
+          esac
+          mkdir -p crates/portal-gui/binaries
+          install -m 0755 target/release/portal-cli \
+            "crates/portal-gui/binaries/portal-cli-${triple}"
+          (cd crates/portal-gui && tauri build --config tauri.appimage.conf.json)
           src=$(find target/release/bundle/appimage -name '*.AppImage' | head -n 1)
           test -n "$src"
+          # 打完直接检查 AppDir：daemon 没进包时在这里失败，而不是等用户装上才发现。
+          appdir=$(find target/release/bundle/appimage -maxdepth 1 -name '*.AppDir' | head -n 1)
+          test -n "$appdir"
+          test -x "$appdir/usr/bin/portal-cli" || {
+            echo "AppImage 内缺少 usr/bin/portal-cli（externalBin 未生效）" >&2
+            exit 1
+          }
           name="DGCU-Net-Portal-${version}-linux-${{ matrix.arch }}.AppImage"
           cp "$src" "target/packages/$name"
       - uses: actions/upload-artifact@v7

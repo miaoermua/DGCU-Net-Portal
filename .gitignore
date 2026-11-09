@@ -7,6 +7,8 @@ node_modules/
 **/.DS_Store
 
 /crates/portal-gui/gen/
+# AppImage 打包前由 CI 放进去的 sidecar 二进制（带目标三元组后缀），不提交
+/crates/portal-gui/binaries/
 *.har
 
 .DS_Store
