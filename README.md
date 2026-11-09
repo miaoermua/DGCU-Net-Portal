@@ -46,6 +46,7 @@
 - [校园网认证协议分析](./docs/campus-network-auth.md)：抓包得到的协议事实与判断依据。
 - [校园网认证协议实现](./docs/protocol-implementation.md)：协议在代码里如何落地。
 - [开发者文档](./docs/developer-guide.md)：运行、配置与构建说明。
+- [portal-cli 使用指南](./docs/portal-cli.md)：以 OpenWrt 为例的安装、配置与排障。
 - [DeepWiki](https://deepwiki.com/miaoermua/DGCU-Net-Portal)
 
 ```text

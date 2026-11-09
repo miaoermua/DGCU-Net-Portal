@@ -16,6 +16,8 @@ portal-gui   配置界面、托盘、日志和 daemon 控制器
 
 所有需要 daemon 的命令都通过 `portal-cli.sock` 转发，CLI 自己不做认证：
 
+在 OpenWrt 上安装、写配置与排障的操作流程见 [portal-cli 使用指南](./portal-cli.md)，本节只列命令与参数事实。
+
 ```bash
 cargo run -p portal-cli -- run --daemon
 cargo run -p portal-cli -- up

@@ -63,7 +63,7 @@ python3 scripts/release_notes.py --assets target/packages --repo <owner/name> --
 ## 文档保真
 
 1. 文档只写代码或抓包里已经存在的东西。关于实现的每句断言都要能给出 `文件:行`；给不出就删掉那句话，别写成"应该/计划/未来"。
-2. 分析与实现分开。`docs/campus-network-auth.md` 只记抓包得到的协议事实（校园网侧变了才更新）；`docs/protocol-implementation.md` 记协议在代码里如何落地（跟着代码走）；`docs/developer-guide.md` 记运行、配置与构建。改动落在对应那篇，不要混写。
+2. 分析与实现分开。`docs/campus-network-auth.md` 只记抓包得到的协议事实（校园网侧变了才更新）；`docs/protocol-implementation.md` 记协议在代码里如何落地（跟着代码走）；`docs/developer-guide.md` 记运行、配置与构建；`docs/portal-cli.md` 记 CLI 的部署与使用流程（以 OpenWrt 为例），只写操作路径，不重复命令与字段清单。改动落在对应那篇，不要混写。
 3. 设置键、命令名、错误码必须与代码一致。本仓库吃过亏的虚构物：`network_monitor`/`session_monitor`/`traffic_monitor` 这类不存在的设置键，以及 `AuthState`/`PortalAdapter`/`DialAdapter`/`ApiEnvelope` 这类不存在的类型名。
 4. README 面向用户：只允许修正落后描述与去重，不擅自新增章节、不加功能宣传。
 
