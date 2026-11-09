@@ -68,6 +68,18 @@ export interface Snapshot {
   authenticated: boolean
   one_session: boolean
   account: AccountInfo | null
+  /** 距最近一次成功采集的毫秒数；未登录或从未采集成功时为 null。 */
+  collect_age_ms: number | null
+  /** 采集是否已停滞。只表示数据可能不新，不代表会话已离线。 */
+  collector_stalled: boolean
+}
+/** 手动刷新的结果。unknown 只在 daemon 早于结构化字段时出现。 */
+export type RefreshState = 'applied' | 'superseded' | 'busy' | 'unknown'
+/** `snapshot` 三种结果都带：都是后端当前最新状态；`message` 是后端给的原文。 */
+export interface RefreshReport {
+  state: RefreshState
+  message: string
+  snapshot: Snapshot
 }
 export interface UpdateInfo {
   current: string

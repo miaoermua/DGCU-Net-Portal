@@ -24,6 +24,13 @@ impl Controller {
         // replacement connection has completed successfully.
         if !self.reconnecting {
             self.clear();
+        } else {
+            // 自动重拨（`NewSession`）不 `clear()`，但它同样换掉了连接身份：
+            // 成功后 `api` 会是带新 cookie jar 的客户端，`rows` 也是重拨之后
+            // 才拿到的。重拨前领票的采集结果一律作废，否则它们回来时可能把
+            // 旧 rows 写回、甚至把旧 client 顶回去。失败回滚不恢复代次，
+            // 已作废的票据也不会因为回滚重新有效。
+            self.bump_connection();
         }
         let resolved = (self.resolve_network)(&self.settings.interface_name);
         let network = if backend_only {
@@ -106,6 +113,9 @@ impl Controller {
                 if self.settings.reconnect_mode != ReconnectMode::Disabled {
                     self.credential = Some(credential);
                 }
+                // 绑定到会话就立刻建立计费基线：既不会把连接前的历史样本算进来，
+                // 也不用再等满两轮结算才有第一个读数。
+                self.seed_rate_baseline();
                 return Ok(self.snapshot());
             }
         }
@@ -241,6 +251,9 @@ impl Controller {
         if self.settings.reconnect_mode != ReconnectMode::Disabled {
             self.credential = Some(credential);
         }
+        // 连接成功后重建计费基线（只记起点，不出速率），下一轮定时结算即可给出
+        // 第一个真实区间。
+        self.seed_rate_baseline();
         // Otherwise credential drops here, before the online session ends.
         Ok(self.snapshot())
     }
@@ -266,9 +279,15 @@ impl Controller {
             return Err(e);
         }
         self.rows.retain(|r| r.radacctid != id);
+        self.forget_session_rate(id);
         if self.selected.as_deref() == Some(id) {
             self.selected = None;
         }
+        // 本地状态已经删掉了这条会话，所有在途的采集结果都是"下线前"的快照：
+        // 它们回来时会把整份旧 rows 写回，让刚下线的会话重新出现在列表里。
+        // 连接代次 +1 把它们整份作废。只在确认成功后才递增——失败时远端状态
+        // 未确定，本地也还留着会话，旧结果不算过期。
+        self.bump_connection();
         if self.settings.credential_store == CredentialStore::Memory {
             self.clear();
         }

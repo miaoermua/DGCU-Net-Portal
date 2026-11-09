@@ -1,6 +1,6 @@
 # 开发者文档
 
-> 对应版本：0.5.16。运行、配置与构建说明。
+> 对应版本：0.5.17。运行、配置与构建说明。
 > 协议事实与抓包依据见[校园网认证协议分析](./campus-network-auth.md)，代码如何实现这些协议（含状态、错误、时序常量与算法）见[校园网认证协议实现](./protocol-implementation.md)。
 
 DGCU 校园网客户端。当前工作区只保留两个 Rust package：
@@ -15,6 +15,8 @@ portal-gui   配置界面、托盘、日志和 daemon 控制器
 ## CLI 命令
 
 所有需要 daemon 的命令都通过 `portal-cli.sock` 转发，CLI 自己不做认证：
+
+在 OpenWrt 上安装、写配置与排障的操作流程见 [portal-cli 使用指南](./portal-cli.md)，本节只列命令与参数事实。
 
 ```bash
 cargo run -p portal-cli -- run --daemon
@@ -40,7 +42,7 @@ cargo run -p portal-cli -- diagnose interfaces
 cargo run -p portal-cli -- service enable
 ```
 
-密码不通过命令行参数传递。`up` 与 `config account` 在终端交互输入，密码走 `rpassword` 隐藏输入（`crates/portal-cli/src/bin/portal-cli.rs:76-86`）；`up` 通过本地 IPC 把交互输入交给 daemon，`config account` 会把账号写进设置并强制 `credential_store=system`、密码存进系统凭据库（`bin/portal-cli.rs:232-240`）。
+密码不通过命令行参数传递。`up` 与 `config account` 在终端交互输入，密码走 `rpassword` 隐藏输入（`crates/portal-cli/src/bin/portal-cli.rs` 的 `credentials()`）；`up` 通过本地 IPC 把交互输入交给 daemon，`config account` 会把账号写进设置并强制 `credential_store=system`、密码存进系统凭据库（同文件的 `apply_account()`）。
 
 `config set` 支持的键与取值（`bin/portal-cli.rs:94-149`）：
 
@@ -55,6 +57,10 @@ cargo run -p portal-cli -- service enable
 | `proxy` | `bypass`、`system` |
 | `auto-redial` | `off`、`new`、`terminate` |
 | `traffic` | `on`、`off` |
+
+`config set` 与 `config account` 在配置**保存成功之后**会向运行中的 daemon 发一次 `Reload`（`bin/portal-cli.rs` 的 `reload_daemon()`），三种结果分开处理：daemon 确认加载时静默通过；明确拒绝时提示原因；未运行或连不上时提示"将在下次启动时生效"。保存本身失败则直接报错，不会误报重新加载。
+
+`config account` 还要写系统凭据库，两步是独立的：配置已落盘后，即使密码保存失败也会照常 Reload（否则 daemon 会继续用旧账号配置）。凭据失败时命令以失败退出，并在提示里同时给出凭据错误和 Reload 结果（`account_outcome()`）。
 
 ### 目前未接入的命令
 
@@ -85,7 +91,7 @@ cargo run -p portal-cli -- service enable
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | `server` | `http://172.18.100.65/lfradius/` | LFRadius 后台地址（`lib.rs:21`）；必须是 http(s)、不含凭据、query 与 fragment（`lib.rs:250-272`） |
-| `auth_url` | `{server}web/admin/login` | 只用于界面上的“打开认证网站”，认证流程不读它（`usePortal.ts:226`、`crates/portal-gui/src/main.rs:298-304`） |
+| `auth_url` | `{server}web/admin/login` | 只用于界面上的“打开认证网站”，认证流程不读它（`usePortal.ts:226`、`crates/portal-gui/src/main.rs:342-348`） |
 | `probe_url` | `http://captive.apple.com/hotspot-detect.html` | 公共探测的起点，另有两个内置备用探测地址 |
 | `paip` | `172.18.100.65` | Portal 侧地址，写进入口 URL；必须是合法 IP（`settings.rs:192-194`） |
 | `basip` | 空 | 空表示沿用认证表单返回的隐藏值；填写后才覆盖，必须是合法 IP（`settings.rs:195-199`） |
@@ -112,13 +118,13 @@ cargo run -p portal-cli -- service enable
 默认轮询策略：
 
 ```text
-refresh_policy  = one_minute   # 后台刷新，约 1 分钟一次
+refresh_policy  = one_minute   # 后台流量结算周期，约 1 分钟一次（不单独发请求）
 reconnect_mode  = disabled     # 掉线重拨，开启后每 5 秒检测一次
 traffic_enabled = false        # 后台流量速率
 poll_jitter     = low          # ±5%，同时作用于上面两个间隔与重拨退避
 ```
 
-GUI 桌面配置可以开启后台流量展示；OpenWrt/无 GUI 运行默认不计算流量。后台刷新是一个开关，开启后按服务端约 1 分钟更新；掉线重拨独立按 5 秒检测。掉线重拨模式可以选择禁用、新建后上线或终止后重上。会话监测挂在 5 秒 worker 上，与是否开启重拨无关：重拨关闭或暂停时仍会每 5 秒检查所选会话是否还在后台列表里，并按证据分级提示“会话丢失”或“疑似被挤下线”。认证设置中的轮询频率抖动可以选择低（±5%）、中（±10%）、高（±20%）或禁用（0%），分别作用于 5 秒掉线检测和 1 分钟后台刷新，重拨退避也使用该等级。两个轮询由 daemon 的两个独立 worker 驱动，时序常量与退避算法见[协议实现·第八节](./protocol-implementation.md#八掉线检测重拨与网络自愈)。
+GUI 桌面配置可以开启后台流量展示；OpenWrt/无 GUI 运行默认不计算流量。会话数据的常规采集只有一个来源：5 秒 worker 每轮请求一次 `/sessions`，同一次响应同时供会话监测与流量统计使用。`refresh_policy` 控制的是流量结算周期（约 1 分钟），它不再单独发起请求，关闭后只是停止自动结算速率，会话监测不受影响。掉线重拨独立按 5 秒检测。掉线重拨模式可以选择禁用、新建后上线或终止后重上。会话监测挂在 5 秒 worker 上，与是否开启重拨无关：重拨关闭或暂停时仍会每 5 秒检查所选会话是否还在后台列表里，并按证据分级提示“会话丢失”或“疑似被挤下线”。认证设置中的轮询频率抖动可以选择低（±5%）、中（±10%）、高（±20%）或禁用（0%），作用于 5 秒会话采集、1 分钟流量结算，重拨退避也使用该等级。两个周期由 daemon 的两个 worker 驱动（采集与结算），时序常量与退避算法见[协议实现·第八节](./protocol-implementation.md#八掉线检测重拨与网络自愈)。
 
 轮询抖动也可以通过 CLI 设置：
 
@@ -150,7 +156,7 @@ cargo run -p portal-gui
 
 前端只有 8 个源文件、没有组件目录：三个页面（网络、设置、关于）都在 `App.vue` 里，状态与动作集中在 `usePortal.ts`，类型在 `types.ts`，另有 `licenses.ts`、`compact.css`、`main.ts`、`miuix-icons.d.ts` 与 `usePortal.test.ts`。
 
-`crates/portal-gui/src/main.rs:465-484` 注册的 Tauri 命令共 18 个：
+`crates/portal-gui/src/main.rs:509-528` 注册的 Tauri 命令共 18 个：
 
 ```text
 initial          connect         refresh          snapshot
@@ -170,13 +176,15 @@ GUI 负责账号、网卡、刷新、流量展示、日志查看、托盘和桌�
 | `tray_startup`（托盘启动） | 隐藏窗口 | 收进托盘常驻 |
 | `lightweight`（轻量模式，默认） | 显示窗口 | 直接退出 GUI 并释放托盘，只留独立的后台服务 |
 
-daemon 是独立进程、认证不受影响，任何模式下都不会因为关掉窗口而中断。运行方式每次关闭窗口时重读设置，保存后即时生效、无需重启（`main.rs:453-464`）；保存时若运行方式变了会重建托盘菜单，免得切到轻量模式后仍留着重复项（`main.rs:287-294`）。关窗后的去向由纯函数 `close_action` 决定（`main.rs:344-349`），只有 `lightweight` 退进程，其余收进托盘。
+daemon 是独立进程、认证不受影响，任何模式下都不会因为关掉窗口而中断。运行方式每次关闭窗口时重读设置，保存后即时生效、无需重启（`main.rs:497-508`）；保存时若运行方式变了会重建托盘菜单，免得切到轻量模式后仍留着重复项（`main.rs:334-340`）。关窗后的去向由纯函数 `close_action` 决定（`main.rs:388-393`），只有 `lightweight` 退进程，其余收进托盘。
 
-收进托盘时 macOS 上会一并撤掉 Dock 图标（`main.rs:358-368`）：程序还在跑但没有可见界面，Dock 里挂个点不动的图标只会让人以为卡住；托盘图标不受影响，两者是两套机制。托盘唤回窗口时先把 Dock 图标放回去再显示窗口（`main.rs:371-380`），顺序反了 macOS 会把刚显示的窗口当成后台应用的一部分。非 macOS 平台没有 Dock，`set_dock_visible` 是空操作。`tray_startup` 启动时窗口就是隐藏的，因此启动即撤掉 Dock 图标（`main.rs:439-446`）。
+收进托盘时 macOS 上会一并撤掉 Dock 图标（`main.rs:401-412`）：程序还在跑但没有可见界面，Dock 里挂个点不动的图标只会让人以为卡住；托盘图标不受影响，两者是两套机制。托盘唤回窗口时先把 Dock 图标放回去再显示窗口（`main.rs:416-427`），顺序反了 macOS 会把刚显示的窗口当成后台应用的一部分。非 macOS 平台没有 Dock，`set_dock_visible` 是空操作。`tray_startup` 启动时窗口就是隐藏的，因此启动即撤掉 Dock 图标（`main.rs:487-492`）。
 
-托盘菜单固定三项：“打开主窗口”“进入轻量模式”“退出服务”；`lightweight` 下“进入轻量模式”与关窗重复，菜单中不展示该项（`main.rs:22-35`）。“进入轻量模式”只调用 `app.exit(0)` 结束 GUI 进程，daemon 与认证不受影响，且不会写回 `run_mode`——托盘的一次点击不改变用户保存的运行方式（`main.rs:426-428`）；只有“退出服务”会发 `Request::Shutdown`、按需停止登录启动任务，并由前端确认后再退（`main.rs:325-332`、`main.rs:429-435`）。确认框在前端，所以“退出服务”必须先把窗口唤回再发事件——收在托盘里、或 `tray_startup` 启动时窗口是隐藏的，只发事件会让用户点了菜单却看不到任何反应。左键单击托盘图标唤回主窗口、右键弹出菜单；Linux 的 appindicator 不支持这个区分，按桌面环境原生行为处理（`main.rs:411-423`）。唤回窗口时除了 `show()` 还会 `unminimize()`：最小化状态下 `show()` 只恢复可见性，窗口仍缩在程序坞/任务栏里，看起来同样像没反应。
+托盘菜单固定三项：“打开主窗口”“进入轻量模式”“退出服务”；`lightweight` 下“进入轻量模式”与关窗重复，菜单中不展示该项（`main.rs:22-35`）。“进入轻量模式”只调用 `app.exit(0)` 结束 GUI 进程，daemon 与认证不受影响，且不会写回 `run_mode`——托盘的一次点击不改变用户保存的运行方式（`main.rs:473-475`）；只有“退出服务”会发 `Request::Shutdown`、按需停止登录启动任务，并由前端确认后再退（`main.rs:369-376`、`main.rs:473-482`）。确认框在前端，所以“退出服务”必须先把窗口唤回再发事件——收在托盘里、或 `tray_startup` 启动时窗口是隐藏的，只发事件会让用户点了菜单却看不到任何反应。左键单击托盘图标唤回主窗口、右键弹出菜单；Linux 的 appindicator 不支持这个区分，按桌面环境原生行为处理（`main.rs:458-469`）。唤回窗口时除了 `show()` 还会 `unminimize()`：最小化状态下 `show()` 只恢复可见性，窗口仍缩在程序坞/任务栏里，看起来同样像没反应。
 
 轻量模式关掉窗口后留下的后台 `portal-cli daemon` 常驻内存约 3.7M；带 Tauri 与 WebView2 的界面进程约 80M，只在界面打开时存在。
+
+日志弹窗（设置 → 界面 → 开启日志后的「查看 portal-cli 日志」）按 `sequence` 升序排列，最新一条在底部。弹窗默认吸附在底部跟随新日志；用户滚轮离开底部后停在原处，之后每秒刷新按视口顶部那条日志的 `sequence` 回填滚动位置；只有这条锚点被 300 条上限回收了，才重新吸附到底（`App.vue` 的 `onLogsScroll` 与对 `logEntries` 的监听）。`.logs-body` 上设了 `overflow-anchor: none`，否则浏览器的滚动锚定会和这套手动定位打架。
 
 账户保存方式有三种：系统凭证、配置文件明文、仅一次会话。默认使用系统凭证；配置文件明文只建议用于测试或没有可用系统凭据库的设备；仅一次会话只在 daemon 进程内存中使用密码，不写入配置文件或系统密钥库，daemon 退出、手动下线或清除会话后即释放。三者的落地位置与释放路径见[协议实现·第九节](./protocol-implementation.md#九凭据)。
 
@@ -234,6 +242,8 @@ GUI 在运行时会沿自身可执行文件的祖先目录查找同包内的 `po
 
 页面顺序：欢迎 → 许可协议（`MUI_PAGE_LICENSE`，内容就是随包分发的 `LICENSE` 正文，编译时嵌入；静默安装跳过）→ 组件 → 目录 → 安装 → 完成。
 
+完成页带一个**默认勾选**的「启动 DGCU-Net-Portal」复选框（`installer.nsi` 的 `MUI_FINISHPAGE_RUN` / `MUI_FINISHPAGE_RUN_TEXT`）：勾选时点「完成」会用 `Exec` 拉起 `$INSTDIR\portal-gui.exe`。`Exec` 只创建进程就返回，界面进程常驻不会把安装器挂在这里。不定义 `MUI_FINISHPAGE_NOAUTOCLOSE`，装完直接跳到完成页、点「完成」即退出，不停在安装日志页；卸载页仍保留 `MUI_UNFINISHPAGE_NOAUTOCLOSE`，卸载后仍可查看日志。
+
 快捷方式：开始菜单建一个 `DGCU-Net-Portal` 文件夹，内含程序与卸载两项（必装）；桌面快捷方式**默认勾选，但用户仍可在组件页取消**。NSIS 没有「默认勾选的可选项」这种语法——`Section` 是必选（复选框被禁用、改不了），`Section /o` 是可选但默认不勾，所以默认值放在文件末尾的 `.onInit` 里用 `SelectSection` 主动设置（必须写在 Section 定义之后，它用的是 Section 索引）。卸载时四样一起清掉：桌面快捷方式、开始菜单的程序与卸载两项、以及空出来的程序文件夹。
 
 升级时靠 `InstallDirRegKey` 读回上次的安装位置（`packaging/windows/installer.nsi` 写入 `HKCU\Software\DGCU\DGCU-Net-Portal` 的 `InstallLocation`），不需要用户重选目录。
@@ -259,6 +269,8 @@ Arch 的 `makepkg` 必须跑在 Arch 自己的 rootfs 里（Ubuntu 上没有 `pa
 同样的原因，AppImage 的 glibc 底线由构建机决定：现在两条腿都建在 24.04 上，产出的 AppImage 需要 glibc 2.39，老发行版跑不起来。真要照顾老系统，得把基线降到 Ubuntu 22.04（`ubuntu-22.04` / `ubuntu-22.04-arm`）。
 
 安装布局（与 `packaging/arch/PKGBUILD` 一致）：`/usr/bin/portal-gui`、`/usr/bin/portal-cli`、`/usr/share/applications/dgcu-portal.desktop`、`/usr/share/icons/hicolor/256x256/apps/portal-gui.png`、`/usr/share/licenses/dgcu-net-portal/LICENSE`。desktop 文件在 `packaging/linux/`，三个发行版共用一份。
+
+AppImage 是唯一由 tauri bundler 拼装的产物，它的内容不受上面几个脚本控制。bundler 默认只带 GUI 主程序，daemon 必须显式声明成 `externalBin`（`crates/portal-gui/tauri.appimage.conf.json`），否则包内根本没有 `portal-cli`，用户一启动就会看到「找不到同包内的 portal-cli daemon」。CI 的做法是先把 `target/release/portal-cli` 复制成 `crates/portal-gui/binaries/portal-cli-<目标三元组>`（这个目录已 gitignore），bundler 打包时去掉三元组后缀放进 `usr/bin`，正好落在 GUI「沿自身可执行文件目录向上找同包 daemon」的搜索路径上。打完还会检查 AppDir 里确实存在 `usr/bin/portal-cli`，缺了直接让这一步失败，而不是等用户装上才发现。本地要打 AppImage 也得先放好这个带后缀的文件，再执行 `tauri build --config tauri.appimage.conf.json`。
 
 deb 由 Python 直接拼 ar 归档（`debian-binary` / `control.tar.gz` / `data.tar.gz`），**不依赖 `dpkg-deb`**，因此在 macOS 上也能构建与验证。rpm 需要 PATH 里有 `rpmbuild`（Ubuntu 上 `apt install rpm`）。
 

@@ -1,8 +1,8 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import type { AccountInfo, DesktopBridge, Diagnostic, InterfaceInfo, LogEntry, Rate, Session, Settings, Snapshot, UiPreferences, Unlisten, UpdateInfo, UpdatePhase } from './types'
+import type { AccountInfo, DesktopBridge, Diagnostic, InterfaceInfo, LogEntry, Rate, RefreshReport, Session, Settings, Snapshot, UiPreferences, Unlisten, UpdateInfo, UpdatePhase } from './types'
 
 export const defaultSettings = (): Settings => ({ server: 'http://172.18.100.65/lfradius/', auth_url: 'http://172.18.100.65/lfradius/web/admin/login', probe_url: 'http://captive.apple.com/hotspot-detect.html', paip: '172.18.100.65', basip: '', probe_enabled: true, refresh_policy: 'one_minute', poll_jitter: 'low', traffic_enabled: false, credential_store: 'system', interface_name: '', bypass_proxy: true, username: '', reconnect_mode: 'disabled', run_mode: 'lightweight', service_enabled: false, show_sessions: false, log_enabled: false, theme_mode: 'system' })
-export const emptySnapshot = (): Snapshot => ({ sessions: [], rates: {}, selected_id: null, authenticated: false, one_session: true, background_paused: true, status: 'idle', message: '填写账号后连接校园网', account: null })
+export const emptySnapshot = (): Snapshot => ({ sessions: [], rates: {}, selected_id: null, authenticated: false, one_session: true, background_paused: true, status: 'idle', message: '填写账号后连接校园网', account: null, collect_age_ms: null, collector_stalled: false })
 export function normalizeSettings(value: Settings): Settings {
   const next = { ...value }
   // 仅内存模式只决定密码放在哪里：重连与后台服务是独立选项，仍按用户选择保存。
@@ -17,6 +17,12 @@ export function formatBytes(value: number | undefined | null): string {
   return `${value.toFixed(1)} ${units[unit]}`
 }
 export const formatRate = (value: number | null | undefined): string => value == null ? '等待更新' : `${formatBytes(value)}/s`
+// 日志弹窗的滚动去向：跟随最新（贴底）还是停在用户当前看的位置。
+// 用户没动过滚轮、没记下锚点、或者锚点那条已经被 300 条上限回收，都回到贴底。
+export function logScrollTarget(following: boolean, anchor: number | null, entries: LogEntry[]): 'bottom' | 'hold' {
+  if (following || anchor == null) return 'bottom'
+  return entries.some(entry => entry.sequence === anchor) ? 'hold' : 'bottom'
+}
 // 后台计费未更新时返回的是空速率（None）而不是 0：只有真正算出区间时才认为有结果。
 const isRateReady = (rate: Rate | undefined): rate is Rate => !!rate && (rate.upload_bps != null || rate.download_bps != null || rate.sample_seconds != null)
 export function formatDuration(value: number): string { return [Math.floor(value / 3600), Math.floor(value % 3600 / 60), value % 60].map(v => String(v).padStart(2, '0')).join(':') }
@@ -30,7 +36,7 @@ const demoAccount: AccountInfo = { plan: '电信100M包年', bandwidth: '100Mbps
 const demoDiagnostic: Diagnostic = { auth: 'reachable', auth_latency_ms: 3, internet_direct: 'reachable', internet: 'reachable', internet_latency_ms: 38 }
 export function createPortalState(bridge?: DesktopBridge) {
   const demo = ref(!bridge), busy = ref(false), ready = ref(false), page = ref(0)
-  const version = ref('0.5.16')
+  const version = ref('0.5.17')
   const saved = ref(defaultSettings()), draft = reactive(defaultSettings()), snapshot = ref(emptySnapshot())
   const networkInterfaces = ref<InterfaceInfo[]>([])
   const username = ref(''), password = ref(''), portalUrl = ref(''), phase = ref(''), notice = ref('')
@@ -172,9 +178,16 @@ export function createPortalState(bridge?: DesktopBridge) {
   async function refresh() {
     await run(async () => {
       demoLog('sessions.read', '读取后台会话列表')
-      const next = demo.value ? { ...snapshot.value, rates: {}, message: '后台计费尚未更新（模拟）' } : await bridge!.core.invoke<Snapshot>('refresh')
-      // 只有手动刷新才提示“与上次一致”；后台轮询走同一个 receive，但不会打扰用户。
-      if (receive(next)) notify('刷新成功，后台返回一致流量')
+      // 演示模式没有真实采集，按“已提交”走同一条分支。
+      const report: RefreshReport = demo.value
+        ? { state: 'applied', message: '后台计费尚未更新（模拟）', snapshot: { ...snapshot.value, rates: {}, message: '后台计费尚未更新（模拟）' } }
+        : await bridge!.core.invoke<RefreshReport>('refresh')
+      // 三种结果的快照都要落地：被取代或闸门挡住时，后端给的也是当前最新状态。
+      const unchanged = receive(report.snapshot)
+      // 只有 applied 才是这次刷新成功；其余两种沿用后端文案，不宣称成功。
+      // “与上次一致”只属于成功刷新；后台轮询走同一个 receive，但不会打扰用户。
+      if (report.state === 'applied') notify(unchanged ? '刷新成功，后台返回一致流量' : '刷新成功')
+      else notify(report.message)
     })
   }
   // 点击检测卡片时跑一次：失败原因用 snackbar 提示，卡片里只保留外网延迟。

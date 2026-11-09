@@ -17,6 +17,13 @@ impl AccountingRates {
     pub fn clear(&mut self) {
         self.previous.clear();
     }
+    /// 丢掉单条会话的基线。
+    ///
+    /// 会话被下线后它的采样起点就没有意义了；留着会让同一个 id 重新出现时算出
+    /// 一段跨越下线期的差值（下线期间计数停走，恢复后一次性跳变）。
+    pub fn forget(&mut self, id: &str) {
+        self.previous.remove(id);
+    }
     pub fn update(&mut self, rows: &[OnlineSession]) -> HashMap<String, Rate> {
         self.previous
             .retain(|id, _| rows.iter().any(|r| r.radacctid == *id));

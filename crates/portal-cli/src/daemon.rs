@@ -1,9 +1,9 @@
 use crate::{
-    controller::{Controller, Snapshot},
-    ipc::{Request, Response, SOCKET_NAME},
+    controller::{CollectClock, Controller, ManualRefresh, Snapshot},
+    ipc::{RefreshState, Request, Response, SOCKET_NAME},
     logging::LogBuffer,
     settings::Settings,
-    Credential,
+    AppError, Credential,
 };
 use interprocess::local_socket::{
     tokio::{prelude::*, Listener, Stream},
@@ -24,21 +24,47 @@ use tokio::{
 /// 所有 IPC 命令与后台 worker 共用同一把异步锁：`Controller` 的每次操作都在整个
 /// `await` 期间独占 `&mut Controller`，因此 `connect()` 期间不会插入 `select`、
 /// `disconnect` 等用户操作；`ReconnectCheckpoint` 的回滚不会覆盖并发状态变化。
+/// 一次手动刷新的结果，决定 IPC 回什么样的提示。
+///
+/// 三种情况都带快照：被取代时快照来自更新的操作，数据不比这次差；被闸门挡住时
+/// 快照就是当前最新状态。区别只在提示语，不在数据可用性，所以 `ok` 一律为真。
+pub(crate) enum RefreshOutcome {
+    /// 本次结果已提交。
+    Applied(Snapshot),
+    /// 结果被更新的操作取代（连接换了、下线了，或有更新的采集先提交）。
+    Superseded(Snapshot),
+    /// 已有一个手动刷新在执行，本次没有发请求。
+    Busy(Snapshot),
+}
+
 pub(crate) struct State {
     controller: Mutex<Controller>,
     latest: watch::Sender<Snapshot>,
     latest_rx: watch::Receiver<Snapshot>,
+    /// 采集心跳的共享句柄。放在 `State` 上是为了让 `Status` 不取控制器锁也能
+    /// 读出实时年龄——只靠"发布时的旧值"会让停滞提示晚一个发布周期。
+    collect_clock: CollectClock,
+    /// 手动刷新的 single-flight 闸门：一个 permit，拿不到说明已有一次手动刷新
+    /// 在跑，这一次就不再向后台发请求。
+    ///
+    /// 用信号量而不是布尔标志：permit 随 future 一起析构，HTTP 失败、结果被
+    /// 取代、任务被取消都会自动释放，不需要额外的清理分支。闸门只在手动刷新
+    /// 之间互斥，5 秒采集走自己的路径，不受它影响。
+    refresh_gate: Arc<tokio::sync::Semaphore>,
 }
 
 impl State {
     /// 用刚构造好的控制器初始化快照槽。初始快照在做任何操作之前发布，`Status`
     /// 不必等第一次解锁就能读到完整状态。
     pub(crate) fn new(mut controller: Controller) -> Self {
+        let collect_clock = controller.clock();
         let (latest, latest_rx) = watch::channel(controller.snapshot());
         Self {
             controller: Mutex::new(controller),
             latest,
             latest_rx,
+            collect_clock,
+            refresh_gate: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
@@ -51,9 +77,55 @@ impl State {
         }
     }
 
-    /// 读最近一次发布的快照。同步读取，不等待控制器锁。
+    /// 读最近一次发布的快照，并把新鲜度换成**读取时**的值。
+    ///
+    /// `collect_age_ms` / `collector_stalled` 是派生字段，不参与任何业务判断，
+    /// 所以在读路径上现算既不会有多余的锁竞争，也不会让陈旧提示延迟。
     pub(crate) fn snapshot(&self) -> Snapshot {
-        self.latest_rx.borrow().clone()
+        let mut snapshot = self.latest_rx.borrow().clone();
+        let (age, stalled) = self.collect_clock.health(snapshot.authenticated);
+        snapshot.collect_age_ms = age;
+        snapshot.collector_stalled = stalled;
+        snapshot
+    }
+
+    /// 常规 5 秒采集：锁内领票 → 锁外请求 → 锁内提交。
+    pub(crate) async fn session_tick(&self) {
+        let Some(ticket) = self.lock().await.begin_collect() else {
+            return;
+        };
+        let result = Controller::collect(&ticket).await;
+        self.lock()
+            .await
+            .finish_session_collect(ticket, result, |_| {})
+            .await;
+    }
+
+    /// 手动刷新：与常规采集走同一条锁外通路，只是提交时的收尾不同。
+    ///
+    /// 并发的手动刷新被 single-flight 挡住：拿不到闸门就直接回当前快照，不再
+    /// 向校园网多发一次 `/sessions`。闸门不等待、不占控制器锁，所以定时采集
+    /// 完全不受影响。
+    pub(crate) async fn refresh(&self) -> Result<RefreshOutcome, AppError> {
+        let _permit = match self.refresh_gate.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => return Ok(RefreshOutcome::Busy(self.snapshot())),
+        };
+        let Some(ticket) = self.lock().await.begin_collect() else {
+            return Err(AppError::Rejected);
+        };
+        let result = Controller::collect(&ticket).await;
+        let refreshed = self.lock().await.finish_manual_refresh(ticket, result)?;
+        Ok(match refreshed {
+            ManualRefresh::Applied(snapshot) => RefreshOutcome::Applied(snapshot),
+            ManualRefresh::Superseded(snapshot) => RefreshOutcome::Superseded(snapshot),
+        })
+    }
+
+    /// 测试用：拿到共享心跳，模拟"采集停摆"而不必真的等 30 秒。
+    #[cfg(test)]
+    pub(crate) fn clock(&self) -> CollectClock {
+        self.collect_clock.clone()
     }
 }
 
@@ -174,6 +246,13 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 /// 在已经绑定的端点上服务：先起两个后台 worker，再进入 accept 循环。
 ///
+/// 两个 worker 共享同一次采集结果，节奏各自保留：
+///
+/// - 采集 worker 约每 5 秒跑一次 `redial_tick`，是**唯一**周期性发起 `/sessions`
+///   的地方，结果写入控制器后供会话观察、绑定和流量结算共用。
+/// - 结算 worker 约每 60 秒跑一次 `rate_tick`，只读时钟和控制器里的最新会话数据，
+///   不发任何 HTTP 请求，因此不会产生第二次采集。
+///
 /// `serve()` 只负责绑定端点、读取设置和启动自动登录；测试用临时端点直接进这里，
 /// 不去读本机设置。两个入口走的是同一份服务逻辑，没有测试专用分支。
 pub(crate) async fn serve_on(
@@ -181,27 +260,30 @@ pub(crate) async fn serve_on(
     state: Arc<State>,
     logs: LogBuffer,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let worker_state = state.clone();
+    let collect_state = state.clone();
     tokio::spawn(async move {
         loop {
-            let settings = worker_state.lock().await.settings.clone();
+            let settings = collect_state.lock().await.settings.clone();
+            let delay = settings
+                .poll_jitter
+                .apply(std::time::Duration::from_secs(5));
+            tokio::time::sleep(delay).await;
+            // 锁内领票 → 锁外请求 → 锁内提交：请求期间控制器锁是空的，
+            // `Sessions`/`Up`/`Down` 不必排在一个 10 秒超时后面。
+            collect_state.session_tick().await;
+        }
+    });
+    let rate_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            let settings = rate_state.lock().await.settings.clone();
+            // 关闭后台刷新时维持 1 秒的空转节奏：`rate_tick` 进去就返回，不发请求。
             let delay = settings
                 .refresh_policy
                 .next_delay(settings.poll_jitter)
                 .unwrap_or_else(|| std::time::Duration::from_secs(1));
             tokio::time::sleep(delay).await;
-            worker_state.lock().await.tick().await;
-        }
-    });
-    let redial_state = state.clone();
-    tokio::spawn(async move {
-        loop {
-            let settings = redial_state.lock().await.settings.clone();
-            let delay = settings
-                .poll_jitter
-                .apply(std::time::Duration::from_secs(5));
-            tokio::time::sleep(delay).await;
-            redial_state.lock().await.redial_tick(|_| {}).await;
+            rate_state.lock().await.rate_tick();
         }
     });
     eprintln!("portal-cli daemon ready");
@@ -212,6 +294,35 @@ pub(crate) async fn serve_on(
         tokio::spawn(async move {
             let _ = handle(stream, state, logs).await;
         });
+    }
+}
+
+/// 把一次手动刷新的结果翻译成 IPC 响应。
+///
+/// 只有真正报错才回 `ok: false`：结果被取代、或已有刷新在跑，都不是失败——
+/// 用户拿到的仍是当前最新会话数据，只是这次没有重新采集。把这两种情况说成
+/// HTTP 失败会误导用户去查网络。
+pub(crate) fn sessions_response(result: Result<RefreshOutcome, AppError>) -> Response {
+    let (state, message, snapshot) = match result {
+        Ok(RefreshOutcome::Applied(snapshot)) => (RefreshState::Applied, "会话刷新成功", snapshot),
+        Ok(RefreshOutcome::Superseded(snapshot)) => (
+            RefreshState::Superseded,
+            "会话刷新已被更新的操作取代，当前显示最新状态",
+            snapshot,
+        ),
+        Ok(RefreshOutcome::Busy(snapshot)) => (
+            RefreshState::Busy,
+            "已有刷新正在进行，当前显示最新状态",
+            snapshot,
+        ),
+        Err(error) => return Response::error(error.to_string()),
+    };
+    Response {
+        ok: true,
+        message: message.into(),
+        snapshot: Some(snapshot),
+        refresh: Some(state),
+        ..Default::default()
     }
 }
 
@@ -257,18 +368,7 @@ async fn handle(
             logs: Some(logs.entries()),
             ..Default::default()
         },
-        Request::Sessions => {
-            let mut controller = state.lock().await;
-            match controller.refresh().await {
-                Ok(snapshot) => Response {
-                    ok: true,
-                    message: "会话刷新成功".into(),
-                    snapshot: Some(snapshot),
-                    ..Default::default()
-                },
-                Err(error) => Response::error(error.to_string()),
-            }
-        }
+        Request::Sessions => sessions_response(state.refresh().await),
         Request::Diagnose => {
             // 只取一份设置副本，检测期间不持有控制器锁：否则数秒的探测会
             // 把界面每 2 秒一次的 Status 轮询全部堵在锁上。

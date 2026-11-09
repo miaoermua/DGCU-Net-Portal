@@ -1,6 +1,6 @@
 # AGENTS.md
 
-在仓库内工作的代理与开发者的操作约定。以下内容都对照当前代码（0.5.16）核实过；改代码前先看「工作区」「命令」，改文档前必读「文档保真」。
+在仓库内工作的代理与开发者的操作约定。以下内容都对照当前代码（0.5.17）核实过；改代码前先看「工作区」「命令」，改文档前必读「文档保真」。
 
 ## 工作区
 
@@ -21,7 +21,7 @@ pnpm --dir crates/portal-gui/frontend install --frozen-lockfile
 pnpm --dir crates/portal-gui/frontend test     # vitest
 pnpm --dir crates/portal-gui/frontend build    # vue-tsc --noEmit && vite build
 
-cargo test --workspace                          # 74 个 portal-cli + 6 个 portal-gui 测试
+cargo test --workspace                          # 129 个 portal-cli + 6 个 portal-gui 测试
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check                      # 仓库无 rustfmt.toml，用默认风格
 
@@ -35,7 +35,7 @@ python3 scripts/release_notes.py --assets target/packages --repo <owner/name> --
 ```
 
 - `.github/workflows/build.yml` 只在 `frontend` job 跑 `pnpm test`；Rust 侧只有 `cargo build`，**没有** `cargo test`/`clippy`/`fmt` 步骤，推送前必须本地跑一遍上面三条。
-- 打包脚本不代编译，先 `cargo build --release` 再运行；`bundle.active` 为 `false`，正式产物由脚本产出，只有 AppImage 那一步用 `tauri build`。Windows 安装器走 `makensis` 编译 `packaging/windows/installer.nsi`，Linux 的 deb/rpm 由 `package_linux.py` 自己拼装（deb 不依赖 dpkg-deb），三者都不经过 tauri bundler。
+- 打包脚本不代编译，先 `cargo build --release` 再运行；`bundle.active` 为 `false`，正式产物由脚本产出，只有 AppImage 那一步用 `tauri build`。Windows 安装器走 `makensis` 编译 `packaging/windows/installer.nsi`，Linux 的 deb/rpm 由 `package_linux.py` 自己拼装（deb 不依赖 dpkg-deb），三者都不经过 tauri bundler。AppImage 走 bundler，所以 daemon 必须在 `crates/portal-gui/tauri.appimage.conf.json` 里声明成 `externalBin`，打包前把 `portal-cli` 复制成 `crates/portal-gui/binaries/portal-cli-<三元组>`；漏掉这一步包内就没有 daemon，GUI 启动即报找不到 `portal-cli`。
 - GUI 运行时沿自身可执行文件的祖先目录找同包内的 `portal-cli`，打包必须让两者处于同一目录或父子目录关系。
 - 界面调试需要先产出 `crates/portal-gui/frontend/dist`（`tauri.conf.json` 的 `build.frontendDist`）。`--demo` 启动或可执行文件名是 `dgcu-portal-demo` 时进 Demo 模式，不联网、不写系统设置。
 
@@ -63,7 +63,7 @@ python3 scripts/release_notes.py --assets target/packages --repo <owner/name> --
 ## 文档保真
 
 1. 文档只写代码或抓包里已经存在的东西。关于实现的每句断言都要能给出 `文件:行`；给不出就删掉那句话，别写成"应该/计划/未来"。
-2. 分析与实现分开。`docs/campus-network-auth.md` 只记抓包得到的协议事实（校园网侧变了才更新）；`docs/protocol-implementation.md` 记协议在代码里如何落地（跟着代码走）；`docs/developer-guide.md` 记运行、配置与构建。改动落在对应那篇，不要混写。
+2. 分析与实现分开。`docs/campus-network-auth.md` 只记抓包得到的协议事实（校园网侧变了才更新）；`docs/protocol-implementation.md` 记协议在代码里如何落地（跟着代码走）；`docs/developer-guide.md` 记运行、配置与构建；`docs/portal-cli.md` 记 CLI 的部署与使用流程（以 OpenWrt 为例），只写操作路径，不重复命令与字段清单。改动落在对应那篇，不要混写。
 3. 设置键、命令名、错误码必须与代码一致。本仓库吃过亏的虚构物：`network_monitor`/`session_monitor`/`traffic_monitor` 这类不存在的设置键，以及 `AuthState`/`PortalAdapter`/`DialAdapter`/`ApiEnvelope` 这类不存在的类型名。
 4. README 面向用户：只允许修正落后描述与去重，不擅自新增章节、不加功能宣传。
 

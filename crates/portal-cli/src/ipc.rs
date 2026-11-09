@@ -32,6 +32,22 @@ pub enum Request {
     Forget,
 }
 
+/// 一次手动刷新的结果。
+///
+/// 三种结果的 `ok` 都是 `true`：用户拿到的都是当前最新快照，差别只在
+/// 「这次有没有真的重新采集并把结果提交」。调用方（GUI）靠这个字段分支，
+/// 不去解析面向用户的 `message` 文案。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefreshState {
+    /// 本次采集的结果已被提交。
+    Applied,
+    /// 本次结果被更新的采集取代，响应里是那份更新的快照。
+    Superseded,
+    /// 已有手动刷新占着闸门，本次没有重新采集。
+    Busy,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Response {
     pub ok: bool,
@@ -42,6 +58,10 @@ pub struct Response {
     pub diagnostic: Option<crate::diagnose::Diagnostic>,
     /// daemon 自身的版本。字段缺失说明对端是加版本号之前的老进程。
     pub version: Option<String>,
+    /// 仅在 `Request::Sessions` 时填充，其余命令不出现这个键。
+    /// 字段缺失说明对端 daemon 还没带结构化状态（升级前的旧进程）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<RefreshState>,
 }
 
 impl Response {

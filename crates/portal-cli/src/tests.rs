@@ -33,6 +33,25 @@ pub(crate) fn session_json(id: &str, ip: &str) -> serde_json::Value {
         "acctoutputoctets": 2048,
     })
 }
+/// 同上，但可以指定计费计数。速率用例需要让 `acctsessiontime` 与两个字节数
+/// 真的前进，否则 `AccountingRates::update` 只会返回"等待计费更新"。
+pub(crate) fn session_json_counters(
+    id: &str,
+    ip: &str,
+    seconds: u64,
+    up: u64,
+    down: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "radacctid": id,
+        "username": "test-user",
+        "acctstarttime": "2026-01-01 00:00:00",
+        "acctsessiontime": seconds,
+        "framedipaddress": ip,
+        "acctinputoctets": up,
+        "acctoutputoctets": down,
+    })
+}
 pub(crate) struct Mock {
     pub(crate) base: String,
     stop: Arc<AtomicBool>,
@@ -199,6 +218,10 @@ impl Mock {
                     } else {
                         r#"{"v":{"success":0},"d":[]}"#.into()
                     }
+                } else if path.contains("a=offline") {
+                    // 下线接口的后台应答：成功信封。会话是否真的消失由
+                    // `script_sessions` 的下一帧决定（真实后台是异步的）。
+                    r#"{"v":{"success":1},"d":[]}"#.into()
                 } else if mode == "fake" {
                     "<div>请登录</div>".into()
                 } else {
@@ -735,7 +758,8 @@ async fn ipc_mutations_publish_snapshot() {
     tokio::task::yield_now().await;
     let _ = std::fs::remove_file(format!("/tmp/{socket}"));
 }
-/// T3：后台任务（与 worker 相同的取锁 → `tick()` → 释放）改变状态后快照同步更新。
+/// T3：后台任务（与采集 worker 相同的取锁 → `redial_tick()` → 释放）改变状态后
+/// 快照同步更新。改造后 5 秒 worker 是唯一的周期采集者，这里跟着它走。
 #[tokio::test]
 async fn background_tick_publishes_snapshot() {
     let mock = Mock::new("direct");
@@ -771,7 +795,7 @@ async fn background_tick_publishes_snapshot() {
 
     let worker = state.clone();
     tokio::spawn(async move {
-        worker.lock().await.tick().await;
+        worker.lock().await.redial_tick(|_| {}).await;
     })
     .await
     .unwrap();
