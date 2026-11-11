@@ -94,7 +94,8 @@ tr '\000' '\n' < /proc/$(pidof portal-cli)/environ | grep ^HOME
 | `reconnect_mode` | **断线重拨**，默认 `disabled` 即掉线后不自动重连。可选 `new_session`（检测到旧会话被顶掉后重新上线）或 `terminate_and_reconnect`（先主动下线再重连）；开启后 daemon 每 5 秒检测一次掉线 |
 | `refresh_policy` | 可选，流量结算周期，`one_minute`（默认）/ `disabled` |
 | `poll_jitter` | 可选，轮询抖动，`low`（默认 ±5%）/ `medium` / `high` / `disabled` |
-| `paip` / `basip` / `server` | 一般不动，默认值已适配 DGCU；换学校或报错时才改（取值见[开发者文档](./developer-guide.md#cli-命令)） |
+
+`paip`、`basip`、`server` 不要写：daemon 会自动注入适配 DGCU 的默认值（`paip` 默认 `172.18.100.65`，取自 `crates/portal-cli/src/cmcc.rs:11`；`basip` 留空时沿用认证表单返回值），手写配置里出现它们只会造成以后升级时的干扰。只有换学校、Portal 地址确实不同（比如校园网关是另一个 IP）时才需要显式覆盖，取值含义见[开发者文档](./developer-guide.md#cli-命令)。
 
 `theme_mode`、`show_sessions`、`log_enabled`、`run_mode`、`service_enabled`、`traffic_enabled` 等属于 GUI 专属或与 procd 托管无关的参数，**不需要出现在路由器的配置里**，写了也不影响认证。
 
@@ -127,7 +128,7 @@ portal-cli config show                   # 确认 username、credential_store、
 portal-cli diagnose interfaces           # 名称、IPv4、MAC，确认 interface_name 选对了
 ```
 
-之后微调不必再动 JSON：`portal-cli config set auto-redial new`、`refresh 1m`、`jitter low`、`interface br-lan` 等 9 个键支持在线修改，保存成功后会自动通知运行中的 daemon 重载（`crates/portal-cli/src/bin/portal-cli.rs:94-149`、`:326-333`）。
+之后微调不必再动 JSON：`portal-cli config set auto-redial new`、`refresh 1m`、`jitter low`、`interface br-lan` 等 9 个键支持在线修改，保存成功后会自动通知运行中的 daemon 重载（`crates/portal-cli/src/bin/portal-cli.rs:94-149`、`:326-333`）。`paip` / `basip` 也在这 9 个键里，但只在换学校时才用得上——DGCU 用户保持默认即可，不需要执行 `config set paip`。
 
 ### 方式 B：桌面 GUI 生成后导入
 
@@ -177,7 +178,6 @@ OpenWrt 日常开关服务用 init 脚本：
 ## 五、非常用命令
 
 ```sh
-portal-cli config set paip 172.18.100.65
 portal-cli config set refresh 1m
 portal-cli config set auto-redial new   # 断线重拨：off / new / terminate
 portal-cli service status             # 走 IPC，其余 service 子命令在 OpenWrt 上会被拒绝
@@ -186,7 +186,7 @@ portal-cli run --daemon               # 前台跑 daemon 看实时输出；已�
 
 | 命令 | 说明 |
 |---|---|
-| `config set` | 只支持 9 个键：`interface`、`paip`、`basip`、`refresh`、`jitter`、`portal-probe`、`proxy`、`auto-redial`、`traffic`（`crates/portal-cli/src/bin/portal-cli.rs:94-149`）。账号、密码、`credential_store`、`server` 改不了，只能改 JSON 或用 GUI |
+| `config set` | 只支持 9 个键：`interface`、`paip`、`basip`、`refresh`、`jitter`、`portal-probe`、`proxy`、`auto-redial`、`traffic`（`crates/portal-cli/src/bin/portal-cli.rs:94-149`）。账号、密码、`credential_store`、`server` 改不了，只能改 JSON 或用 GUI。DGCU 用户日常只会用到 `interface`、`auto-redial`、`refresh`；`paip` / `basip` 默认值已适配，不要执行 `config set paip`，只有换学校才需要覆盖 |
 | `diagnose config` | 可用，打印生效配置（`crates/portal-cli/src/bin/portal-cli.rs:392-407`） |
 | `diagnose backend/portal/probe/routes/request` | 未实现，报“该诊断命令尚未接入 daemon 请求链”（`crates/portal-cli/src/bin/portal-cli.rs:406`） |
 | `config account` | 强制把 `credential_store` 写成 `system` 并写系统凭据库，路由器上没有 Secret Service，会失败（`crates/portal-cli/src/bin/portal-cli.rs:335-339`） |
