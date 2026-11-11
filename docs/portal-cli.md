@@ -74,7 +74,7 @@ logread -e portal-cli                       # daemon 日志
 
 ## 三、配置
 
-`settings.json` 与 `credentials` 在同一目录，由 `ProjectDirs` 按 `XDG_CONFIG_HOME`（其次 `HOME`）计算（`crates/portal-cli/src/settings.rs:166-170`、`crates/portal-cli/src/settings.rs:258-260`）。root 交互登录通常是 `/root/.config/portal/`，但 procd 拉起 daemon 时不保证 `HOME` 就是 `/root`，先确认：
+配置文件是两个普通文件：`settings.json`（账号与行为）和 `credentials`（密码原文），必须在同一目录，由 `ProjectDirs` 按 `XDG_CONFIG_HOME`（其次 `HOME`）计算（`crates/portal-cli/src/settings.rs:166-170`、`crates/portal-cli/src/settings.rs:258-260`）。root 交互登录通常是 `/root/.config/portal/`，但 procd 拉起 daemon 时不保证 `HOME` 就是 `/root`，先确认：
 
 ```sh
 tr '\000' '\n' < /proc/$(pidof portal-cli)/environ | grep ^HOME
@@ -82,20 +82,23 @@ tr '\000' '\n' < /proc/$(pidof portal-cli)/environ | grep ^HOME
 
 如果 `HOME` 不是 `/root`，要么把配置放到 `$HOME/.config/portal/`，要么在 `/etc/init.d/portal-cli` 的 `start_service()` 里加一行 `procd_set_param env HOME=/root` 后 `/etc/init.d/portal-cli restart`。
 
-### 方式 A：桌面 GUI 生成后拷过去
+### 需要填写的字段
 
-GUI 没有“导出配置”按钮，它的“保存设置”就是把整份 `Settings` 写进同一个 `settings.json`（`crates/portal-gui/src/main.rs:302-343`）：
+`Settings` 全部字段带 `#[serde(default)]`，没写的取默认值（`crates/portal-cli/src/settings.rs:114-116`），所以手写配置只需要下面这几个：
 
-1. 凭据存储选成**「配置文件（明文，仅测试）」**（`crates/portal-gui/frontend/src/App.vue:129`），否则密码进系统钥匙串，拷不走（`crates/portal-gui/src/main.rs:314-321`）。
-2. 填账号、密码，保存。
-3. 取 `settings.json` 与 `credentials`：macOS `~/Library/Application Support/net.dgcu.portal/`、Windows `%APPDATA%\dgcu\portal\config\`、Linux `~/.config/portal/`。
-4. 拷到路由器上前面确认过的目录，`chmod 600`。
+| JSON 字段 | 说明 |
+|---|---|
+| `username` | 学号，必填 |
+| `credential_store` | 路由器上必须写 `"file"`（默认 `system` 依赖钥匙串，OpenWrt 上没有），密码才会从 `credentials` 文件读取 |
+| `interface_name` | 强烈建议显式填写：留空时按网卡名排序取第一个“非虚拟 + 有 IPv4 + 有 MAC”的网卡（`crates/portal-cli/src/network.rs:157-175`），OpenWrt 上容易选到并非出口的接口 |
+| `reconnect_mode` | **断线重拨**，默认 `disabled` 即掉线后不自动重连。可选 `new_session`（检测到旧会话被顶掉后重新上线）或 `terminate_and_reconnect`（先主动下线再重连）；开启后 daemon 每 5 秒检测一次掉线 |
+| `refresh_policy` | 可选，流量结算周期，`one_minute`（默认）/ `disabled` |
+| `poll_jitter` | 可选，轮询抖动，`low`（默认 ±5%）/ `medium` / `high` / `disabled` |
+| `paip` / `basip` / `server` | 一般不动，默认值已适配 DGCU；换学校或报错时才改（取值见[开发者文档](./developer-guide.md#cli-命令)） |
 
-三个坑：目录名各平台不同、文件名相同；`service_enabled`/`run_mode` 在 OpenWrt 上无意义（daemon 由 procd 起），可改回 `false`；GUI 侧改动不会同步到路由器。
+`theme_mode`、`show_sessions`、`log_enabled`、`run_mode`、`service_enabled`、`traffic_enabled` 等属于 GUI 专属或与 procd 托管无关的参数，**不需要出现在路由器的配置里**，写了也不影响认证。
 
-### 方式 B：在路由器上直接写
-
-`Settings` 是 `#[serde(default)]`，没写的字段取默认值（`crates/portal-cli/src/settings.rs:114-116`）：
+### 方式 A：手写配置
 
 ```sh
 mkdir -p "$HOME/.config/portal"          # 换成前面确认过的目录
@@ -103,7 +106,8 @@ cat > "$HOME/.config/portal/settings.json" <<'EOF'
 {
   "username": "你的学号",
   "credential_store": "file",
-  "interface_name": "br-lan"
+  "interface_name": "br-lan",
+  "reconnect_mode": "new_session"
 }
 EOF
 ```
@@ -113,17 +117,28 @@ EOF
 ```sh
 printf '%s' '你的密码' > "$HOME/.config/portal/credentials"
 chmod 600 "$HOME/.config/portal/settings.json" "$HOME/.config/portal/credentials"
+/etc/init.d/portal-cli restart           # daemon 只在启动时读一次 settings.json
 ```
 
 JSON 解析失败时整份配置会静默退回默认值（`crates/portal-cli/src/settings.rs:215-218`），改完必须复核：
 
 ```sh
-portal-cli config show
-portal-cli diagnose interfaces        # 名称、IPv4、MAC
-portal-cli config set interface br-lan
+portal-cli config show                   # 确认 username、credential_store、reconnect_mode 是你写的值
+portal-cli diagnose interfaces           # 名称、IPv4、MAC，确认 interface_name 选对了
 ```
 
-`interface_name` 建议显式填写：留空时按网卡名排序取第一个“非虚拟 + 有 IPv4 + 有 MAC”的网卡（`crates/portal-cli/src/network.rs:157-175`），OpenWrt 上容易选到并非出口的接口。
+之后微调不必再动 JSON：`portal-cli config set auto-redial new`、`refresh 1m`、`jitter low`、`interface br-lan` 等 9 个键支持在线修改，保存成功后会自动通知运行中的 daemon 重载（`crates/portal-cli/src/bin/portal-cli.rs:94-149`、`:326-333`）。
+
+### 方式 B：桌面 GUI 生成后导入
+
+GUI 没有“导出配置”按钮，它的“保存设置”就是把整份 `Settings` 写进同一个 `settings.json`（`crates/portal-gui/src/main.rs:302-343`）：
+
+1. 凭据存储选成**「配置文件（明文，仅测试）」**（`crates/portal-gui/frontend/src/App.vue:129`），否则密码进系统钥匙串，拷不走（`crates/portal-gui/src/main.rs:314-321`）。
+2. 填账号、密码，并把**掉线重拨**选成「新建后上线」或「终止后重上」（对应上面的 `reconnect_mode`，GUI 默认与 JSON 默认一样是不重拨），保存。
+3. 取 `settings.json` 与 `credentials`：macOS `~/Library/Application Support/net.dgcu.portal/`、Windows `%APPDATA%\dgcu\portal\config\`、Linux `~/.config/portal/`。
+4. 拷到路由器上前面确认过的目录，`chmod 600`，然后 `/etc/init.d/portal-cli restart`。
+
+两个坑：目录名各平台不同、文件名相同；GUI 生成的 `service_enabled`/`run_mode`/`theme_mode` 等字段在 OpenWrt 上无意义（daemon 由 procd 起），留着不碍事，介意的话删掉即可。GUI 侧后续改动不会同步到路由器，改完要重新拷贝并重启。
 
 ### 开机自动认证的三个条件
 
@@ -133,7 +148,7 @@ daemon 启动时读一次配置，满足条件就用配置里的账号 + 凭据�
 2. `credential_store` 是 `file`；
 3. `credentials` 文件存在，内容是无换行的密码（建议 600，daemon 读取时不校验）。
 
-任一条不满足，daemon 仍然会起、`status` 也正常，只是不会自动登录；这时用 `portal-cli up` 手动认证一次，可以区分是账号问题还是配置问题。改完配置要 `/etc/init.d/portal-cli restart`，daemon 只在启动时读一次。
+任一条不满足，daemon 仍然会起、`status` 也正常，只是不会自动登录；这时用 `portal-cli up` 手动认证一次，可以区分是账号问题还是配置问题。断线重拨（`reconnect_mode`）解决的是“登录成功之后掉线怎么办”，与上面三条无关——三条满足但忘了设 `reconnect_mode`，结果是每次掉线都要人工 `up` 一次。手工编辑过 `settings.json` 后要 `/etc/init.d/portal-cli restart`，daemon 只在启动时读一次。
 
 ## 四、常用命令
 
@@ -164,6 +179,7 @@ OpenWrt 日常开关服务用 init 脚本：
 ```sh
 portal-cli config set paip 172.18.100.65
 portal-cli config set refresh 1m
+portal-cli config set auto-redial new   # 断线重拨：off / new / terminate
 portal-cli service status             # 走 IPC，其余 service 子命令在 OpenWrt 上会被拒绝
 portal-cli run --daemon               # 前台跑 daemon 看实时输出；已有实例时新进程会直接退出
 ```
@@ -187,5 +203,6 @@ portal-cli run --daemon               # 前台跑 daemon 看实时输出；已�
 | `portal-cli` 直接报 `not found` | 资产与设备架构或 libc 不匹配 | 按安装一节核对 `uname -m` 与资产名 |
 | `config show` 是默认值或不是你写的 | JSON 拼错被静默丢弃；或 CLI 与 daemon 的 `HOME` 不同 | 修正 JSON；按配置一节确认 daemon 的 `HOME` |
 | 起来了但不自动登录 | `credential_store` 仍是 `system`，或密码带换行 | 改 `file`，用 `printf` 重写后 `/etc/init.d/portal-cli restart` |
+| 能登录但掉线后不自动重连 | `reconnect_mode` 是默认的 `disabled` | `config set auto-redial new`（或 `terminate`），见配置一节 |
 | 认证失败但配置都对 | 网卡选错 | `diagnose interfaces` 后 `config set interface <名称>` |
 | `config set` 报“未知配置项” | 该字段不在 9 个键之内 | 改 JSON，或从 GUI 生成 |
