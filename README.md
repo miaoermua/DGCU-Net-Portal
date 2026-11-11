@@ -32,7 +32,7 @@
 
 ## 安装及使用
 
-通过本项目的 [Github Releases](https://github.com/miaoermua/DGCU-Net-Portal/releases) 上的快捷下载表，下载最新版本
+通过本项目的 [Github Releases](https://github.com/miaoermua/DGCU-Net-Portal/releases) 上的快捷下载表，下载最新版本。如果访问不了 GitHub，可在下载链接前加上代理前缀（例如 `https://gh-proxy.com/` + 原始链接）加速下载。
 
 ### 简要安装方法
 
