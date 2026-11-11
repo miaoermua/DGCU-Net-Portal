@@ -24,11 +24,19 @@ Releases 的 Linux 资产由 CI 在 Ubuntu 上原生构建，是 glibc 动态链
 
 OpenWrt 固件是 musl，libc 与上表不一致时二进制会直接报 `not found`（找不到动态链接器）。资产列表里没有你的架构或 libc 就不要下其他包，跑不起来。
 
+用 `releases/latest/download/` 链接可指向最新版本（资产名里带版本号，需把 `<ver>` 换成实际最新版本号，如 `0.5.16`，否则链接会 404；也可以在 Releases 页面的快捷下载表里直接复制现成链接）：
+
 ```sh
-wget https://github.com/miaoermua/DGCU-Net-Portal/releases/download/v<ver>/DGCU-Net-Portal-<ver>-linux-x86_64.tar.gz
-wget https://github.com/miaoermua/DGCU-Net-Portal/releases/download/v<ver>/SHA256SUMS.txt
+wget https://github.com/miaoermua/DGCU-Net-Portal/releases/latest/download/DGCU-Net-Portal-<ver>-linux-x86_64.tar.gz
+wget https://github.com/miaoermua/DGCU-Net-Portal/releases/latest/download/SHA256SUMS.txt
 sha256sum DGCU-Net-Portal-<ver>-linux-x86_64.tar.gz   # 与 SHA256SUMS.txt 里同名行对比
 tar -xzf DGCU-Net-Portal-<ver>-linux-x86_64.tar.gz    # 解出 portal-cli / portal-gui / LICENSE
+```
+
+如果访问不了 GitHub（下载超时或失败），在原始 URL 前面加上代理前缀再下载，例如 gh-proxy：
+
+```sh
+wget https://gh-proxy.com/https://github.com/miaoermua/DGCU-Net-Portal/releases/latest/download/DGCU-Net-Portal-<ver>-linux-x86_64.tar.gz
 ```
 
 路由器上没有 `curl`/`wget` 时，在电脑上下载后 `scp` 过去即可。
@@ -47,12 +55,20 @@ portal-cli --version
 
 daemon 由 procd 托管，仓库自带脚本（`packaging/openwrt/etc/init.d/portal-cli`）：`run --daemon` 启动、异常退出后 5 秒重试（同文件 `:8-16`）。
 
-### 1. 拷入脚本并设为开机自启
+### 1. 从 GitHub 下载脚本并设为开机自启
+
+服务脚本不在 Release 资产列表里，直接从 GitHub 仓库下载 raw 文件即可（访问不了 GitHub 时，同第一节，在 URL 前加 `https://gh-proxy.com/` 代理前缀）：
 
 ```sh
-scp packaging/openwrt/etc/init.d/portal-cli root@router:/etc/init.d/
+wget https://github.com/miaoermua/DGCU-Net-Portal/raw/main/packaging/openwrt/etc/init.d/portal-cli \
+  -O /tmp/portal-cli.init
+# 代理写法示例:
+# wget https://gh-proxy.com/https://github.com/miaoermua/DGCU-Net-Portal/raw/main/packaging/openwrt/etc/init.d/portal-cli -O /tmp/portal-cli.init
+scp /tmp/portal-cli.init root@router:/etc/init.d/portal-cli
 ssh root@router 'chmod +x /etc/init.d/portal-cli && /etc/init.d/portal-cli enable'
 ```
+
+已经在电脑上克隆了仓库的话，直接拷仓库里那份效果相同：`scp packaging/openwrt/etc/init.d/portal-cli root@router:/etc/init.d/`。
 
 ### 2. 启动并确认
 
