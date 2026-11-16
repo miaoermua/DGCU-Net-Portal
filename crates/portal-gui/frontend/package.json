@@ -13,14 +13,14 @@
   },
   "dependencies": {
     "miuix-vue": "0.1.1",
-    "motion-v": "^2.8.0",
-    "vue": "^3.5.44"
+    "motion-v": "^2.12.0",
+    "vue": "^3.5.45"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^6.0.10",
+    "@vitejs/plugin-vue": "^6.0.11",
     "typescript": "~6.0.3",
-    "vite": "^8.3.3",
+    "vite": "^8.3.8",
     "vitest": "^4.1.12",
-    "vue-tsc": "^3.3.13"
+    "vue-tsc": "^3.3.14"
   }
 }
