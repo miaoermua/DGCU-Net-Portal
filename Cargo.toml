@@ -19,7 +19,7 @@ zeroize = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal", "net", "io-util", "io-std"] }
 url = "2"
 webbrowser = "1"
-dom_query = "0.28"
+dom_query = "0.30"
 regex = "1"
 network-interface = "2.0.5"
 interprocess = { version = "2.4.4", features = ["tokio"] }
